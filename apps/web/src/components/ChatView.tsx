@@ -47,12 +47,21 @@ import {
   type VirtualItem,
   useVirtualizer,
 } from "@tanstack/react-virtual";
-import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib/gitReactQuery";
+import {
+  gitBranchesQueryOptions,
+  gitCreateWorktreeMutationOptions,
+} from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
-import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
+import {
+  serverConfigQueryOptions,
+  serverQueryKeys,
+} from "~/lib/serverReactQuery";
 
 import { isElectron } from "../env";
-import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
+import {
+  parseDiffRouteSearch,
+  stripDiffSearchParams,
+} from "../diffRouteSearch";
 import {
   type ComposerSlashCommand,
   type ComposerTrigger,
@@ -73,6 +82,7 @@ import {
   type PendingApproval,
   type PendingUserInput,
   type ProviderPickerKind,
+  PROVIDER_LABELS,
   PROVIDER_OPTIONS,
   deriveWorkLogEntries,
   hasToolActivityForTurn,
@@ -80,7 +90,10 @@ import {
   formatElapsed,
   formatTimestamp,
 } from "../session-logic";
-import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollContainerNearBottom } from "../chat-scroll";
+import {
+  AUTO_SCROLL_BOTTOM_THRESHOLD_PX,
+  isScrollContainerNearBottom,
+} from "../chat-scroll";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
@@ -191,7 +204,9 @@ import {
 } from "./ui/dialog";
 import { toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
-import ProjectScriptsControl, { type NewProjectScriptInput } from "./ProjectScriptsControl";
+import ProjectScriptsControl, {
+  type NewProjectScriptInput,
+} from "./ProjectScriptsControl";
 import {
   commandForProjectScript,
   nextProjectScriptId,
@@ -203,7 +218,12 @@ import { Toggle } from "./ui/toggle";
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
-import { getAppModelOptions, resolveAppModelSelection, useAppSettings } from "../appSettings";
+import {
+  getAppModelOptions,
+  getCustomModelsForProvider,
+  resolveAppModelSelection,
+  useAppSettings,
+} from "../appSettings";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -213,9 +233,15 @@ import {
   useComposerThreadDraft,
 } from "../composerDraftStore";
 import { shouldUseCompactComposerFooter } from "./composerFooterLayout";
-import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+import {
+  selectThreadTerminalState,
+  useTerminalStateStore,
+} from "../terminalStateStore";
 import { clamp } from "effect/Number";
-import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
+import {
+  ComposerPromptEditor,
+  type ComposerPromptEditorHandle,
+} from "./ComposerPromptEditor";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { estimateTimelineMessageHeight } from "./timelineHeight";
 
@@ -231,7 +257,10 @@ function formatWorkingTimer(startIso: string, endIso: string): string | null {
     return null;
   }
 
-  const elapsedSeconds = Math.max(0, Math.floor((endedAtMs - startedAtMs) / 1000));
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((endedAtMs - startedAtMs) / 1000),
+  );
   if (elapsedSeconds < 60) {
     return `${elapsedSeconds}s`;
   }
@@ -248,7 +277,8 @@ function formatWorkingTimer(startIso: string, endIso: string): string | null {
 }
 
 const LAST_EDITOR_KEY = "t3code:last-editor";
-const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
+const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY =
+  "t3code:last-invoked-script-by-project";
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
@@ -260,7 +290,10 @@ const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
 const EMPTY_PROVIDER_STATUSES: ServerProviderStatus[] = [];
-const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<
+  string,
+  PendingUserInputDraftAnswer
+> = {};
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
@@ -291,6 +324,31 @@ function workToneClass(tone: "thinking" | "tool" | "info" | "error"): string {
   return "text-muted-foreground/40";
 }
 
+function ProviderRuntimeBadge(props: {
+  provider: ProviderKind;
+  label?: string;
+  streaming?: boolean;
+  className?: string;
+}) {
+  const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[props.provider];
+
+  return (
+    <div
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em]",
+        props.provider === "claude"
+          ? "border-[#D97757]/25 bg-[#D97757]/10 text-[#C86747]"
+          : "border-border/80 bg-muted/35 text-muted-foreground/75",
+        props.className,
+      )}
+    >
+      <ProviderIcon aria-hidden="true" className="size-3 shrink-0" />
+      <span>{props.label ?? PROVIDER_LABELS[props.provider]}</span>
+      {props.streaming ? <span className="opacity-70">Streaming</span> : null}
+    </div>
+  );
+}
+
 interface ExpandedImageItem {
   src: string;
   name: string;
@@ -306,17 +364,24 @@ function buildExpandedImagePreview(
   selectedImageId: string,
 ): ExpandedImagePreview | null {
   const previewableImages = images.flatMap((image) =>
-    image.previewUrl ? [{ id: image.id, src: image.previewUrl, name: image.name }] : [],
+    image.previewUrl
+      ? [{ id: image.id, src: image.previewUrl, name: image.name }]
+      : [],
   );
   if (previewableImages.length === 0) {
     return null;
   }
-  const selectedIndex = previewableImages.findIndex((image) => image.id === selectedImageId);
+  const selectedIndex = previewableImages.findIndex(
+    (image) => image.id === selectedImageId,
+  );
   if (selectedIndex < 0) {
     return null;
   }
   return {
-    images: previewableImages.map((image) => ({ src: image.src, name: image.name })),
+    images: previewableImages.map((image) => ({
+      src: image.src,
+      name: image.name,
+    })),
     index: selectedIndex,
   };
 }
@@ -350,7 +415,11 @@ function buildLocalDraftThread(
 }
 
 function revokeBlobPreviewUrl(previewUrl: string | undefined): void {
-  if (!previewUrl || typeof URL === "undefined" || !previewUrl.startsWith("blob:")) {
+  if (
+    !previewUrl ||
+    typeof URL === "undefined" ||
+    !previewUrl.startsWith("blob:")
+  ) {
     return;
   }
   URL.revokeObjectURL(previewUrl);
@@ -375,7 +444,8 @@ function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[] {
   const previewUrls: string[] = [];
   for (const attachment of message.attachments) {
     if (attachment.type !== "image") continue;
-    if (!attachment.previewUrl || !attachment.previewUrl.startsWith("blob:")) continue;
+    if (!attachment.previewUrl || !attachment.previewUrl.startsWith("blob:"))
+      continue;
     previewUrls.push(attachment.previewUrl);
   }
   return previewUrls;
@@ -436,7 +506,9 @@ function buildTemporaryWorktreeBranchName(): string {
   return `${WORKTREE_BRANCH_PREFIX}/${token}`;
 }
 
-function cloneComposerImageForRetry(image: ComposerImageAttachment): ComposerImageAttachment {
+function cloneComposerImageForRetry(
+  image: ComposerImageAttachment,
+): ComposerImageAttachment {
   if (typeof URL === "undefined" || !image.previewUrl.startsWith("blob:")) {
     return image;
   }
@@ -465,9 +537,13 @@ const VscodeEntryIcon = memo(function VscodeEntryIcon(props: {
 
   if (failed) {
     return props.kind === "directory" ? (
-      <FolderIcon className={cn("size-4 text-muted-foreground/80", props.className)} />
+      <FolderIcon
+        className={cn("size-4 text-muted-foreground/80", props.className)}
+      />
     ) : (
-      <FileIcon className={cn("size-4 text-muted-foreground/80", props.className)} />
+      <FileIcon
+        className={cn("size-4 text-muted-foreground/80", props.className)}
+      />
     );
   }
 
@@ -521,7 +597,9 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
       <span className="flex min-w-0 items-center gap-1.5 truncate">
         <span className="truncate">{props.item.label}</span>
       </span>
-      <span className="truncate text-muted-foreground/70 text-xs">{props.item.description}</span>
+      <span className="truncate text-muted-foreground/70 text-xs">
+        {props.item.description}
+      </span>
     </CommandItem>
   );
 });
@@ -589,36 +667,62 @@ export default function ChatView({ threadId }: ChatViewProps) {
   });
   const { resolvedTheme } = useTheme();
   const queryClient = useQueryClient();
-  const createWorktreeMutation = useMutation(gitCreateWorktreeMutationOptions({ queryClient }));
+  const createWorktreeMutation = useMutation(
+    gitCreateWorktreeMutationOptions({ queryClient }),
+  );
   const composerDraft = useComposerThreadDraft(threadId);
   const prompt = composerDraft.prompt;
   const composerImages = composerDraft.images;
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
-  const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
-  const setComposerDraftProvider = useComposerDraftStore((store) => store.setProvider);
-  const setComposerDraftModel = useComposerDraftStore((store) => store.setModel);
-  const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
+  const setComposerDraftPrompt = useComposerDraftStore(
+    (store) => store.setPrompt,
+  );
+  const setComposerDraftProvider = useComposerDraftStore(
+    (store) => store.setProvider,
+  );
+  const setComposerDraftModel = useComposerDraftStore(
+    (store) => store.setModel,
+  );
+  const setComposerDraftRuntimeMode = useComposerDraftStore(
+    (store) => store.setRuntimeMode,
+  );
   const setComposerDraftInteractionMode = useComposerDraftStore(
     (store) => store.setInteractionMode,
   );
-  const setComposerDraftEffort = useComposerDraftStore((store) => store.setEffort);
-  const setComposerDraftCodexFastMode = useComposerDraftStore((store) => store.setCodexFastMode);
-  const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
-  const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
-  const removeComposerDraftImage = useComposerDraftStore((store) => store.removeImage);
+  const setComposerDraftEffort = useComposerDraftStore(
+    (store) => store.setEffort,
+  );
+  const setComposerDraftCodexFastMode = useComposerDraftStore(
+    (store) => store.setCodexFastMode,
+  );
+  const addComposerDraftImage = useComposerDraftStore(
+    (store) => store.addImage,
+  );
+  const addComposerDraftImages = useComposerDraftStore(
+    (store) => store.addImages,
+  );
+  const removeComposerDraftImage = useComposerDraftStore(
+    (store) => store.removeImage,
+  );
   const clearComposerDraftPersistedAttachments = useComposerDraftStore(
     (store) => store.clearPersistedAttachments,
   );
   const syncComposerDraftPersistedAttachments = useComposerDraftStore(
     (store) => store.syncPersistedAttachments,
   );
-  const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
-  const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
+  const clearComposerDraftContent = useComposerDraftStore(
+    (store) => store.clearComposerContent,
+  );
+  const setDraftThreadContext = useComposerDraftStore(
+    (store) => store.setDraftThreadContext,
+  );
   const getDraftThreadByProjectId = useComposerDraftStore(
     (store) => store.getDraftThreadByProjectId,
   );
   const getDraftThread = useComposerDraftStore((store) => store.getDraftThread);
-  const setProjectDraftThreadId = useComposerDraftStore((store) => store.setProjectDraftThreadId);
+  const setProjectDraftThreadId = useComposerDraftStore(
+    (store) => store.setProjectDraftThreadId,
+  );
   const clearProjectDraftThreadId = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadId,
   );
@@ -627,8 +731,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const promptRef = useRef(prompt);
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
-  const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
-  const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
+  const [expandedImage, setExpandedImage] =
+    useState<ExpandedImagePreview | null>(null);
+  const [optimisticUserMessages, setOptimisticUserMessages] = useState<
+    ChatMessage[]
+  >([]);
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const [localDraftErrorsByThreadId, setLocalDraftErrorsByThreadId] = useState<
@@ -638,16 +745,22 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [sendStartedAt, setSendStartedAt] = useState<string | null>(null);
   const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
-  const [respondingRequestIds, setRespondingRequestIds] = useState<ApprovalRequestId[]>([]);
-  const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
+  const [respondingRequestIds, setRespondingRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
-  const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
-    Record<string, Record<string, PendingUserInputDraftAnswer>>
+  const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] =
+    useState<ApprovalRequestId[]>([]);
+  const [
+    pendingUserInputAnswersByRequestId,
+    setPendingUserInputAnswersByRequestId,
+  ] = useState<Record<string, Record<string, PendingUserInputDraftAnswer>>>({});
+  const [
+    pendingUserInputQuestionIndexByRequestId,
+    setPendingUserInputQuestionIndexByRequestId,
+  ] = useState<Record<string, number>>({});
+  const [expandedWorkGroups, setExpandedWorkGroups] = useState<
+    Record<string, boolean>
   >({});
-  const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
-    useState<Record<string, number>>({});
-  const [expandedWorkGroups, setExpandedWorkGroups] = useState<Record<string, boolean>>({});
   const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
@@ -657,21 +770,27 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const planSidebarOpenOnNextThreadRef = useRef(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
-  const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
+  const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<
+    string | null
+  >(null);
   const [pullRequestDialogState, setPullRequestDialogState] =
     useState<PullRequestDialogState | null>(null);
-  const [attachmentPreviewHandoffByMessageId, setAttachmentPreviewHandoffByMessageId] = useState<
-    Record<string, string[]>
-  >({});
+  const [
+    attachmentPreviewHandoffByMessageId,
+    setAttachmentPreviewHandoffByMessageId,
+  ] = useState<Record<string, string[]>>({});
   const [composerCursor, setComposerCursor] = useState(() => prompt.length);
-  const [composerTrigger, setComposerTrigger] = useState<ComposerTrigger | null>(() =>
-    detectComposerTrigger(prompt, prompt.length),
-  );
-  const [lastInvokedScriptByProjectId, setLastInvokedScriptByProjectId] = useState<
-    Record<string, string>
-  >(() => readLastInvokedScriptByProjectFromStorage());
+  const [composerTrigger, setComposerTrigger] =
+    useState<ComposerTrigger | null>(() =>
+      detectComposerTrigger(prompt, prompt.length),
+    );
+  const [lastInvokedScriptByProjectId, setLastInvokedScriptByProjectId] =
+    useState<Record<string, string>>(() =>
+      readLastInvokedScriptByProjectFromStorage(),
+    );
   const messagesScrollRef = useRef<HTMLDivElement>(null);
-  const [messagesScrollElement, setMessagesScrollElement] = useState<HTMLDivElement | null>(null);
+  const [messagesScrollElement, setMessagesScrollElement] =
+    useState<HTMLDivElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
   const lastKnownScrollTopRef = useRef(0);
   const isPointerScrollActiveRef = useRef(false);
@@ -691,24 +810,35 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const composerMenuOpenRef = useRef(false);
   const composerMenuItemsRef = useRef<ComposerCommandItem[]>([]);
   const activeComposerMenuItemRef = useRef<ComposerCommandItem | null>(null);
-  const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
-  const attachmentPreviewHandoffTimeoutByMessageIdRef = useRef<Record<string, number>>({});
+  const attachmentPreviewHandoffByMessageIdRef = useRef<
+    Record<string, string[]>
+  >({});
+  const attachmentPreviewHandoffTimeoutByMessageIdRef = useRef<
+    Record<string, number>
+  >({});
   const sendInFlightRef = useRef(false);
   const dragDepthRef = useRef(0);
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
-  const setMessagesScrollContainerRef = useCallback((element: HTMLDivElement | null) => {
-    messagesScrollRef.current = element;
-    setMessagesScrollElement(element);
-  }, []);
+  const setMessagesScrollContainerRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      messagesScrollRef.current = element;
+      setMessagesScrollElement(element);
+    },
+    [],
+  );
 
   const terminalState = useTerminalStateStore((state) =>
     selectThreadTerminalState(state.terminalStateByThreadId, threadId),
   );
   const storeSetTerminalOpen = useTerminalStateStore((s) => s.setTerminalOpen);
-  const storeSetTerminalHeight = useTerminalStateStore((s) => s.setTerminalHeight);
+  const storeSetTerminalHeight = useTerminalStateStore(
+    (s) => s.setTerminalHeight,
+  );
   const storeSplitTerminal = useTerminalStateStore((s) => s.splitTerminal);
   const storeNewTerminal = useTerminalStateStore((s) => s.newTerminal);
-  const storeSetActiveTerminal = useTerminalStateStore((s) => s.setActiveTerminal);
+  const storeSetActiveTerminal = useTerminalStateStore(
+    (s) => s.setActiveTerminal,
+  );
   const storeCloseTerminal = useTerminalStateStore((s) => s.closeTerminal);
 
   const setPrompt = useCallback(
@@ -737,8 +867,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
 
   const serverThread = threads.find((t) => t.id === threadId);
-  const fallbackDraftProject = projects.find((project) => project.id === draftThread?.projectId);
-  const localDraftError = serverThread ? null : (localDraftErrorsByThreadId[threadId] ?? null);
+  const fallbackDraftProject = projects.find(
+    (project) => project.id === draftThread?.projectId,
+  );
+  const localDraftError = serverThread
+    ? null
+    : (localDraftErrorsByThreadId[threadId] ?? null);
   const localDraftThread = useMemo(
     () =>
       draftThread
@@ -753,16 +887,23 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const activeThread = serverThread ?? localDraftThread;
   const runtimeMode =
-    composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+    composerDraft.runtimeMode ??
+    activeThread?.runtimeMode ??
+    DEFAULT_RUNTIME_MODE;
   const interactionMode =
-    composerDraft.interactionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
+    composerDraft.interactionMode ??
+    activeThread?.interactionMode ??
+    DEFAULT_INTERACTION_MODE;
   const isServerThread = serverThread !== undefined;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const diffOpen = rawSearch.diff === "1";
   const activeThreadId = activeThread?.id ?? null;
   const activeLatestTurn = activeThread?.latestTurn ?? null;
-  const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
+  const latestTurnSettled = isLatestTurnSettled(
+    activeLatestTurn,
+    activeThread?.session ?? null,
+  );
   const activeProject = projects.find((p) => p.id === activeThread?.projectId);
 
   const openPullRequestDialog = useCallback(
@@ -784,14 +925,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
   }, []);
 
   const openOrReuseProjectDraftThread = useCallback(
-    async (input: { branch: string; worktreePath: string | null; envMode: DraftThreadEnvMode }) => {
+    async (input: {
+      branch: string;
+      worktreePath: string | null;
+      envMode: DraftThreadEnvMode;
+    }) => {
       if (!activeProject) {
-        throw new Error("No active project is available for this pull request.");
+        throw new Error(
+          "No active project is available for this pull request.",
+        );
       }
       const storedDraftThread = getDraftThreadByProjectId(activeProject.id);
       if (storedDraftThread) {
         setDraftThreadContext(storedDraftThread.threadId, input);
-        setProjectDraftThreadId(activeProject.id, storedDraftThread.threadId, input);
+        setProjectDraftThreadId(
+          activeProject.id,
+          storedDraftThread.threadId,
+          input,
+        );
         if (storedDraftThread.threadId !== threadId) {
           await navigate({
             to: "/$threadId",
@@ -802,7 +953,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
 
       const activeDraftThread = getDraftThread(threadId);
-      if (!isServerThread && activeDraftThread?.projectId === activeProject.id) {
+      if (
+        !isServerThread &&
+        activeDraftThread?.projectId === activeProject.id
+      ) {
         setDraftThreadContext(threadId, input);
         setProjectDraftThreadId(activeProject.id, threadId, input);
         return;
@@ -851,8 +1005,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (!activeLatestTurn?.completedAt) return;
     const turnCompletedAt = Date.parse(activeLatestTurn.completedAt);
     if (Number.isNaN(turnCompletedAt)) return;
-    const lastVisitedAt = activeThread.lastVisitedAt ? Date.parse(activeThread.lastVisitedAt) : NaN;
-    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= turnCompletedAt) return;
+    const lastVisitedAt = activeThread.lastVisitedAt
+      ? Date.parse(activeThread.lastVisitedAt)
+      : NaN;
+    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= turnCompletedAt)
+      return;
 
     markThreadVisited(activeThread.id);
   }, [
@@ -874,12 +1031,18 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const lockedProvider: ProviderKind | null = hasThreadStarted
     ? (sessionProvider ?? selectedProviderByThreadId ?? null)
     : null;
-  const selectedProvider: ProviderKind = lockedProvider ?? selectedProviderByThreadId ?? "codex";
+  const selectedProvider: ProviderKind =
+    lockedProvider ?? selectedProviderByThreadId ?? "codex";
   const baseThreadModel = resolveModelSlugForProvider(
     selectedProvider,
-    activeThread?.model ?? activeProject?.model ?? getDefaultModel(selectedProvider),
+    activeThread?.model ??
+      activeProject?.model ??
+      getDefaultModel(selectedProvider),
   );
-  const customModelsForSelectedProvider = settings.customCodexModels;
+  const customModelsForSelectedProvider = getCustomModelsForProvider(
+    settings,
+    selectedProvider,
+  );
   const selectedModel = useMemo(() => {
     const draftModel = composerDraft.model;
     if (!draftModel) {
@@ -890,10 +1053,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
       customModelsForSelectedProvider,
       draftModel,
     ) as ModelSlug;
-  }, [baseThreadModel, composerDraft.model, customModelsForSelectedProvider, selectedProvider]);
+  }, [
+    baseThreadModel,
+    composerDraft.model,
+    customModelsForSelectedProvider,
+    selectedProvider,
+  ]);
   const reasoningOptions = getReasoningEffortOptions(selectedProvider);
   const supportsReasoningEffort = reasoningOptions.length > 0;
-  const selectedEffort = composerDraft.effort ?? getDefaultReasoningEffort(selectedProvider);
+  const selectedEffort =
+    composerDraft.effort ?? getDefaultReasoningEffort(selectedProvider);
   const selectedCodexFastModeEnabled =
     selectedProvider === "codex" ? composerDraft.codexFastMode : false;
   const selectedModelOptionsForDispatch = useMemo(() => {
@@ -901,18 +1070,29 @@ export default function ChatView({ threadId }: ChatViewProps) {
       return undefined;
     }
     const codexOptions = {
-      ...(supportsReasoningEffort && selectedEffort ? { reasoningEffort: selectedEffort } : {}),
+      ...(supportsReasoningEffort && selectedEffort
+        ? { reasoningEffort: selectedEffort }
+        : {}),
       ...(selectedCodexFastModeEnabled ? { fastMode: true } : {}),
     };
-    return Object.keys(codexOptions).length > 0 ? { codex: codexOptions } : undefined;
-  }, [selectedCodexFastModeEnabled, selectedEffort, selectedProvider, supportsReasoningEffort]);
+    return Object.keys(codexOptions).length > 0
+      ? { codex: codexOptions }
+      : undefined;
+  }, [
+    selectedCodexFastModeEnabled,
+    selectedEffort,
+    selectedProvider,
+    supportsReasoningEffort,
+  ]);
   const providerOptionsForDispatch = useMemo(() => {
     if (!settings.codexBinaryPath && !settings.codexHomePath) {
       return undefined;
     }
     return {
       codex: {
-        ...(settings.codexBinaryPath ? { binaryPath: settings.codexBinaryPath } : {}),
+        ...(settings.codexBinaryPath
+          ? { binaryPath: settings.codexBinaryPath }
+          : {}),
         ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
       },
     };
@@ -924,9 +1104,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const selectedModelForPickerWithCustomFallback = useMemo(() => {
     const currentOptions = modelOptionsByProvider[selectedProvider];
-    return currentOptions.some((option) => option.slug === selectedModelForPicker)
+    return currentOptions.some(
+      (option) => option.slug === selectedModelForPicker,
+    )
       ? selectedModelForPicker
-      : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
+      : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ??
+          selectedModelForPicker);
   }, [modelOptionsByProvider, selectedModelForPicker, selectedProvider]);
   const searchableModelOptions = useMemo(
     () =>
@@ -948,7 +1131,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const phase = derivePhase(activeThread?.session ?? null);
   const isSendBusy = sendPhase !== "idle";
   const isPreparingWorktree = sendPhase === "preparing-worktree";
-  const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
+  const isWorking =
+    phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
   const nowIso = new Date(nowTick).toISOString();
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
@@ -957,7 +1141,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(
-    () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
+    () =>
+      deriveWorkLogEntries(
+        threadActivities,
+        activeLatestTurn?.turnId ?? undefined,
+      ),
     [activeLatestTurn?.turnId, threadActivities],
   );
   const latestTurnHasToolActivity = useMemo(
@@ -976,13 +1164,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const activePendingDraftAnswers = useMemo(
     () =>
       activePendingUserInput
-        ? (pendingUserInputAnswersByRequestId[activePendingUserInput.requestId] ??
-          EMPTY_PENDING_USER_INPUT_ANSWERS)
+        ? (pendingUserInputAnswersByRequestId[
+            activePendingUserInput.requestId
+          ] ?? EMPTY_PENDING_USER_INPUT_ANSWERS)
         : EMPTY_PENDING_USER_INPUT_ANSWERS,
     [activePendingUserInput, pendingUserInputAnswersByRequestId],
   );
   const activePendingQuestionIndex = activePendingUserInput
-    ? (pendingUserInputQuestionIndexByRequestId[activePendingUserInput.requestId] ?? 0)
+    ? (pendingUserInputQuestionIndexByRequestId[
+        activePendingUserInput.requestId
+      ] ?? 0)
     : 0;
   const activePendingProgress = useMemo(
     () =>
@@ -993,12 +1184,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
             activePendingQuestionIndex,
           )
         : null,
-    [activePendingDraftAnswers, activePendingQuestionIndex, activePendingUserInput],
+    [
+      activePendingDraftAnswers,
+      activePendingQuestionIndex,
+      activePendingUserInput,
+    ],
   );
   const activePendingResolvedAnswers = useMemo(
     () =>
       activePendingUserInput
-        ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingDraftAnswers)
+        ? buildPendingUserInputAnswers(
+            activePendingUserInput.questions,
+            activePendingDraftAnswers,
+          )
         : null,
     [activePendingDraftAnswers, activePendingUserInput],
   );
@@ -1013,9 +1211,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
       activeThread?.proposedPlans ?? [],
       activeLatestTurn?.turnId ?? null,
     );
-  }, [activeLatestTurn?.turnId, activeThread?.proposedPlans, latestTurnSettled]);
+  }, [
+    activeLatestTurn?.turnId,
+    activeThread?.proposedPlans,
+    latestTurnSettled,
+  ]);
   const activePlan = useMemo(
-    () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
+    () =>
+      deriveActivePlanState(
+        threadActivities,
+        activeLatestTurn?.turnId ?? undefined,
+      ),
     [activeLatestTurn?.turnId, threadActivities],
   );
   const showPlanFollowUpPrompt =
@@ -1029,7 +1235,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     isComposerApprovalState ||
     pendingUserInputs.length > 0 ||
     (showPlanFollowUpPrompt && activeProposedPlan !== null);
-  const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
+  const composerFooterHasWideActions =
+    showPlanFollowUpPrompt || activePendingProgress !== null;
   useEffect(() => {
     if (!activePendingProgress) {
       return;
@@ -1048,14 +1255,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
     setComposerHighlightedItemId(null);
   }, [activePendingProgress, activePendingUserInput?.requestId]);
   useEffect(() => {
-    attachmentPreviewHandoffByMessageIdRef.current = attachmentPreviewHandoffByMessageId;
+    attachmentPreviewHandoffByMessageIdRef.current =
+      attachmentPreviewHandoffByMessageId;
   }, [attachmentPreviewHandoffByMessageId]);
   const clearAttachmentPreviewHandoffs = useCallback(() => {
-    for (const timeoutId of Object.values(attachmentPreviewHandoffTimeoutByMessageIdRef.current)) {
+    for (const timeoutId of Object.values(
+      attachmentPreviewHandoffTimeoutByMessageIdRef.current,
+    )) {
       window.clearTimeout(timeoutId);
     }
     attachmentPreviewHandoffTimeoutByMessageIdRef.current = {};
-    for (const previewUrls of Object.values(attachmentPreviewHandoffByMessageIdRef.current)) {
+    for (const previewUrls of Object.values(
+      attachmentPreviewHandoffByMessageIdRef.current,
+    )) {
       for (const previewUrl of previewUrls) {
         revokeBlobPreviewUrl(previewUrl);
       }
@@ -1071,45 +1283,54 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
     };
   }, [clearAttachmentPreviewHandoffs]);
-  const handoffAttachmentPreviews = useCallback((messageId: MessageId, previewUrls: string[]) => {
-    if (previewUrls.length === 0) return;
+  const handoffAttachmentPreviews = useCallback(
+    (messageId: MessageId, previewUrls: string[]) => {
+      if (previewUrls.length === 0) return;
 
-    const previousPreviewUrls = attachmentPreviewHandoffByMessageIdRef.current[messageId] ?? [];
-    for (const previewUrl of previousPreviewUrls) {
-      if (!previewUrls.includes(previewUrl)) {
-        revokeBlobPreviewUrl(previewUrl);
-      }
-    }
-    setAttachmentPreviewHandoffByMessageId((existing) => {
-      const next = {
-        ...existing,
-        [messageId]: previewUrls,
-      };
-      attachmentPreviewHandoffByMessageIdRef.current = next;
-      return next;
-    });
-
-    const existingTimeout = attachmentPreviewHandoffTimeoutByMessageIdRef.current[messageId];
-    if (typeof existingTimeout === "number") {
-      window.clearTimeout(existingTimeout);
-    }
-    attachmentPreviewHandoffTimeoutByMessageIdRef.current[messageId] = window.setTimeout(() => {
-      const currentPreviewUrls = attachmentPreviewHandoffByMessageIdRef.current[messageId];
-      if (currentPreviewUrls) {
-        for (const previewUrl of currentPreviewUrls) {
+      const previousPreviewUrls =
+        attachmentPreviewHandoffByMessageIdRef.current[messageId] ?? [];
+      for (const previewUrl of previousPreviewUrls) {
+        if (!previewUrls.includes(previewUrl)) {
           revokeBlobPreviewUrl(previewUrl);
         }
       }
       setAttachmentPreviewHandoffByMessageId((existing) => {
-        if (!(messageId in existing)) return existing;
-        const next = { ...existing };
-        delete next[messageId];
+        const next = {
+          ...existing,
+          [messageId]: previewUrls,
+        };
         attachmentPreviewHandoffByMessageIdRef.current = next;
         return next;
       });
-      delete attachmentPreviewHandoffTimeoutByMessageIdRef.current[messageId];
-    }, ATTACHMENT_PREVIEW_HANDOFF_TTL_MS);
-  }, []);
+
+      const existingTimeout =
+        attachmentPreviewHandoffTimeoutByMessageIdRef.current[messageId];
+      if (typeof existingTimeout === "number") {
+        window.clearTimeout(existingTimeout);
+      }
+      attachmentPreviewHandoffTimeoutByMessageIdRef.current[messageId] =
+        window.setTimeout(() => {
+          const currentPreviewUrls =
+            attachmentPreviewHandoffByMessageIdRef.current[messageId];
+          if (currentPreviewUrls) {
+            for (const previewUrl of currentPreviewUrls) {
+              revokeBlobPreviewUrl(previewUrl);
+            }
+          }
+          setAttachmentPreviewHandoffByMessageId((existing) => {
+            if (!(messageId in existing)) return existing;
+            const next = { ...existing };
+            delete next[messageId];
+            attachmentPreviewHandoffByMessageIdRef.current = next;
+            return next;
+          });
+          delete attachmentPreviewHandoffTimeoutByMessageIdRef.current[
+            messageId
+          ];
+        }, ATTACHMENT_PREVIEW_HANDOFF_TTL_MS);
+    },
+    [],
+  );
   const serverMessages = activeThread?.messages;
   const timelineMessages = useMemo(() => {
     const messages = serverMessages ?? [];
@@ -1128,7 +1349,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
             ) {
               return message;
             }
-            const handoffPreviewUrls = attachmentPreviewHandoffByMessageId[message.id];
+            const handoffPreviewUrls =
+              attachmentPreviewHandoffByMessageId[message.id];
             if (!handoffPreviewUrls || handoffPreviewUrls.length === 0) {
               return message;
             }
@@ -1141,7 +1363,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
               }
               const handoffPreviewUrl = handoffPreviewUrls[imageIndex];
               imageIndex += 1;
-              if (!handoffPreviewUrl || attachment.previewUrl === handoffPreviewUrl) {
+              if (
+                !handoffPreviewUrl ||
+                attachment.previewUrl === handoffPreviewUrl
+              ) {
                 return attachment;
               }
               changed = true;
@@ -1157,16 +1382,28 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (optimisticUserMessages.length === 0) {
       return serverMessagesWithPreviewHandoff;
     }
-    const serverIds = new Set(serverMessagesWithPreviewHandoff.map((message) => message.id));
-    const pendingMessages = optimisticUserMessages.filter((message) => !serverIds.has(message.id));
+    const serverIds = new Set(
+      serverMessagesWithPreviewHandoff.map((message) => message.id),
+    );
+    const pendingMessages = optimisticUserMessages.filter(
+      (message) => !serverIds.has(message.id),
+    );
     if (pendingMessages.length === 0) {
       return serverMessagesWithPreviewHandoff;
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
-  }, [serverMessages, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
+  }, [
+    serverMessages,
+    attachmentPreviewHandoffByMessageId,
+    optimisticUserMessages,
+  ]);
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
+      deriveTimelineEntries(
+        timelineMessages,
+        activeThread?.proposedPlans ?? [],
+        workLogEntries,
+      ),
     [activeThread?.proposedPlans, timelineMessages, workLogEntries],
   );
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
@@ -1187,7 +1424,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
         continue;
       }
 
-      for (let nextIndex = index + 1; nextIndex < timelineEntries.length; nextIndex += 1) {
+      for (
+        let nextIndex = index + 1;
+        nextIndex < timelineEntries.length;
+        nextIndex += 1
+      ) {
         const nextEntry = timelineEntries[nextIndex];
         if (!nextEntry || nextEntry.kind !== "message") {
           continue;
@@ -1195,12 +1436,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
         if (nextEntry.message.role === "user") {
           break;
         }
-        const summary = turnDiffSummaryByAssistantMessageId.get(nextEntry.message.id);
+        const summary = turnDiffSummaryByAssistantMessageId.get(
+          nextEntry.message.id,
+        );
         if (!summary) {
           continue;
         }
         const turnCount =
-          summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId];
+          summary.checkpointTurnCount ??
+          inferredCheckpointTurnCountByTurnId[summary.turnId];
         if (typeof turnCount !== "number") {
           break;
         }
@@ -1210,7 +1454,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }
 
     return byUserMessageId;
-  }, [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId]);
+  }, [
+    inferredCheckpointTurnCountByTurnId,
+    timelineEntries,
+    turnDiffSummaryByAssistantMessageId,
+  ]);
 
   const completionSummary = useMemo(() => {
     if (!latestTurnSettled) return null;
@@ -1218,7 +1466,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (!activeLatestTurn.completedAt) return null;
     if (!latestTurnHasToolActivity) return null;
 
-    const elapsed = formatElapsed(activeLatestTurn.startedAt, activeLatestTurn.completedAt);
+    const elapsed = formatElapsed(
+      activeLatestTurn.startedAt,
+      activeLatestTurn.completedAt,
+    );
     return elapsed ? `Worked for ${elapsed}` : null;
   }, [
     activeLatestTurn?.completedAt,
@@ -1259,14 +1510,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
   ]);
   const gitCwd = activeThread?.worktreePath ?? activeProject?.cwd ?? null;
   const composerTriggerKind = composerTrigger?.kind ?? null;
-  const pathTriggerQuery = composerTrigger?.kind === "path" ? composerTrigger.query : "";
+  const pathTriggerQuery =
+    composerTrigger?.kind === "path" ? composerTrigger.query : "";
   const isPathTrigger = composerTriggerKind === "path";
   const [debouncedPathQuery, composerPathQueryDebouncer] = useDebouncedValue(
     pathTriggerQuery,
     { wait: COMPOSER_PATH_QUERY_DEBOUNCE_MS },
     (debouncerState) => ({ isPending: debouncerState.isPending }),
   );
-  const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
+  const effectivePathQuery =
+    pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
   const branchesQuery = useQuery(gitBranchesQueryOptions(gitCwd));
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const workspaceEntriesQuery = useQuery(
@@ -1277,7 +1530,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
       limit: 80,
     }),
   );
-  const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
+  const workspaceEntries =
+    workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
@@ -1314,13 +1568,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
           label: "/default",
           description: "Switch this thread back to normal chat mode",
         },
-      ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
+      ] satisfies ReadonlyArray<
+        Extract<ComposerCommandItem, { type: "slash-command" }>
+      >;
       const query = composerTrigger.query.trim().toLowerCase();
       if (!query) {
         return [...slashCommandItems];
       }
       return slashCommandItems.filter(
-        (item) => item.command.includes(query) || item.label.slice(1).includes(query),
+        (item) =>
+          item.command.includes(query) || item.label.slice(1).includes(query),
       );
     }
 
@@ -1329,7 +1586,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
         const query = composerTrigger.query.trim().toLowerCase();
         if (!query) return true;
         return (
-          searchSlug.includes(query) || searchName.includes(query) || searchProvider.includes(query)
+          searchSlug.includes(query) ||
+          searchName.includes(query) ||
+          searchProvider.includes(query)
         );
       })
       .map(({ provider, providerLabel, slug, name }) => ({
@@ -1357,11 +1616,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [nonPersistedComposerImageIds],
   );
   const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
-  const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
-  const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
-  const activeProvider = activeThread?.session?.provider ?? "codex";
+  const availableEditors =
+    serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
+  const providerStatuses =
+    serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
+  const activeProvider = activeThread?.session?.provider ?? selectedProvider;
   const activeProviderStatus = useMemo(
-    () => providerStatuses.find((status) => status.provider === activeProvider) ?? null,
+    () =>
+      providerStatuses.find((status) => status.provider === activeProvider) ??
+      null,
     [activeProvider, providerStatuses],
   );
   const activeProjectCwd = activeProject?.cwd ?? null;
@@ -1408,9 +1671,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const envLocked = Boolean(
     activeThread &&
     (activeThread.messages.length > 0 ||
-      (activeThread.session !== null && activeThread.session.status !== "closed")),
+      (activeThread.session !== null &&
+        activeThread.session.status !== "closed")),
   );
-  const hasReachedTerminalLimit = terminalState.terminalIds.length >= MAX_THREAD_TERMINAL_COUNT;
+  const hasReachedTerminalLimit =
+    terminalState.terminalIds.length >= MAX_THREAD_TERMINAL_COUNT;
   const setThreadError = useCallback(
     (targetThreadId: ThreadId | null, error: string | null) => {
       if (!targetThreadId) return;
@@ -1493,7 +1758,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
               .clear({ threadId: activeThreadId, terminalId })
               .catch(() => undefined);
           }
-          await api.terminal.close({ threadId: activeThreadId, terminalId, deleteHistory: true });
+          await api.terminal.close({
+            threadId: activeThreadId,
+            terminalId,
+            deleteHistory: true,
+          });
         })().catch(() => fallbackExitWrite());
       } else {
         void fallbackExitWrite();
@@ -1529,10 +1798,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
         terminalState.activeTerminalId ||
         terminalState.terminalIds[0] ||
         DEFAULT_THREAD_TERMINAL_ID;
-      const isBaseTerminalBusy = terminalState.runningTerminalIds.includes(baseTerminalId);
-      const wantsNewTerminal = Boolean(options?.preferNewTerminal) || isBaseTerminalBusy;
+      const isBaseTerminalBusy =
+        terminalState.runningTerminalIds.includes(baseTerminalId);
+      const wantsNewTerminal =
+        Boolean(options?.preferNewTerminal) || isBaseTerminalBusy;
       const shouldCreateNewTerminal =
-        wantsNewTerminal && terminalState.terminalIds.length < MAX_THREAD_TERMINAL_COUNT;
+        wantsNewTerminal &&
+        terminalState.terminalIds.length < MAX_THREAD_TERMINAL_COUNT;
       const targetTerminalId = shouldCreateNewTerminal
         ? `terminal-${randomUUID()}`
         : baseTerminalId;
@@ -1549,24 +1821,26 @@ export default function ChatView({ threadId }: ChatViewProps) {
         project: {
           cwd: activeProject.cwd,
         },
-        worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
+        worktreePath:
+          options?.worktreePath ?? activeThread.worktreePath ?? null,
         ...(options?.env ? { extraEnv: options.env } : {}),
       });
-      const openTerminalInput: Parameters<typeof api.terminal.open>[0] = shouldCreateNewTerminal
-        ? {
-            threadId: activeThreadId,
-            terminalId: targetTerminalId,
-            cwd: targetCwd,
-            env: runtimeEnv,
-            cols: SCRIPT_TERMINAL_COLS,
-            rows: SCRIPT_TERMINAL_ROWS,
-          }
-        : {
-            threadId: activeThreadId,
-            terminalId: targetTerminalId,
-            cwd: targetCwd,
-            env: runtimeEnv,
-          };
+      const openTerminalInput: Parameters<typeof api.terminal.open>[0] =
+        shouldCreateNewTerminal
+          ? {
+              threadId: activeThreadId,
+              terminalId: targetTerminalId,
+              cwd: targetCwd,
+              env: runtimeEnv,
+              cols: SCRIPT_TERMINAL_COLS,
+              rows: SCRIPT_TERMINAL_ROWS,
+            }
+          : {
+              threadId: activeThreadId,
+              terminalId: targetTerminalId,
+              cwd: targetCwd,
+              env: runtimeEnv,
+            };
 
       try {
         await api.terminal.open(openTerminalInput);
@@ -1578,7 +1852,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       } catch (error) {
         setThreadError(
           activeThreadId,
-          error instanceof Error ? error.message : `Failed to run script "${script.name}".`,
+          error instanceof Error
+            ? error.message
+            : `Failed to run script "${script.name}".`,
         );
       }
     },
@@ -1645,7 +1921,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const nextScripts = input.runOnWorktreeCreate
         ? [
             ...activeProject.scripts.map((script) =>
-              script.runOnWorktreeCreate ? { ...script, runOnWorktreeCreate: false } : script,
+              script.runOnWorktreeCreate
+                ? { ...script, runOnWorktreeCreate: false }
+                : script,
             ),
             nextScript,
           ]
@@ -1665,7 +1943,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const updateProjectScript = useCallback(
     async (scriptId: string, input: NewProjectScriptInput) => {
       if (!activeProject) return;
-      const existingScript = activeProject.scripts.find((script) => script.id === scriptId);
+      const existingScript = activeProject.scripts.find(
+        (script) => script.id === scriptId,
+      );
       if (!existingScript) {
         throw new Error("Script not found.");
       }
@@ -1699,9 +1979,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const deleteProjectScript = useCallback(
     async (scriptId: string) => {
       if (!activeProject) return;
-      const nextScripts = activeProject.scripts.filter((script) => script.id !== scriptId);
+      const nextScripts = activeProject.scripts.filter(
+        (script) => script.id !== scriptId,
+      );
 
-      const deletedName = activeProject.scripts.find((s) => s.id === scriptId)?.name;
+      const deletedName = activeProject.scripts.find(
+        (s) => s.id === scriptId,
+      )?.name;
 
       try {
         await persistProjectScripts({
@@ -1720,7 +2004,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
         toastManager.add({
           type: "error",
           title: "Could not delete action",
-          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+          description:
+            error instanceof Error
+              ? error.message
+              : "An unexpected error occurred.",
         });
       }
     },
@@ -1765,7 +2052,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
     ],
   );
   const toggleInteractionMode = useCallback(() => {
-    handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
+    handleInteractionModeChange(
+      interactionMode === "plan" ? "default" : "plan",
+    );
   }, [handleInteractionModeChange, interactionMode]);
   const toggleRuntimeMode = useCallback(() => {
     void handleRuntimeModeChange(
@@ -1775,7 +2064,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const togglePlanSidebar = useCallback(() => {
     setPlanSidebarOpen((open) => {
       if (open) {
-        const turnKey = activePlan?.turnId ?? activeProposedPlan?.turnId ?? null;
+        const turnKey =
+          activePlan?.turnId ?? activeProposedPlan?.turnId ?? null;
         if (turnKey) {
           planSidebarDismissedForTurnRef.current = turnKey;
         }
@@ -1851,13 +2141,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
   // Auto-scroll on new messages
   const messageCount = timelineMessages.length;
-  const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
-    const scrollContainer = messagesScrollRef.current;
-    if (!scrollContainer) return;
-    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior });
-    lastKnownScrollTopRef.current = scrollContainer.scrollTop;
-    shouldAutoScrollRef.current = true;
-  }, []);
+  const scrollMessagesToBottom = useCallback(
+    (behavior: ScrollBehavior = "auto") => {
+      const scrollContainer = messagesScrollRef.current;
+      if (!scrollContainer) return;
+      scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior });
+      lastKnownScrollTopRef.current = scrollContainer.scrollTop;
+      shouldAutoScrollRef.current = true;
+    },
+    [],
+  );
   const cancelPendingStickToBottom = useCallback(() => {
     const pendingFrame = pendingAutoScrollFrameRef.current;
     if (pendingFrame === null) return;
@@ -1894,21 +2187,27 @@ export default function ChatView({ threadId }: ChatViewProps) {
       };
 
       cancelPendingInteractionAnchorAdjustment();
-      pendingInteractionAnchorFrameRef.current = window.requestAnimationFrame(() => {
-        pendingInteractionAnchorFrameRef.current = null;
-        const anchor = pendingInteractionAnchorRef.current;
-        pendingInteractionAnchorRef.current = null;
-        const activeScrollContainer = messagesScrollRef.current;
-        if (!anchor || !activeScrollContainer) return;
-        if (!anchor.element.isConnected || !activeScrollContainer.contains(anchor.element)) return;
+      pendingInteractionAnchorFrameRef.current = window.requestAnimationFrame(
+        () => {
+          pendingInteractionAnchorFrameRef.current = null;
+          const anchor = pendingInteractionAnchorRef.current;
+          pendingInteractionAnchorRef.current = null;
+          const activeScrollContainer = messagesScrollRef.current;
+          if (!anchor || !activeScrollContainer) return;
+          if (
+            !anchor.element.isConnected ||
+            !activeScrollContainer.contains(anchor.element)
+          )
+            return;
 
-        const nextTop = anchor.element.getBoundingClientRect().top;
-        const delta = nextTop - anchor.top;
-        if (Math.abs(delta) < 0.5) return;
+          const nextTop = anchor.element.getBoundingClientRect().top;
+          const delta = nextTop - anchor.top;
+          if (Math.abs(delta) < 0.5) return;
 
-        activeScrollContainer.scrollTop += delta;
-        lastKnownScrollTopRef.current = activeScrollContainer.scrollTop;
-      });
+          activeScrollContainer.scrollTop += delta;
+          lastKnownScrollTopRef.current = activeScrollContainer.scrollTop;
+        },
+      );
     },
     [cancelPendingInteractionAnchorAdjustment],
   );
@@ -1916,7 +2215,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
     cancelPendingStickToBottom();
     scrollMessagesToBottom();
     scheduleStickToBottom();
-  }, [cancelPendingStickToBottom, scheduleStickToBottom, scrollMessagesToBottom]);
+  }, [
+    cancelPendingStickToBottom,
+    scheduleStickToBottom,
+    scrollMessagesToBottom,
+  ]);
   const onMessagesScroll = useCallback(() => {
     const scrollContainer = messagesScrollRef.current;
     if (!scrollContainer) return;
@@ -1926,13 +2229,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (!shouldAutoScrollRef.current && isNearBottom) {
       shouldAutoScrollRef.current = true;
       pendingUserScrollUpIntentRef.current = false;
-    } else if (shouldAutoScrollRef.current && pendingUserScrollUpIntentRef.current) {
+    } else if (
+      shouldAutoScrollRef.current &&
+      pendingUserScrollUpIntentRef.current
+    ) {
       const scrolledUp = currentScrollTop < lastKnownScrollTopRef.current - 1;
       if (scrolledUp) {
         shouldAutoScrollRef.current = false;
       }
       pendingUserScrollUpIntentRef.current = false;
-    } else if (shouldAutoScrollRef.current && isPointerScrollActiveRef.current) {
+    } else if (
+      shouldAutoScrollRef.current &&
+      isPointerScrollActiveRef.current
+    ) {
       const scrolledUp = currentScrollTop < lastKnownScrollTopRef.current - 1;
       if (scrolledUp) {
         shouldAutoScrollRef.current = false;
@@ -1947,37 +2256,58 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
     lastKnownScrollTopRef.current = currentScrollTop;
   }, []);
-  const onMessagesWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    if (event.deltaY < 0) {
-      pendingUserScrollUpIntentRef.current = true;
-    }
-  }, []);
-  const onMessagesPointerDown = useCallback((_event: React.PointerEvent<HTMLDivElement>) => {
-    isPointerScrollActiveRef.current = true;
-  }, []);
-  const onMessagesPointerUp = useCallback((_event: React.PointerEvent<HTMLDivElement>) => {
-    isPointerScrollActiveRef.current = false;
-  }, []);
-  const onMessagesPointerCancel = useCallback((_event: React.PointerEvent<HTMLDivElement>) => {
-    isPointerScrollActiveRef.current = false;
-  }, []);
-  const onMessagesTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
-    const touch = event.touches[0];
-    if (!touch) return;
-    lastTouchClientYRef.current = touch.clientY;
-  }, []);
-  const onMessagesTouchMove = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
-    const touch = event.touches[0];
-    if (!touch) return;
-    const previousTouchY = lastTouchClientYRef.current;
-    if (previousTouchY !== null && touch.clientY > previousTouchY + 1) {
-      pendingUserScrollUpIntentRef.current = true;
-    }
-    lastTouchClientYRef.current = touch.clientY;
-  }, []);
-  const onMessagesTouchEnd = useCallback((_event: React.TouchEvent<HTMLDivElement>) => {
-    lastTouchClientYRef.current = null;
-  }, []);
+  const onMessagesWheel = useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      if (event.deltaY < 0) {
+        pendingUserScrollUpIntentRef.current = true;
+      }
+    },
+    [],
+  );
+  const onMessagesPointerDown = useCallback(
+    (_event: React.PointerEvent<HTMLDivElement>) => {
+      isPointerScrollActiveRef.current = true;
+    },
+    [],
+  );
+  const onMessagesPointerUp = useCallback(
+    (_event: React.PointerEvent<HTMLDivElement>) => {
+      isPointerScrollActiveRef.current = false;
+    },
+    [],
+  );
+  const onMessagesPointerCancel = useCallback(
+    (_event: React.PointerEvent<HTMLDivElement>) => {
+      isPointerScrollActiveRef.current = false;
+    },
+    [],
+  );
+  const onMessagesTouchStart = useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      lastTouchClientYRef.current = touch.clientY;
+    },
+    [],
+  );
+  const onMessagesTouchMove = useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      const previousTouchY = lastTouchClientYRef.current;
+      if (previousTouchY !== null && touch.clientY > previousTouchY + 1) {
+        pendingUserScrollUpIntentRef.current = true;
+      }
+      lastTouchClientYRef.current = touch.clientY;
+    },
+    [],
+  );
+  const onMessagesTouchEnd = useCallback(
+    (_event: React.TouchEvent<HTMLDivElement>) => {
+      lastTouchClientYRef.current = null;
+    },
+    [],
+  );
   useEffect(() => {
     return () => {
       cancelPendingStickToBottom();
@@ -2015,16 +2345,22 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const [entry] = entries;
       if (!entry) return;
 
-      const nextCompact = shouldUseCompactComposerFooter(measureComposerFormWidth(), {
-        hasWideActions: composerFooterHasWideActions,
-      });
-      setIsComposerFooterCompact((previous) => (previous === nextCompact ? previous : nextCompact));
+      const nextCompact = shouldUseCompactComposerFooter(
+        measureComposerFormWidth(),
+        {
+          hasWideActions: composerFooterHasWideActions,
+        },
+      );
+      setIsComposerFooterCompact((previous) =>
+        previous === nextCompact ? previous : nextCompact,
+      );
 
       const nextHeight = entry.contentRect.height;
       const previousHeight = composerFormHeightRef.current;
       composerFormHeightRef.current = nextHeight;
 
-      if (previousHeight > 0 && Math.abs(nextHeight - previousHeight) < 0.5) return;
+      if (previousHeight > 0 && Math.abs(nextHeight - previousHeight) < 0.5)
+        return;
       if (!shouldAutoScrollRef.current) return;
       scheduleStickToBottom();
     });
@@ -2091,8 +2427,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (activeThread.messages.length === 0) {
       return;
     }
-    const serverIds = new Set(activeThread.messages.map((message) => message.id));
-    const removedMessages = optimisticUserMessages.filter((message) => serverIds.has(message.id));
+    const serverIds = new Set(
+      activeThread.messages.map((message) => message.id),
+    );
+    const removedMessages = optimisticUserMessages.filter((message) =>
+      serverIds.has(message.id),
+    );
     if (removedMessages.length === 0) {
       return;
     }
@@ -2112,11 +2452,18 @@ export default function ChatView({ threadId }: ChatViewProps) {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [activeThread?.id, activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages]);
+  }, [
+    activeThread?.id,
+    activeThread?.messages,
+    handoffAttachmentPreviews,
+    optimisticUserMessages,
+  ]);
 
   useEffect(() => {
     promptRef.current = prompt;
-    setComposerCursor((existing) => Math.min(Math.max(0, existing), prompt.length));
+    setComposerCursor((existing) =>
+      Math.min(Math.max(0, existing), prompt.length),
+    );
   }, [prompt]);
 
   useEffect(() => {
@@ -2130,7 +2477,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
     setSendStartedAt(null);
     setComposerHighlightedItemId(null);
     setComposerCursor(promptRef.current.length);
-    setComposerTrigger(detectComposerTrigger(promptRef.current, promptRef.current.length));
+    setComposerTrigger(
+      detectComposerTrigger(promptRef.current, promptRef.current.length),
+    );
     dragDepthRef.current = 0;
     setIsDragOverComposer(false);
     setExpandedImage(null);
@@ -2144,13 +2493,20 @@ export default function ChatView({ threadId }: ChatViewProps) {
         return;
       }
       const getPersistedAttachmentsForThread = () =>
-        useComposerDraftStore.getState().draftsByThreadId[threadId]?.persistedAttachments ?? [];
+        useComposerDraftStore.getState().draftsByThreadId[threadId]
+          ?.persistedAttachments ?? [];
       try {
         const currentPersistedAttachments = getPersistedAttachmentsForThread();
         const existingPersistedById = new Map(
-          currentPersistedAttachments.map((attachment) => [attachment.id, attachment]),
+          currentPersistedAttachments.map((attachment) => [
+            attachment.id,
+            attachment,
+          ]),
         );
-        const stagedAttachmentById = new Map<string, PersistedComposerImageAttachment>();
+        const stagedAttachmentById = new Map<
+          string,
+          PersistedComposerImageAttachment
+        >();
         await Promise.all(
           composerImages.map(async (image) => {
             try {
@@ -2177,14 +2533,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
         // Stage attachments in persisted draft state first so persist middleware can write them.
         syncComposerDraftPersistedAttachments(threadId, serialized);
       } catch {
-        const currentImageIds = new Set(composerImages.map((image) => image.id));
+        const currentImageIds = new Set(
+          composerImages.map((image) => image.id),
+        );
         const fallbackPersistedAttachments = getPersistedAttachmentsForThread();
         const fallbackPersistedIds = fallbackPersistedAttachments
           .map((attachment) => attachment.id)
           .filter((id) => currentImageIds.has(id));
         const fallbackPersistedIdSet = new Set(fallbackPersistedIds);
-        const fallbackAttachments = fallbackPersistedAttachments.filter((attachment) =>
-          fallbackPersistedIdSet.has(attachment.id),
+        const fallbackAttachments = fallbackPersistedAttachments.filter(
+          (attachment) => fallbackPersistedIdSet.has(attachment.id),
         );
         if (cancelled) {
           return;
@@ -2211,7 +2569,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
         return existing;
       }
       const nextIndex =
-        (existing.index + direction + existing.images.length) % existing.images.length;
+        (existing.index + direction + existing.images.length) %
+        existing.images.length;
       if (nextIndex === existing.index) {
         return existing;
       }
@@ -2267,10 +2626,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
     };
   }, [phase]);
 
-  const beginSendPhase = useCallback((nextPhase: Exclude<SendPhase, "idle">) => {
-    setSendStartedAt((current) => current ?? new Date().toISOString());
-    setSendPhase(nextPhase);
-  }, []);
+  const beginSendPhase = useCallback(
+    (nextPhase: Exclude<SendPhase, "idle">) => {
+      setSendStartedAt((current) => current ?? new Date().toISOString());
+      setSendPhase(nextPhase);
+    },
+    [],
+  );
 
   const resetSendPhase = useCallback(() => {
     setSendPhase("idle");
@@ -2324,7 +2686,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const isTerminalFocused = (): boolean => {
       const activeElement = document.activeElement;
       if (!(activeElement instanceof HTMLElement)) return false;
-      if (activeElement.classList.contains("xterm-helper-textarea")) return true;
+      if (activeElement.classList.contains("xterm-helper-textarea"))
+        return true;
       return activeElement.closest(".thread-terminal-drawer .xterm") !== null;
     };
 
@@ -2335,7 +2698,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
         terminalOpen: Boolean(terminalState.terminalOpen),
       };
 
-      const command = resolveShortcutCommand(event, keybindings, { context: shortcutContext });
+      const command = resolveShortcutCommand(event, keybindings, {
+        context: shortcutContext,
+      });
       if (!command) return;
 
       if (command === "terminal.toggle") {
@@ -2382,7 +2747,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
       const scriptId = projectScriptIdFromCommand(command);
       if (!scriptId || !activeProject) return;
-      const script = activeProject.scripts.find((entry) => entry.id === scriptId);
+      const script = activeProject.scripts.find(
+        (entry) => entry.id === scriptId,
+      );
       if (!script) return;
       event.preventDefault();
       event.stopPropagation();
@@ -2487,7 +2854,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }
     event.preventDefault();
     const nextTarget = event.relatedTarget;
-    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+    if (
+      nextTarget instanceof Node &&
+      event.currentTarget.contains(nextTarget)
+    ) {
       return;
     }
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
@@ -2514,7 +2884,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
       if (!api || !activeThread || isRevertingCheckpoint) return;
 
       if (phase === "running" || isSendBusy || isConnecting) {
-        setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
+        setThreadError(
+          activeThread.id,
+          "Interrupt the current turn before reverting checkpoints.",
+        );
         return;
       }
       const confirmed = await api.dialogs.confirm(
@@ -2546,13 +2919,27 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       setIsRevertingCheckpoint(false);
     },
-    [activeThread, isConnecting, isRevertingCheckpoint, isSendBusy, phase, setThreadError],
+    [
+      activeThread,
+      isConnecting,
+      isRevertingCheckpoint,
+      isSendBusy,
+      phase,
+      setThreadError,
+    ],
   );
 
   const onSend = async (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
     const api = readNativeApi();
-    if (!api || !activeThread || isSendBusy || isConnecting || sendInFlightRef.current) return;
+    if (
+      !api ||
+      !activeThread ||
+      isSendBusy ||
+      isConnecting ||
+      sendInFlightRef.current
+    )
+      return;
     if (activePendingProgress) {
       onAdvanceActivePendingUserInput();
       return;
@@ -2575,7 +2962,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       return;
     }
     const standaloneSlashCommand =
-      composerImages.length === 0 ? parseStandaloneComposerSlashCommand(trimmed) : null;
+      composerImages.length === 0
+        ? parseStandaloneComposerSlashCommand(trimmed)
+        : null;
     if (standaloneSlashCommand) {
       await handleInteractionModeChange(standaloneSlashCommand);
       promptRef.current = "";
@@ -2588,7 +2977,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (!trimmed && composerImages.length === 0) return;
     if (!activeProject) return;
     const threadIdForSend = activeThread.id;
-    const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
+    const isFirstMessage =
+      !isServerThread || activeThread.messages.length === 0;
     const baseBranchForWorktree =
       isFirstMessage && envMode === "worktree" && !activeThread.worktreePath
         ? activeThread.branch
@@ -2607,7 +2997,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }
 
     sendInFlightRef.current = true;
-    beginSendPhase(baseBranchForWorktree ? "preparing-worktree" : "sending-turn");
+    beginSendPhase(
+      baseBranchForWorktree ? "preparing-worktree" : "sending-turn",
+    );
 
     const composerImagesSnapshot = [...composerImages];
     const messageIdForSend = newMessageId();
@@ -2635,7 +3027,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
         id: messageIdForSend,
         role: "user",
         text: trimmed,
-        ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+        ...(optimisticAttachments.length > 0
+          ? { attachments: optimisticAttachments }
+          : {}),
         createdAt: messageCreatedAt,
         streaming: false,
       },
@@ -2677,7 +3071,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
           });
           // Keep local thread state in sync immediately so terminal drawer opens
           // with the worktree cwd/env instead of briefly using the project root.
-          setStoreThreadBranch(threadIdForSend, result.worktree.branch, result.worktree.path);
+          setStoreThreadBranch(
+            threadIdForSend,
+            result.worktree.branch,
+            result.worktree.path,
+          );
         }
       }
 
@@ -2698,7 +3096,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       const title = truncateTitle(titleSeed);
       let threadCreateModel: ModelSlug =
-        selectedModel || (activeProject.model as ModelSlug) || DEFAULT_MODEL_BY_PROVIDER.codex;
+        selectedModel ||
+        (activeProject.model as ModelSlug) ||
+        DEFAULT_MODEL_BY_PROVIDER.codex;
 
       if (isLocalDraftThread) {
         await api.orchestration.dispatchCommand({
@@ -2779,9 +3179,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
         ...(selectedModelOptionsForDispatch
           ? { modelOptions: selectedModelOptionsForDispatch }
           : {}),
-        ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
+        ...(providerOptionsForDispatch
+          ? { providerOptions: providerOptionsForDispatch }
+          : {}),
         provider: selectedProvider,
-        assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+        assistantDeliveryMode: settings.enableAssistantStreaming
+          ? "streaming"
+          : "buffered",
         runtimeMode,
         interactionMode,
         createdAt: messageCreatedAt,
@@ -2803,17 +3207,23 @@ export default function ChatView({ threadId }: ChatViewProps) {
         composerImagesRef.current.length === 0
       ) {
         setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
+          const removed = existing.filter(
+            (message) => message.id === messageIdForSend,
+          );
           for (const message of removed) {
             revokeUserMessagePreviewUrls(message);
           }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
+          const next = existing.filter(
+            (message) => message.id !== messageIdForSend,
+          );
           return next.length === existing.length ? existing : next;
         });
         promptRef.current = trimmed;
         setPrompt(trimmed);
         setComposerCursor(trimmed.length);
-        addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageForRetry));
+        addComposerImagesToDraft(
+          composerImagesSnapshot.map(cloneComposerImageForRetry),
+        );
         setComposerTrigger(detectComposerTrigger(trimmed, trimmed.length));
       }
       setThreadError(
@@ -2839,7 +3249,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
   };
 
   const onRespondToApproval = useCallback(
-    async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
+    async (
+      requestId: ApprovalRequestId,
+      decision: ProviderApprovalDecision,
+    ) => {
       const api = readNativeApi();
       if (!api || !activeThreadId) return;
 
@@ -2858,10 +3271,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
         .catch((err: unknown) => {
           setStoreThreadError(
             activeThreadId,
-            err instanceof Error ? err.message : "Failed to submit approval decision.",
+            err instanceof Error
+              ? err.message
+              : "Failed to submit approval decision.",
           );
         });
-      setRespondingRequestIds((existing) => existing.filter((id) => id !== requestId));
+      setRespondingRequestIds((existing) =>
+        existing.filter((id) => id !== requestId),
+      );
     },
     [activeThreadId, setStoreThreadError],
   );
@@ -2889,7 +3306,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
             err instanceof Error ? err.message : "Failed to submit user input.",
           );
         });
-      setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
+      setRespondingUserInputRequestIds((existing) =>
+        existing.filter((id) => id !== requestId),
+      );
     },
     [activeThreadId, setStoreThreadError],
   );
@@ -2930,7 +3349,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
 
   const onChangeActivePendingUserInputCustomAnswer = useCallback(
-    (questionId: string, value: string, nextCursor: number, cursorAdjacentToMention: boolean) => {
+    (
+      questionId: string,
+      value: string,
+      nextCursor: number,
+      cursorAdjacentToMention: boolean,
+    ) => {
       if (!activePendingUserInput) {
         return;
       }
@@ -2949,7 +3373,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerTrigger(
         cursorAdjacentToMention
           ? null
-          : detectComposerTrigger(value, expandCollapsedComposerCursor(value, nextCursor)),
+          : detectComposerTrigger(
+              value,
+              expandCollapsedComposerCursor(value, nextCursor),
+            ),
       );
     },
     [activePendingUserInput],
@@ -2961,11 +3388,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }
     if (activePendingProgress.isLastQuestion) {
       if (activePendingResolvedAnswers) {
-        void onRespondToUserInput(activePendingUserInput.requestId, activePendingResolvedAnswers);
+        void onRespondToUserInput(
+          activePendingUserInput.requestId,
+          activePendingResolvedAnswers,
+        );
       }
       return;
     }
-    setActivePendingUserInputQuestionIndex(activePendingProgress.questionIndex + 1);
+    setActivePendingUserInputQuestionIndex(
+      activePendingProgress.questionIndex + 1,
+    );
   }, [
     activePendingProgress,
     activePendingResolvedAnswers,
@@ -2978,7 +3410,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (!activePendingProgress) {
       return;
     }
-    setActivePendingUserInputQuestionIndex(Math.max(activePendingProgress.questionIndex - 1, 0));
+    setActivePendingUserInputQuestionIndex(
+      Math.max(activePendingProgress.questionIndex - 1, 0),
+    );
   }, [activePendingProgress, setActivePendingUserInputQuestionIndex]);
 
   const onSubmitPlanFollowUp = useCallback(
@@ -3054,8 +3488,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ...(selectedModelOptionsForDispatch
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
-          ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
-          assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+          ...(providerOptionsForDispatch
+            ? { providerOptions: providerOptionsForDispatch }
+            : {}),
+          assistantDeliveryMode: settings.enableAssistantStreaming
+            ? "streaming"
+            : "buffered",
           runtimeMode,
           interactionMode: nextInteractionMode,
           createdAt: messageCreatedAt,
@@ -3119,7 +3557,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const nextThreadId = newThreadId();
     const planMarkdown = activeProposedPlan.planMarkdown;
     const implementationPrompt = buildPlanImplementationPrompt(planMarkdown);
-    const nextThreadTitle = truncateTitle(buildPlanImplementationThreadTitle(planMarkdown));
+    const nextThreadTitle = truncateTitle(
+      buildPlanImplementationThreadTitle(planMarkdown),
+    );
     const nextThreadModel: ModelSlug =
       selectedModel ||
       (activeThread.model as ModelSlug) ||
@@ -3163,8 +3603,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ...(selectedModelOptionsForDispatch
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
-          ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
-          assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+          ...(providerOptionsForDispatch
+            ? { providerOptions: providerOptionsForDispatch }
+            : {}),
+          assistantDeliveryMode: settings.enableAssistantStreaming
+            ? "streaming"
+            : "buffered",
           runtimeMode,
           interactionMode: "default",
           createdAt,
@@ -3198,7 +3642,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
           type: "error",
           title: "Could not start implementation thread",
           description:
-            err instanceof Error ? err.message : "An error occurred while creating the new thread.",
+            err instanceof Error
+              ? err.message
+              : "An error occurred while creating the new thread.",
         });
       })
       .then(finish, finish);
@@ -3231,7 +3677,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerDraftProvider(activeThread.id, provider);
       setComposerDraftModel(
         activeThread.id,
-        resolveAppModelSelection(provider, settings.customCodexModels, model),
+        resolveAppModelSelection(
+          provider,
+          getCustomModelsForProvider(settings, provider),
+          model,
+        ),
       );
       scheduleComposerFocus();
     },
@@ -3241,7 +3691,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       scheduleComposerFocus,
       setComposerDraftModel,
       setComposerDraftProvider,
-      settings.customCodexModels,
+      settings,
     ],
   );
   const onEffortSelect = useCallback(
@@ -3265,7 +3715,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       scheduleComposerFocus();
     },
-    [isLocalDraftThread, scheduleComposerFocus, setDraftThreadContext, threadId],
+    [
+      isLocalDraftThread,
+      scheduleComposerFocus,
+      setDraftThreadContext,
+      threadId,
+    ],
   );
 
   const applyPromptReplacement = useCallback(
@@ -3277,14 +3732,22 @@ export default function ChatView({ threadId }: ChatViewProps) {
     ): boolean => {
       const currentText = promptRef.current;
       const safeStart = Math.max(0, Math.min(currentText.length, rangeStart));
-      const safeEnd = Math.max(safeStart, Math.min(currentText.length, rangeEnd));
+      const safeEnd = Math.max(
+        safeStart,
+        Math.min(currentText.length, rangeEnd),
+      );
       if (
         options?.expectedText !== undefined &&
         currentText.slice(safeStart, safeEnd) !== options.expectedText
       ) {
         return false;
       }
-      const next = replaceTextRange(promptRef.current, rangeStart, rangeEnd, replacement);
+      const next = replaceTextRange(
+        promptRef.current,
+        rangeStart,
+        rangeEnd,
+        replacement,
+      );
       promptRef.current = next.text;
       const activePendingQuestion = activePendingProgress?.activeQuestion;
       if (activePendingQuestion && activePendingUserInput) {
@@ -3293,7 +3756,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
           [activePendingUserInput.requestId]: {
             ...existing[activePendingUserInput.requestId],
             [activePendingQuestion.id]: setPendingUserInputCustomAnswer(
-              existing[activePendingUserInput.requestId]?.[activePendingQuestion.id],
+              existing[activePendingUserInput.requestId]?.[
+                activePendingQuestion.id
+              ],
               next.text,
             ),
           },
@@ -3311,7 +3776,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [activePendingProgress?.activeQuestion, activePendingUserInput, setPrompt],
   );
 
-  const readComposerSnapshot = useCallback((): { value: string; cursor: number } => {
+  const readComposerSnapshot = useCallback((): {
+    value: string;
+    cursor: number;
+  } => {
     const editorSnapshot = composerEditorRef.current?.readSnapshot();
     if (editorSnapshot) {
       return editorSnapshot;
@@ -3324,7 +3792,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
     trigger: ComposerTrigger | null;
   } => {
     const snapshot = readComposerSnapshot();
-    const expandedCursor = expandCollapsedComposerCursor(snapshot.value, snapshot.cursor);
+    const expandedCursor = expandCollapsedComposerCursor(
+      snapshot.value,
+      snapshot.cursor,
+    );
     return {
       snapshot,
       trigger: detectComposerTrigger(snapshot.value, expandedCursor),
@@ -3340,7 +3811,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
       });
       const { snapshot, trigger } = resolveActiveComposerTrigger();
       if (!trigger) return;
-      const expectedToken = snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd);
+      const expectedToken = snapshot.value.slice(
+        trigger.rangeStart,
+        trigger.rangeEnd,
+      );
       if (item.type === "path") {
         const applied = applyPromptReplacement(
           trigger.rangeStart,
@@ -3355,27 +3829,44 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       if (item.type === "slash-command") {
         if (item.command === "model") {
-          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "/model ", {
-            expectedText: expectedToken,
-          });
+          const applied = applyPromptReplacement(
+            trigger.rangeStart,
+            trigger.rangeEnd,
+            "/model ",
+            {
+              expectedText: expectedToken,
+            },
+          );
           if (applied) {
             setComposerHighlightedItemId(null);
           }
           return;
         }
-        void handleInteractionModeChange(item.command === "plan" ? "plan" : "default");
-        const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
-          expectedText: expectedToken,
-        });
+        void handleInteractionModeChange(
+          item.command === "plan" ? "plan" : "default",
+        );
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          trigger.rangeEnd,
+          "",
+          {
+            expectedText: expectedToken,
+          },
+        );
         if (applied) {
           setComposerHighlightedItemId(null);
         }
         return;
       }
       onProviderModelSelect(item.provider, item.model);
-      const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
-        expectedText: expectedToken,
-      });
+      const applied = applyPromptReplacement(
+        trigger.rangeStart,
+        trigger.rangeEnd,
+        "",
+        {
+          expectedText: expectedToken,
+        },
+      );
       if (applied) {
         setComposerHighlightedItemId(null);
       }
@@ -3402,7 +3893,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
         highlightedIndex >= 0 ? highlightedIndex : key === "ArrowDown" ? -1 : 0;
       const offset = key === "ArrowDown" ? 1 : -1;
       const nextIndex =
-        (normalizedIndex + offset + composerMenuItems.length) % composerMenuItems.length;
+        (normalizedIndex + offset + composerMenuItems.length) %
+        composerMenuItems.length;
       const nextItem = composerMenuItems[nextIndex];
       setComposerHighlightedItemId(nextItem?.id ?? null);
     },
@@ -3410,12 +3902,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const isComposerMenuLoading =
     composerTriggerKind === "path" &&
-    ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
+    ((pathTriggerQuery.length > 0 &&
+      composerPathQueryDebouncer.state.isPending) ||
       workspaceEntriesQuery.isLoading ||
       workspaceEntriesQuery.isFetching);
 
   const onPromptChange = useCallback(
-    (nextPrompt: string, nextCursor: number, cursorAdjacentToMention: boolean) => {
+    (
+      nextPrompt: string,
+      nextCursor: number,
+      cursorAdjacentToMention: boolean,
+    ) => {
       if (activePendingProgress?.activeQuestion && activePendingUserInput) {
         onChangeActivePendingUserInputCustomAnswer(
           activePendingProgress.activeQuestion.id,
@@ -3468,7 +3965,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
         return true;
       }
       if (key === "Tab" || key === "Enter") {
-        const selectedItem = activeComposerMenuItemRef.current ?? currentItems[0];
+        const selectedItem =
+          activeComposerMenuItemRef.current ?? currentItems[0];
         if (selectedItem) {
           onSelectComposerItem(selectedItem);
           return true;
@@ -3491,7 +3989,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
     setExpandedImage(preview);
   }, []);
-  const expandedImageItem = expandedImage ? expandedImage.images[expandedImage.index] : null;
+  const expandedImageItem = expandedImage
+    ? expandedImage.images[expandedImage.index]
+    : null;
   const onOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string) => {
       void navigate({
@@ -3523,18 +4023,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
           <header className="border-b border-border px-3 py-2 md:hidden">
             <div className="flex items-center gap-2">
               <SidebarTrigger className="size-7 shrink-0" />
-              <span className="text-sm font-medium text-foreground">Threads</span>
+              <span className="text-sm font-medium text-foreground">
+                Threads
+              </span>
             </div>
           </header>
         )}
         {isElectron && (
           <div className="drag-region flex h-[52px] shrink-0 items-center border-b border-border px-5">
-            <span className="text-xs text-muted-foreground/50">No active thread</span>
+            <span className="text-xs text-muted-foreground/50">
+              No active thread
+            </span>
           </div>
         )}
         <div className="flex flex-1 items-center justify-center">
           <div className="text-center">
-            <p className="text-sm">Select a thread or create a new one to get started.</p>
+            <p className="text-sm">
+              Select a thread or create a new one to get started.
+            </p>
           </div>
         </div>
       </div>
@@ -3547,7 +4053,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       <header
         className={cn(
           "border-b border-border px-3 sm:px-5",
-          isElectron ? "drag-region flex h-[52px] items-center" : "py-2 sm:py-3",
+          isElectron
+            ? "drag-region flex h-[52px] items-center"
+            : "py-2 sm:py-3",
         )}
       >
         <ChatHeader
@@ -3558,7 +4066,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
           openInCwd={activeThread.worktreePath ?? activeProject?.cwd ?? null}
           activeProjectScripts={activeProject?.scripts}
           preferredScriptId={
-            activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
+            activeProject
+              ? (lastInvokedScriptByProjectId[activeProject.id] ?? null)
+              : null
           }
           keybindings={keybindings}
           availableEditors={availableEditors}
@@ -3602,6 +4112,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           >
             <MessagesTimeline
               key={activeThread.id}
+              activeProvider={activeProvider}
               hasMessages={timelineEntries.length > 0}
               isWorking={isWorking}
               activeTurnInProgress={isWorking || !latestTurnSettled}
@@ -3610,7 +4121,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
               timelineEntries={timelineEntries}
               completionDividerBeforeEntryId={completionDividerBeforeEntryId}
               completionSummary={completionSummary}
-              turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+              turnDiffSummaryByAssistantMessageId={
+                turnDiffSummaryByAssistantMessageId
+              }
               nowIso={nowIso}
               expandedWorkGroups={expandedWorkGroups}
               onToggleWorkGroup={onToggleWorkGroup}
@@ -3626,7 +4139,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
           </div>
 
           {/* Input bar */}
-          <div className={cn("px-3 pt-1.5 sm:px-5 sm:pt-2", isGitRepo ? "pb-1" : "pb-3 sm:pb-4")}>
+          <div
+            className={cn(
+              "px-3 pt-1.5 sm:px-5 sm:pt-2",
+              isGitRepo ? "pb-1" : "pb-3 sm:pb-4",
+            )}
+          >
             <form
               ref={composerFormRef}
               onSubmit={onSend}
@@ -3635,7 +4153,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
             >
               <div
                 className={`group rounded-[20px] border bg-card transition-colors duration-200 focus-within:border-ring/45 ${
-                  isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border"
+                  isDragOverComposer
+                    ? "border-primary/70 bg-accent/30"
+                    : "border-border"
                 }`}
                 onDragEnter={onComposerDragEnter}
                 onDragOver={onComposerDragOver}
@@ -3647,6 +4167,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     <ComposerPendingApprovalPanel
                       approval={activePendingApproval}
                       pendingCount={pendingApprovals.length}
+                      provider={activeProvider}
                     />
                   </div>
                 ) : pendingUserInputs.length > 0 ? (
@@ -3664,7 +4185,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
                   <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
                     <ComposerPlanFollowUpBanner
                       key={activeProposedPlan.id}
-                      planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
+                      planTitle={
+                        proposedPlanTitle(activeProposedPlan.planMarkdown) ??
+                        null
+                      }
                     />
                   </div>
                 ) : null}
@@ -3741,8 +4265,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                   side="top"
                                   className="max-w-64 whitespace-normal leading-tight"
                                 >
-                                  Draft attachment could not be saved locally and may be lost on
-                                  navigation.
+                                  Draft attachment could not be saved locally
+                                  and may be lost on navigation.
                                 </TooltipPopup>
                               </Tooltip>
                             )}
@@ -3793,7 +4317,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
                   <div className="flex items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
                     <ComposerPendingApprovalActions
                       requestId={activePendingApproval.requestId}
-                      isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
+                      isResponding={respondingRequestIds.includes(
+                        activePendingApproval.requestId,
+                      )}
                       onRespondToApproval={onRespondToApproval}
                     />
                   </div>
@@ -3827,13 +4353,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
                       {isComposerFooterCompact ? (
                         <CompactComposerControlsMenu
-                          activePlan={Boolean(activePlan || activeProposedPlan || planSidebarOpen)}
+                          activePlan={Boolean(
+                            activePlan || activeProposedPlan || planSidebarOpen,
+                          )}
                           interactionMode={interactionMode}
                           planSidebarOpen={planSidebarOpen}
                           runtimeMode={runtimeMode}
                           selectedEffort={selectedEffort}
                           selectedProvider={selectedProvider}
-                          selectedCodexFastModeEnabled={selectedCodexFastModeEnabled}
+                          selectedCodexFastModeEnabled={
+                            selectedCodexFastModeEnabled
+                          }
                           reasoningOptions={reasoningOptions}
                           onEffortSelect={onEffortSelect}
                           onCodexFastModeChange={onCodexFastModeChange}
@@ -3843,7 +4373,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
                         />
                       ) : (
                         <>
-                          {selectedProvider === "codex" && selectedEffort != null ? (
+                          {selectedProvider === "codex" &&
+                          selectedEffort != null ? (
                             <>
                               <Separator
                                 orientation="vertical"
@@ -3894,7 +4425,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
                             type="button"
                             onClick={() =>
                               void handleRuntimeModeChange(
-                                runtimeMode === "full-access" ? "approval-required" : "full-access",
+                                runtimeMode === "full-access"
+                                  ? "approval-required"
+                                  : "full-access",
                               )
                             }
                             title={
@@ -3903,13 +4436,21 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                 : "Approval required — click for full access"
                             }
                           >
-                            {runtimeMode === "full-access" ? <LockOpenIcon /> : <LockIcon />}
+                            {runtimeMode === "full-access" ? (
+                              <LockOpenIcon />
+                            ) : (
+                              <LockIcon />
+                            )}
                             <span className="sr-only sm:not-sr-only">
-                              {runtimeMode === "full-access" ? "Full access" : "Supervised"}
+                              {runtimeMode === "full-access"
+                                ? "Full access"
+                                : "Supervised"}
                             </span>
                           </Button>
 
-                          {activePlan || activeProposedPlan || planSidebarOpen ? (
+                          {activePlan ||
+                          activeProposedPlan ||
+                          planSidebarOpen ? (
                             <>
                               <Separator
                                 orientation="vertical"
@@ -3926,10 +4467,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                 size="sm"
                                 type="button"
                                 onClick={togglePlanSidebar}
-                                title={planSidebarOpen ? "Hide plan sidebar" : "Show plan sidebar"}
+                                title={
+                                  planSidebarOpen
+                                    ? "Hide plan sidebar"
+                                    : "Show plan sidebar"
+                                }
                               >
                                 <ListTodoIcon />
-                                <span className="sr-only sm:not-sr-only">Plan</span>
+                                <span className="sr-only sm:not-sr-only">
+                                  Plan
+                                </span>
                               </Button>
                             </>
                           ) : null}
@@ -4004,7 +4551,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
                               className="h-9 rounded-full px-4 sm:h-8"
                               disabled={isSendBusy || isConnecting}
                             >
-                              {isConnecting || isSendBusy ? "Sending..." : "Refine"}
+                              {isConnecting || isSendBusy
+                                ? "Sending..."
+                                : "Refine"}
                             </Button>
                           ) : (
                             <div className="flex items-center">
@@ -4014,7 +4563,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                 className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
                                 disabled={isSendBusy || isConnecting}
                               >
-                                {isConnecting || isSendBusy ? "Sending..." : "Implement"}
+                                {isConnecting || isSendBusy
+                                  ? "Sending..."
+                                  : "Implement"}
                               </Button>
                               <Menu>
                                 <MenuTrigger
@@ -4033,7 +4584,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                 <MenuPopup align="end" side="top">
                                   <MenuItem
                                     disabled={isSendBusy || isConnecting}
-                                    onClick={() => void onImplementPlanInNewThread()}
+                                    onClick={() =>
+                                      void onImplementPlanInNewThread()
+                                    }
                                   >
                                     Implement in new thread
                                   </MenuItem>
@@ -4144,7 +4697,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
             onClose={() => {
               setPlanSidebarOpen(false);
               // Track that the user explicitly dismissed for this turn so auto-open won't fight them.
-              const turnKey = activePlan?.turnId ?? activeProposedPlan?.turnId ?? null;
+              const turnKey =
+                activePlan?.turnId ?? activeProposedPlan?.turnId ?? null;
               if (turnKey) {
                 planSidebarDismissedForTurnRef.current = turnKey;
               }
@@ -4268,7 +4822,10 @@ interface ChatHeaderProps {
   diffOpen: boolean;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
-  onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
+  onUpdateProjectScript: (
+    scriptId: string,
+    input: NewProjectScriptInput,
+  ) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onToggleDiff: () => void;
 }
@@ -4308,7 +4865,10 @@ const ChatHeader = memo(function ChatHeader({
           </Badge>
         )}
         {activeProjectName && !isGitRepo && (
-          <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
+          <Badge
+            variant="outline"
+            className="shrink-0 text-[10px] text-amber-700"
+          >
             No Git
           </Badge>
         )}
@@ -4332,7 +4892,9 @@ const ChatHeader = memo(function ChatHeader({
             openInCwd={openInCwd}
           />
         )}
-        {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
+        {activeProjectName && (
+          <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />
+        )}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -4405,17 +4967,18 @@ const ProviderHealthBanner = memo(function ProviderHealthBanner({
 
   const defaultMessage =
     status.status === "error"
-      ? `${status.provider} provider is unavailable.`
-      : `${status.provider} provider has limited availability.`;
+      ? `${PROVIDER_LABELS[status.provider]} provider is unavailable.`
+      : `${PROVIDER_LABELS[status.provider]} provider has limited availability.`;
 
   return (
     <div className="pt-3 mx-auto max-w-3xl">
       <Alert variant={status.status === "error" ? "error" : "warning"}>
         <CircleAlertIcon />
-        <AlertTitle>
-          {status.provider === "codex" ? "Codex provider status" : `${status.provider} status`}
-        </AlertTitle>
-        <AlertDescription className="line-clamp-3" title={status.message ?? defaultMessage}>
+        <AlertTitle>{`${PROVIDER_LABELS[status.provider]} provider status`}</AlertTitle>
+        <AlertDescription
+          className="line-clamp-3"
+          title={status.message ?? defaultMessage}
+        >
           {status.message ?? defaultMessage}
         </AlertDescription>
       </Alert>
@@ -4426,31 +4989,45 @@ const ProviderHealthBanner = memo(function ProviderHealthBanner({
 interface ComposerPendingApprovalPanelProps {
   approval: PendingApproval;
   pendingCount: number;
+  provider: ProviderKind;
 }
 
-const ComposerPendingApprovalPanel = memo(function ComposerPendingApprovalPanel({
-  approval,
-  pendingCount,
-}: ComposerPendingApprovalPanelProps) {
-  const approvalSummary =
-    approval.requestKind === "command"
-      ? "Command approval requested"
-      : approval.requestKind === "file-read"
-        ? "File-read approval requested"
-        : "File-change approval requested";
+const ComposerPendingApprovalPanel = memo(
+  function ComposerPendingApprovalPanel({
+    approval,
+    pendingCount,
+    provider,
+  }: ComposerPendingApprovalPanelProps) {
+    const approvalSummary =
+      approval.requestKind === "command"
+        ? "Command approval requested"
+        : approval.requestKind === "file-read"
+          ? "File-read approval requested"
+          : "File-change approval requested";
 
-  return (
-    <div className="px-4 py-3.5 sm:px-5 sm:py-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="uppercase text-sm tracking-[0.2em]">PENDING APPROVAL</span>
-        <span className="text-sm font-medium">{approvalSummary}</span>
-        {pendingCount > 1 ? (
-          <span className="text-xs text-muted-foreground">1/{pendingCount}</span>
-        ) : null}
+    return (
+      <div className="px-4 py-3.5 sm:px-5 sm:py-4">
+        <div className="mb-2">
+          <ProviderRuntimeBadge
+            provider={provider}
+            label={`${PROVIDER_LABELS[provider]} approval`}
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="uppercase text-sm tracking-[0.2em]">
+            PENDING APPROVAL
+          </span>
+          <span className="text-sm font-medium">{approvalSummary}</span>
+          {pendingCount > 1 ? (
+            <span className="text-xs text-muted-foreground">
+              1/{pendingCount}
+            </span>
+          ) : null}
+        </div>
       </div>
-    </div>
-  );
-});
+    );
+  },
+);
 
 interface ComposerPendingApprovalActionsProps {
   requestId: ApprovalRequestId;
@@ -4461,48 +5038,52 @@ interface ComposerPendingApprovalActionsProps {
   ) => Promise<void>;
 }
 
-const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActions({
-  requestId,
-  isResponding,
-  onRespondToApproval,
-}: ComposerPendingApprovalActionsProps) {
-  return (
-    <>
-      <Button
-        size="sm"
-        variant="ghost"
-        disabled={isResponding}
-        onClick={() => void onRespondToApproval(requestId, "cancel")}
-      >
-        Cancel turn
-      </Button>
-      <Button
-        size="sm"
-        variant="destructive-outline"
-        disabled={isResponding}
-        onClick={() => void onRespondToApproval(requestId, "decline")}
-      >
-        Decline
-      </Button>
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={isResponding}
-        onClick={() => void onRespondToApproval(requestId, "acceptForSession")}
-      >
-        Always allow this session
-      </Button>
-      <Button
-        size="sm"
-        variant="default"
-        disabled={isResponding}
-        onClick={() => void onRespondToApproval(requestId, "accept")}
-      >
-        Approve once
-      </Button>
-    </>
-  );
-});
+const ComposerPendingApprovalActions = memo(
+  function ComposerPendingApprovalActions({
+    requestId,
+    isResponding,
+    onRespondToApproval,
+  }: ComposerPendingApprovalActionsProps) {
+    return (
+      <>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={isResponding}
+          onClick={() => void onRespondToApproval(requestId, "cancel")}
+        >
+          Cancel turn
+        </Button>
+        <Button
+          size="sm"
+          variant="destructive-outline"
+          disabled={isResponding}
+          onClick={() => void onRespondToApproval(requestId, "decline")}
+        >
+          Decline
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={isResponding}
+          onClick={() =>
+            void onRespondToApproval(requestId, "acceptForSession")
+          }
+        >
+          Always allow this session
+        </Button>
+        <Button
+          size="sm"
+          variant="default"
+          disabled={isResponding}
+          onClick={() => void onRespondToApproval(requestId, "accept")}
+        >
+          Approve once
+        </Button>
+      </>
+    );
+  },
+);
 
 interface PendingUserInputPanelProps {
   pendingUserInputs: PendingUserInput[];
@@ -4513,169 +5094,191 @@ interface PendingUserInputPanelProps {
   onAdvance: () => void;
 }
 
-const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
-  pendingUserInputs,
-  respondingRequestIds,
-  answers,
-  questionIndex,
-  onSelectOption,
-  onAdvance,
-}: PendingUserInputPanelProps) {
-  if (pendingUserInputs.length === 0) return null;
-  const activePrompt = pendingUserInputs[0];
-  if (!activePrompt) return null;
+const ComposerPendingUserInputPanel = memo(
+  function ComposerPendingUserInputPanel({
+    pendingUserInputs,
+    respondingRequestIds,
+    answers,
+    questionIndex,
+    onSelectOption,
+    onAdvance,
+  }: PendingUserInputPanelProps) {
+    if (pendingUserInputs.length === 0) return null;
+    const activePrompt = pendingUserInputs[0];
+    if (!activePrompt) return null;
 
-  return (
-    <ComposerPendingUserInputCard
-      key={activePrompt.requestId}
-      prompt={activePrompt}
-      isResponding={respondingRequestIds.includes(activePrompt.requestId)}
-      answers={answers}
-      questionIndex={questionIndex}
-      onSelectOption={onSelectOption}
-      onAdvance={onAdvance}
-    />
-  );
-});
+    return (
+      <ComposerPendingUserInputCard
+        key={activePrompt.requestId}
+        prompt={activePrompt}
+        isResponding={respondingRequestIds.includes(activePrompt.requestId)}
+        answers={answers}
+        questionIndex={questionIndex}
+        onSelectOption={onSelectOption}
+        onAdvance={onAdvance}
+      />
+    );
+  },
+);
 
-const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard({
-  prompt,
-  isResponding,
-  answers,
-  questionIndex,
-  onSelectOption,
-  onAdvance,
-}: {
-  prompt: PendingUserInput;
-  isResponding: boolean;
-  answers: Record<string, PendingUserInputDraftAnswer>;
-  questionIndex: number;
-  onSelectOption: (questionId: string, optionLabel: string) => void;
-  onAdvance: () => void;
-}) {
-  const progress = derivePendingUserInputProgress(prompt.questions, answers, questionIndex);
-  const activeQuestion = progress.activeQuestion;
-  const autoAdvanceTimerRef = useRef<number | null>(null);
+const ComposerPendingUserInputCard = memo(
+  function ComposerPendingUserInputCard({
+    prompt,
+    isResponding,
+    answers,
+    questionIndex,
+    onSelectOption,
+    onAdvance,
+  }: {
+    prompt: PendingUserInput;
+    isResponding: boolean;
+    answers: Record<string, PendingUserInputDraftAnswer>;
+    questionIndex: number;
+    onSelectOption: (questionId: string, optionLabel: string) => void;
+    onAdvance: () => void;
+  }) {
+    const progress = derivePendingUserInputProgress(
+      prompt.questions,
+      answers,
+      questionIndex,
+    );
+    const activeQuestion = progress.activeQuestion;
+    const autoAdvanceTimerRef = useRef<number | null>(null);
 
-  // Clear auto-advance timer on unmount
-  useEffect(() => {
-    return () => {
-      if (autoAdvanceTimerRef.current !== null) {
-        window.clearTimeout(autoAdvanceTimerRef.current);
-      }
-    };
-  }, []);
+    // Clear auto-advance timer on unmount
+    useEffect(() => {
+      return () => {
+        if (autoAdvanceTimerRef.current !== null) {
+          window.clearTimeout(autoAdvanceTimerRef.current);
+        }
+      };
+    }, []);
 
-  const selectOptionAndAutoAdvance = useCallback(
-    (questionId: string, optionLabel: string) => {
-      onSelectOption(questionId, optionLabel);
-      if (autoAdvanceTimerRef.current !== null) {
-        window.clearTimeout(autoAdvanceTimerRef.current);
-      }
-      autoAdvanceTimerRef.current = window.setTimeout(() => {
-        autoAdvanceTimerRef.current = null;
-        onAdvance();
-      }, 200);
-    },
-    [onSelectOption, onAdvance],
-  );
+    const selectOptionAndAutoAdvance = useCallback(
+      (questionId: string, optionLabel: string) => {
+        onSelectOption(questionId, optionLabel);
+        if (autoAdvanceTimerRef.current !== null) {
+          window.clearTimeout(autoAdvanceTimerRef.current);
+        }
+        autoAdvanceTimerRef.current = window.setTimeout(() => {
+          autoAdvanceTimerRef.current = null;
+          onAdvance();
+        }, 200);
+      },
+      [onSelectOption, onAdvance],
+    );
 
-  // Keyboard shortcut: number keys 1-9 select corresponding option and auto-advance.
-  // Works even when the Lexical composer (contenteditable) has focus — the composer
-  // doubles as a custom-answer field during user input, and when it's empty the digit
-  // keys should pick options instead of typing into the editor.
-  useEffect(() => {
-    if (!activeQuestion || isResponding) return;
-    const handler = (event: globalThis.KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-        return;
-      }
-      // If the user has started typing a custom answer in the contenteditable
-      // composer, let digit keys pass through so they can type numbers.
-      if (target instanceof HTMLElement && target.isContentEditable) {
-        const hasCustomText = progress.customAnswer.length > 0;
-        if (hasCustomText) return;
-      }
-      const digit = Number.parseInt(event.key, 10);
-      if (Number.isNaN(digit) || digit < 1 || digit > 9) return;
-      const optionIndex = digit - 1;
-      if (optionIndex >= activeQuestion.options.length) return;
-      const option = activeQuestion.options[optionIndex];
-      if (!option) return;
-      event.preventDefault();
-      selectOptionAndAutoAdvance(activeQuestion.id, option.label);
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [activeQuestion, isResponding, selectOptionAndAutoAdvance, progress.customAnswer.length]);
+    // Keyboard shortcut: number keys 1-9 select corresponding option and auto-advance.
+    // Works even when the Lexical composer (contenteditable) has focus — the composer
+    // doubles as a custom-answer field during user input, and when it's empty the digit
+    // keys should pick options instead of typing into the editor.
+    useEffect(() => {
+      if (!activeQuestion || isResponding) return;
+      const handler = (event: globalThis.KeyboardEvent) => {
+        if (event.metaKey || event.ctrlKey || event.altKey) return;
+        const target = event.target;
+        if (
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement
+        ) {
+          return;
+        }
+        // If the user has started typing a custom answer in the contenteditable
+        // composer, let digit keys pass through so they can type numbers.
+        if (target instanceof HTMLElement && target.isContentEditable) {
+          const hasCustomText = progress.customAnswer.length > 0;
+          if (hasCustomText) return;
+        }
+        const digit = Number.parseInt(event.key, 10);
+        if (Number.isNaN(digit) || digit < 1 || digit > 9) return;
+        const optionIndex = digit - 1;
+        if (optionIndex >= activeQuestion.options.length) return;
+        const option = activeQuestion.options[optionIndex];
+        if (!option) return;
+        event.preventDefault();
+        selectOptionAndAutoAdvance(activeQuestion.id, option.label);
+      };
+      document.addEventListener("keydown", handler);
+      return () => document.removeEventListener("keydown", handler);
+    }, [
+      activeQuestion,
+      isResponding,
+      selectOptionAndAutoAdvance,
+      progress.customAnswer.length,
+    ]);
 
-  if (!activeQuestion) {
-    return null;
-  }
+    if (!activeQuestion) {
+      return null;
+    }
 
-  return (
-    <div className="px-4 py-3 sm:px-5">
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2">
-          {prompt.questions.length > 1 ? (
-            <span className="flex h-5 items-center rounded-md bg-muted/60 px-1.5 text-[10px] font-medium tabular-nums text-muted-foreground/60">
-              {questionIndex + 1}/{prompt.questions.length}
+    return (
+      <div className="px-4 py-3 sm:px-5">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            {prompt.questions.length > 1 ? (
+              <span className="flex h-5 items-center rounded-md bg-muted/60 px-1.5 text-[10px] font-medium tabular-nums text-muted-foreground/60">
+                {questionIndex + 1}/{prompt.questions.length}
+              </span>
+            ) : null}
+            <span className="text-[11px] font-semibold tracking-widest text-muted-foreground/50 uppercase">
+              {activeQuestion.header}
             </span>
-          ) : null}
-          <span className="text-[11px] font-semibold tracking-widest text-muted-foreground/50 uppercase">
-            {activeQuestion.header}
-          </span>
+          </div>
+        </div>
+        <p className="mt-1.5 text-sm text-foreground/90">
+          {activeQuestion.question}
+        </p>
+        <div className="mt-3 space-y-1">
+          {activeQuestion.options.map((option, index) => {
+            const isSelected = progress.selectedOptionLabel === option.label;
+            const shortcutKey = index < 9 ? index + 1 : null;
+            return (
+              <button
+                key={`${activeQuestion.id}:${option.label}`}
+                type="button"
+                disabled={isResponding}
+                onClick={() =>
+                  selectOptionAndAutoAdvance(activeQuestion.id, option.label)
+                }
+                className={cn(
+                  "group flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-all duration-150",
+                  isSelected
+                    ? "border-blue-500/40 bg-blue-500/8 text-foreground"
+                    : "border-transparent bg-muted/20 text-foreground/80 hover:bg-muted/40 hover:border-border/40",
+                  isResponding && "opacity-50 cursor-not-allowed",
+                )}
+              >
+                {shortcutKey !== null ? (
+                  <kbd
+                    className={cn(
+                      "flex size-5 shrink-0 items-center justify-center rounded text-[11px] font-medium tabular-nums transition-colors duration-150",
+                      isSelected
+                        ? "bg-blue-500/20 text-blue-400"
+                        : "bg-muted/40 text-muted-foreground/50 group-hover:bg-muted/60 group-hover:text-muted-foreground/70",
+                    )}
+                  >
+                    {shortcutKey}
+                  </kbd>
+                ) : null}
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-medium">{option.label}</span>
+                  {option.description && option.description !== option.label ? (
+                    <span className="ml-2 text-xs text-muted-foreground/50">
+                      {option.description}
+                    </span>
+                  ) : null}
+                </div>
+                {isSelected ? (
+                  <CheckIcon className="size-3.5 shrink-0 text-blue-400" />
+                ) : null}
+              </button>
+            );
+          })}
         </div>
       </div>
-      <p className="mt-1.5 text-sm text-foreground/90">{activeQuestion.question}</p>
-      <div className="mt-3 space-y-1">
-        {activeQuestion.options.map((option, index) => {
-          const isSelected = progress.selectedOptionLabel === option.label;
-          const shortcutKey = index < 9 ? index + 1 : null;
-          return (
-            <button
-              key={`${activeQuestion.id}:${option.label}`}
-              type="button"
-              disabled={isResponding}
-              onClick={() => selectOptionAndAutoAdvance(activeQuestion.id, option.label)}
-              className={cn(
-                "group flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-all duration-150",
-                isSelected
-                  ? "border-blue-500/40 bg-blue-500/8 text-foreground"
-                  : "border-transparent bg-muted/20 text-foreground/80 hover:bg-muted/40 hover:border-border/40",
-                isResponding && "opacity-50 cursor-not-allowed",
-              )}
-            >
-              {shortcutKey !== null ? (
-                <kbd
-                  className={cn(
-                    "flex size-5 shrink-0 items-center justify-center rounded text-[11px] font-medium tabular-nums transition-colors duration-150",
-                    isSelected
-                      ? "bg-blue-500/20 text-blue-400"
-                      : "bg-muted/40 text-muted-foreground/50 group-hover:bg-muted/60 group-hover:text-muted-foreground/70",
-                  )}
-                >
-                  {shortcutKey}
-                </kbd>
-              ) : null}
-              <div className="min-w-0 flex-1">
-                <span className="text-sm font-medium">{option.label}</span>
-                {option.description && option.description !== option.label ? (
-                  <span className="ml-2 text-xs text-muted-foreground/50">
-                    {option.description}
-                  </span>
-                ) : null}
-              </div>
-              {isSelected ? <CheckIcon className="size-3.5 shrink-0 text-blue-400" /> : null}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-});
+    );
+  },
+);
 
 const ComposerPlanFollowUpBanner = memo(function ComposerPlanFollowUpBanner({
   planTitle,
@@ -4687,7 +5290,9 @@ const ComposerPlanFollowUpBanner = memo(function ComposerPlanFollowUpBanner({
       <div className="flex flex-wrap items-center gap-2">
         <span className="uppercase text-sm tracking-[0.2em]">Plan ready</span>
         {planTitle ? (
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">{planTitle}</span>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+            {planTitle}
+          </span>
         ) : null}
       </div>
       {/* <div className="mt-2 text-xs text-muted-foreground">
@@ -4697,7 +5302,11 @@ const ComposerPlanFollowUpBanner = memo(function ComposerPlanFollowUpBanner({
   );
 });
 
-const MessageCopyButton = memo(function MessageCopyButton({ text }: { text: string }) {
+const MessageCopyButton = memo(function MessageCopyButton({
+  text,
+}: {
+  text: string;
+}) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
@@ -4707,13 +5316,26 @@ const MessageCopyButton = memo(function MessageCopyButton({ text }: { text: stri
   }, [text]);
 
   return (
-    <Button type="button" size="xs" variant="outline" onClick={handleCopy} title="Copy message">
-      {copied ? <CheckIcon className="size-3 text-success" /> : <CopyIcon className="size-3" />}
+    <Button
+      type="button"
+      size="xs"
+      variant="outline"
+      onClick={handleCopy}
+      title="Copy message"
+    >
+      {copied ? (
+        <CheckIcon className="size-3 text-success" />
+      ) : (
+        <CopyIcon className="size-3" />
+      )}
     </Button>
   );
 });
 
-function hasNonZeroStat(stat: { additions: number; deletions: number }): boolean {
+function hasNonZeroStat(stat: {
+  additions: number;
+  deletions: number;
+}): boolean {
   return stat.additions > 0 || stat.deletions > 0;
 }
 
@@ -4734,7 +5356,9 @@ const DiffStatLabel = memo(function DiffStatLabel(props: {
   );
 });
 
-function collectDirectoryPaths(nodes: ReadonlyArray<TurnDiffTreeNode>): string[] {
+function collectDirectoryPaths(
+  nodes: ReadonlyArray<TurnDiffTreeNode>,
+): string[] {
   const paths: string[] = [];
   for (const node of nodes) {
     if (node.kind !== "directory") continue;
@@ -4762,7 +5386,13 @@ const ChangedFilesTree = memo(function ChangedFilesTree(props: {
   resolvedTheme: "light" | "dark";
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
 }) {
-  const { files, allDirectoriesExpanded, onOpenTurnDiff, resolvedTheme, turnId } = props;
+  const {
+    files,
+    allDirectoriesExpanded,
+    onOpenTurnDiff,
+    resolvedTheme,
+    turnId,
+  } = props;
   const treeNodes = useMemo(() => buildTurnDiffTree(files), [files]);
   const directoryPathsKey = useMemo(
     () => collectDirectoryPaths(treeNodes).join("\u0000"),
@@ -4776,19 +5406,27 @@ const ChangedFilesTree = memo(function ChangedFilesTree(props: {
       ),
     [allDirectoriesExpanded, directoryPathsKey],
   );
-  const [expandedDirectories, setExpandedDirectories] = useState<Record<string, boolean>>(() =>
-    buildDirectoryExpansionState(directoryPathsKey ? directoryPathsKey.split("\u0000") : [], true),
+  const [expandedDirectories, setExpandedDirectories] = useState<
+    Record<string, boolean>
+  >(() =>
+    buildDirectoryExpansionState(
+      directoryPathsKey ? directoryPathsKey.split("\u0000") : [],
+      true,
+    ),
   );
   useEffect(() => {
     setExpandedDirectories(allDirectoryExpansionState);
   }, [allDirectoryExpansionState]);
 
-  const toggleDirectory = useCallback((pathValue: string, fallbackExpanded: boolean) => {
-    setExpandedDirectories((current) => ({
-      ...current,
-      [pathValue]: !(current[pathValue] ?? fallbackExpanded),
-    }));
-  }, []);
+  const toggleDirectory = useCallback(
+    (pathValue: string, fallbackExpanded: boolean) => {
+      setExpandedDirectories((current) => ({
+        ...current,
+        [pathValue]: !(current[pathValue] ?? fallbackExpanded),
+      }));
+    },
+    [],
+  );
 
   const renderTreeNode = (node: TurnDiffTreeNode, depth: number) => {
     const leftPadding = 8 + depth * 14;
@@ -4819,13 +5457,18 @@ const ChangedFilesTree = memo(function ChangedFilesTree(props: {
             </span>
             {hasNonZeroStat(node.stat) && (
               <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums">
-                <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
+                <DiffStatLabel
+                  additions={node.stat.additions}
+                  deletions={node.stat.deletions}
+                />
               </span>
             )}
           </button>
           {isExpanded && (
             <div className="space-y-0.5">
-              {node.children.map((childNode) => renderTreeNode(childNode, depth + 1))}
+              {node.children.map((childNode) =>
+                renderTreeNode(childNode, depth + 1),
+              )}
             </div>
           )}
         </div>
@@ -4852,14 +5495,21 @@ const ChangedFilesTree = memo(function ChangedFilesTree(props: {
         </span>
         {node.stat && (
           <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums">
-            <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
+            <DiffStatLabel
+              additions={node.stat.additions}
+              deletions={node.stat.deletions}
+            />
           </span>
         )}
       </button>
     );
   };
 
-  return <div className="space-y-0.5">{treeNodes.map((node) => renderTreeNode(node, 0))}</div>;
+  return (
+    <div className="space-y-0.5">
+      {treeNodes.map((node) => renderTreeNode(node, 0))}
+    </div>
+  );
 });
 
 const ProposedPlanCard = memo(function ProposedPlanCard({
@@ -4899,7 +5549,9 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
       });
       return;
     }
-    setSavePath((existing) => (existing.length > 0 ? existing : downloadFilename));
+    setSavePath((existing) =>
+      existing.length > 0 ? existing : downloadFilename,
+    );
     setIsSaveDialogOpen(true);
   };
 
@@ -4936,7 +5588,10 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
         toastManager.add({
           type: "error",
           title: "Could not save plan",
-          description: error instanceof Error ? error.message : "An error occurred while saving.",
+          description:
+            error instanceof Error
+              ? error.message
+              : "An error occurred while saving.",
         });
       })
       .then(
@@ -4954,28 +5609,52 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <Badge variant="secondary">Plan</Badge>
-          <p className="truncate text-sm font-medium text-foreground">{title}</p>
+          <p className="truncate text-sm font-medium text-foreground">
+            {title}
+          </p>
         </div>
         <Menu>
           <MenuTrigger
-            render={<Button aria-label="Plan actions" size="icon-xs" variant="outline" />}
+            render={
+              <Button
+                aria-label="Plan actions"
+                size="icon-xs"
+                variant="outline"
+              />
+            }
           >
             <EllipsisIcon aria-hidden="true" className="size-4" />
           </MenuTrigger>
           <MenuPopup align="end">
             <MenuItem onClick={handleDownload}>Download as markdown</MenuItem>
-            <MenuItem onClick={openSaveDialog} disabled={!workspaceRoot || isSavingToWorkspace}>
+            <MenuItem
+              onClick={openSaveDialog}
+              disabled={!workspaceRoot || isSavingToWorkspace}
+            >
               Save to workspace
             </MenuItem>
           </MenuPopup>
         </Menu>
       </div>
       <div className="mt-4">
-        <div className={cn("relative", canCollapse && !expanded && "max-h-104 overflow-hidden")}>
+        <div
+          className={cn(
+            "relative",
+            canCollapse && !expanded && "max-h-104 overflow-hidden",
+          )}
+        >
           {canCollapse && !expanded ? (
-            <ChatMarkdown text={collapsedPreview ?? ""} cwd={cwd} isStreaming={false} />
+            <ChatMarkdown
+              text={collapsedPreview ?? ""}
+              cwd={cwd}
+              isStreaming={false}
+            />
           ) : (
-            <ChatMarkdown text={displayedPlanMarkdown} cwd={cwd} isStreaming={false} />
+            <ChatMarkdown
+              text={displayedPlanMarkdown}
+              cwd={cwd}
+              isStreaming={false}
+            />
           )}
           {canCollapse && !expanded ? (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-linear-to-t from-card/95 via-card/80 to-transparent" />
@@ -5007,12 +5686,15 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
           <DialogHeader>
             <DialogTitle>Save plan to workspace</DialogTitle>
             <DialogDescription>
-              Enter a path relative to <code>{workspaceRoot ?? "the workspace"}</code>.
+              Enter a path relative to{" "}
+              <code>{workspaceRoot ?? "the workspace"}</code>.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-3">
             <label htmlFor={savePathInputId} className="grid gap-1.5">
-              <span className="text-xs font-medium text-foreground">Workspace path</span>
+              <span className="text-xs font-medium text-foreground">
+                Workspace path
+              </span>
               <Input
                 id={savePathInputId}
                 value={savePath}
@@ -5047,6 +5729,7 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
 });
 
 interface MessagesTimelineProps {
+  activeProvider: ProviderKind;
   hasMessages: boolean;
   isWorking: boolean;
   activeTurnInProgress: boolean;
@@ -5071,7 +5754,10 @@ interface MessagesTimelineProps {
 
 type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
 type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
-type TimelineProposedPlan = Extract<TimelineEntry, { kind: "proposed-plan" }>["proposedPlan"];
+type TimelineProposedPlan = Extract<
+  TimelineEntry,
+  { kind: "proposed-plan" }
+>["proposedPlan"];
 type TimelineWorkEntry = Extract<TimelineEntry, { kind: "work" }>["entry"];
 type TimelineRow =
   | {
@@ -5095,12 +5781,18 @@ type TimelineRow =
     }
   | { kind: "working"; id: string; createdAt: string | null };
 
-function estimateTimelineProposedPlanHeight(proposedPlan: TimelineProposedPlan): number {
-  const estimatedLines = Math.max(1, Math.ceil(proposedPlan.planMarkdown.length / 72));
+function estimateTimelineProposedPlanHeight(
+  proposedPlan: TimelineProposedPlan,
+): number {
+  const estimatedLines = Math.max(
+    1,
+    Math.ceil(proposedPlan.planMarkdown.length / 72),
+  );
   return 120 + Math.min(estimatedLines * 22, 880);
 }
 
 const MessagesTimeline = memo(function MessagesTimeline({
+  activeProvider,
   hasMessages,
   isWorking,
   activeTurnInProgress,
@@ -5131,7 +5823,10 @@ const MessagesTimeline = memo(function MessagesTimeline({
 
     const updateWidth = (nextWidth: number) => {
       setTimelineWidthPx((previousWidth) => {
-        if (previousWidth !== null && Math.abs(previousWidth - nextWidth) < 0.5) {
+        if (
+          previousWidth !== null &&
+          Math.abs(previousWidth - nextWidth) < 0.5
+        ) {
           return previousWidth;
         }
         return nextWidth;
@@ -5208,21 +5903,33 @@ const MessagesTimeline = memo(function MessagesTimeline({
     }
 
     return nextRows;
-  }, [timelineEntries, completionDividerBeforeEntryId, isWorking, activeTurnStartedAt]);
+  }, [
+    timelineEntries,
+    completionDividerBeforeEntryId,
+    isWorking,
+    activeTurnStartedAt,
+  ]);
 
   const firstUnvirtualizedRowIndex = useMemo(() => {
-    const firstTailRowIndex = Math.max(rows.length - ALWAYS_UNVIRTUALIZED_TAIL_ROWS, 0);
+    const firstTailRowIndex = Math.max(
+      rows.length - ALWAYS_UNVIRTUALIZED_TAIL_ROWS,
+      0,
+    );
     if (!activeTurnInProgress) return firstTailRowIndex;
 
     const turnStartedAtMs =
-      typeof activeTurnStartedAt === "string" ? Date.parse(activeTurnStartedAt) : Number.NaN;
+      typeof activeTurnStartedAt === "string"
+        ? Date.parse(activeTurnStartedAt)
+        : Number.NaN;
     let firstCurrentTurnRowIndex = -1;
     if (!Number.isNaN(turnStartedAtMs)) {
       firstCurrentTurnRowIndex = rows.findIndex((row) => {
         if (row.kind === "working") return true;
         if (!row.createdAt) return false;
         const rowCreatedAtMs = Date.parse(row.createdAt);
-        return !Number.isNaN(rowCreatedAtMs) && rowCreatedAtMs >= turnStartedAtMs;
+        return (
+          !Number.isNaN(rowCreatedAtMs) && rowCreatedAtMs >= turnStartedAtMs
+        );
       });
     }
 
@@ -5240,7 +5947,10 @@ const MessagesTimeline = memo(function MessagesTimeline({
       if (previousRow.message.role === "user") {
         return Math.min(index, firstTailRowIndex);
       }
-      if (previousRow.message.role === "assistant" && !previousRow.message.streaming) {
+      if (
+        previousRow.message.role === "assistant" &&
+        !previousRow.message.streaming
+      ) {
         break;
       }
     }
@@ -5262,7 +5972,8 @@ const MessagesTimeline = memo(function MessagesTimeline({
       const row = rows[index];
       if (!row) return 96;
       if (row.kind === "work") return 112;
-      if (row.kind === "proposed-plan") return estimateTimelineProposedPlanHeight(row.proposedPlan);
+      if (row.kind === "proposed-plan")
+        return estimateTimelineProposedPlanHeight(row.proposedPlan);
       if (row.kind === "working") return 40;
       return estimateTimelineMessageHeight(row.message, { timelineWidthPx });
     },
@@ -5275,10 +5986,15 @@ const MessagesTimeline = memo(function MessagesTimeline({
     rowVirtualizer.measure();
   }, [rowVirtualizer, timelineWidthPx]);
   useEffect(() => {
-    rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (_item, _delta, instance) => {
+    rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
+      _item,
+      _delta,
+      instance,
+    ) => {
       const viewportHeight = instance.scrollRect?.height ?? 0;
       const scrollOffset = instance.scrollOffset ?? 0;
-      const remainingDistance = instance.getTotalSize() - (scrollOffset + viewportHeight);
+      const remainingDistance =
+        instance.getTotalSize() - (scrollOffset + viewportHeight);
       return remainingDistance > AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
     };
     return () => {
@@ -5304,9 +6020,8 @@ const MessagesTimeline = memo(function MessagesTimeline({
 
   const virtualRows = rowVirtualizer.getVirtualItems();
   const nonVirtualizedRows = rows.slice(virtualizedRowCount);
-  const [allDirectoriesExpandedByTurnId, setAllDirectoriesExpandedByTurnId] = useState<
-    Record<string, boolean>
-  >({});
+  const [allDirectoriesExpandedByTurnId, setAllDirectoriesExpandedByTurnId] =
+    useState<Record<string, boolean>>({});
   const onToggleAllDirectories = useCallback((turnId: TurnId) => {
     setAllDirectoriesExpandedByTurnId((current) => ({
       ...current,
@@ -5326,13 +6041,16 @@ const MessagesTimeline = memo(function MessagesTimeline({
           const groupId = row.id;
           const groupedEntries = row.groupedEntries;
           const isExpanded = expandedWorkGroups[groupId] ?? false;
-          const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
+          const hasOverflow =
+            groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
           const visibleEntries =
             hasOverflow && !isExpanded
               ? groupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
               : groupedEntries;
           const hiddenCount = groupedEntries.length - visibleEntries.length;
-          const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
+          const onlyToolEntries = groupedEntries.every(
+            (entry) => entry.tone === "tool",
+          );
           const groupLabel = onlyToolEntries
             ? groupedEntries.length === 1
               ? "Tool call"
@@ -5340,13 +6058,33 @@ const MessagesTimeline = memo(function MessagesTimeline({
             : groupedEntries.length === 1
               ? "Work event"
               : `Work log (${groupedEntries.length})`;
+          const providerLabel = PROVIDER_LABELS[activeProvider];
+          const claudeStyledGroup = activeProvider === "claude";
 
           return (
-            <div className="rounded-lg border border-border/80 bg-card/45 px-3 py-2">
+            <div
+              className={cn(
+                "rounded-lg border px-3 py-2",
+                claudeStyledGroup
+                  ? "border-[#D97757]/20 bg-[#D97757]/[0.05]"
+                  : "border-border/80 bg-card/45",
+              )}
+            >
               <div className="mb-1.5 flex items-center justify-between gap-3">
-                <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
-                  {groupLabel}
-                </p>
+                <div className="flex items-center gap-2">
+                  <ProviderRuntimeBadge
+                    provider={activeProvider}
+                    label={
+                      onlyToolEntries
+                        ? `${providerLabel} tools`
+                        : `${providerLabel} work`
+                    }
+                    className="shrink-0"
+                  />
+                  <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
+                    {groupLabel}
+                  </p>
+                </div>
                 {hasOverflow && (
                   <button
                     type="button"
@@ -5359,10 +6097,15 @@ const MessagesTimeline = memo(function MessagesTimeline({
               </div>
               <div className="space-y-1">
                 {visibleEntries.map((workEntry) => (
-                  <div key={`work-row:${workEntry.id}`} className="flex items-start gap-2 py-0.5">
+                  <div
+                    key={`work-row:${workEntry.id}`}
+                    className="flex items-start gap-2 py-0.5"
+                  >
                     <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/30" />
                     <div className="min-w-0 flex-1 py-[2px]">
-                      <p className={`text-[11px] leading-relaxed ${workToneClass(workEntry.tone)}`}>
+                      <p
+                        className={`text-[11px] leading-relaxed ${workToneClass(workEntry.tone)}`}
+                      >
                         {workEntry.label}
                       </p>
                       {workEntry.command && (
@@ -5370,26 +6113,30 @@ const MessagesTimeline = memo(function MessagesTimeline({
                           {workEntry.command}
                         </pre>
                       )}
-                      {workEntry.changedFiles && workEntry.changedFiles.length > 0 && (
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {workEntry.changedFiles.slice(0, 6).map((filePath) => (
-                            <span
-                              key={`${workEntry.id}:${filePath}`}
-                              className="rounded-md border border-border/70 bg-background/65 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/85"
-                              title={filePath}
-                            >
-                              {filePath}
-                            </span>
-                          ))}
-                          {workEntry.changedFiles.length > 6 && (
-                            <span className="px-1 text-[10px] text-muted-foreground/65">
-                              +{workEntry.changedFiles.length - 6} more
-                            </span>
-                          )}
-                        </div>
-                      )}
+                      {workEntry.changedFiles &&
+                        workEntry.changedFiles.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {workEntry.changedFiles
+                              .slice(0, 6)
+                              .map((filePath) => (
+                                <span
+                                  key={`${workEntry.id}:${filePath}`}
+                                  className="rounded-md border border-border/70 bg-background/65 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/85"
+                                  title={filePath}
+                                >
+                                  {filePath}
+                                </span>
+                              ))}
+                            {workEntry.changedFiles.length > 6 && (
+                              <span className="px-1 text-[10px] text-muted-foreground/65">
+                                +{workEntry.changedFiles.length - 6} more
+                              </span>
+                            )}
+                          </div>
+                        )}
                       {workEntry.detail &&
-                        (!workEntry.command || workEntry.detail !== workEntry.command) && (
+                        (!workEntry.command ||
+                          workEntry.detail !== workEntry.command) && (
                           <p
                             className="mt-1 text-[11px] leading-relaxed text-muted-foreground/75"
                             title={workEntry.detail}
@@ -5409,14 +6156,20 @@ const MessagesTimeline = memo(function MessagesTimeline({
         row.message.role === "user" &&
         (() => {
           const userImages = row.message.attachments ?? [];
-          const canRevertAgentWork = revertTurnCountByUserMessageId.has(row.message.id);
+          const canRevertAgentWork = revertTurnCountByUserMessageId.has(
+            row.message.id,
+          );
           return (
             <div className="flex justify-end">
               <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
                 {userImages.length > 0 && (
                   <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
                     {userImages.map(
-                      (image: NonNullable<TimelineMessage["attachments"]>[number]) => (
+                      (
+                        image: NonNullable<
+                          TimelineMessage["attachments"]
+                        >[number],
+                      ) => (
                         <div
                           key={image.id}
                           className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
@@ -5427,7 +6180,10 @@ const MessagesTimeline = memo(function MessagesTimeline({
                               className="h-full w-full cursor-zoom-in"
                               aria-label={`Preview ${image.name}`}
                               onClick={() => {
-                                const preview = buildExpandedImagePreview(userImages, image.id);
+                                const preview = buildExpandedImagePreview(
+                                  userImages,
+                                  image.id,
+                                );
                                 if (!preview) return;
                                 onImageExpand(preview);
                               }}
@@ -5457,7 +6213,9 @@ const MessagesTimeline = memo(function MessagesTimeline({
                 )}
                 <div className="mt-1.5 flex items-center justify-end gap-2">
                   <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
-                    {row.message.text && <MessageCopyButton text={row.message.text} />}
+                    {row.message.text && (
+                      <MessageCopyButton text={row.message.text} />
+                    )}
                     {canRevertAgentWork && (
                       <Button
                         type="button"
@@ -5483,26 +6241,48 @@ const MessagesTimeline = memo(function MessagesTimeline({
       {row.kind === "message" &&
         row.message.role === "assistant" &&
         (() => {
-          const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+          const messageText =
+            row.message.text ||
+            (row.message.streaming ? "" : "(empty response)");
+          const claudeStyledMessage = activeProvider === "claude";
           return (
             <>
               {row.showCompletionDivider && (
                 <div className="my-3 flex items-center gap-3">
                   <span className="h-px flex-1 bg-border" />
                   <span className="rounded-full border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
-                    {completionSummary ? `Response • ${completionSummary}` : "Response"}
+                    {completionSummary
+                      ? `Response • ${completionSummary}`
+                      : "Response"}
                   </span>
                   <span className="h-px flex-1 bg-border" />
                 </div>
               )}
-              <div className="min-w-0 px-1 py-0.5">
+              <div
+                className={cn(
+                  "min-w-0 px-1 py-0.5",
+                  claudeStyledMessage &&
+                    "rounded-2xl border border-[#D97757]/20 bg-[#D97757]/[0.05] px-3 py-3",
+                )}
+              >
+                {claudeStyledMessage ? (
+                  <div className="mb-2">
+                    <ProviderRuntimeBadge
+                      provider="claude"
+                      streaming={row.message.streaming}
+                      className="align-middle"
+                    />
+                  </div>
+                ) : null}
                 <ChatMarkdown
                   text={messageText}
                   cwd={markdownCwd}
                   isStreaming={Boolean(row.message.streaming)}
                 />
                 {(() => {
-                  const turnSummary = turnDiffSummaryByAssistantMessageId.get(row.message.id);
+                  const turnSummary = turnDiffSummaryByAssistantMessageId.get(
+                    row.message.id,
+                  );
                   if (!turnSummary) return null;
                   const checkpointFiles = turnSummary.files;
                   if (checkpointFiles.length === 0) return null;
@@ -5530,16 +6310,23 @@ const MessagesTimeline = memo(function MessagesTimeline({
                             type="button"
                             size="xs"
                             variant="outline"
-                            onClick={() => onToggleAllDirectories(turnSummary.turnId)}
+                            onClick={() =>
+                              onToggleAllDirectories(turnSummary.turnId)
+                            }
                           >
-                            {allDirectoriesExpanded ? "Collapse all" : "Expand all"}
+                            {allDirectoriesExpanded
+                              ? "Collapse all"
+                              : "Expand all"}
                           </Button>
                           <Button
                             type="button"
                             size="xs"
                             variant="outline"
                             onClick={() =>
-                              onOpenTurnDiff(turnSummary.turnId, checkpointFiles[0]?.path)
+                              onOpenTurnDiff(
+                                turnSummary.turnId,
+                                checkpointFiles[0]?.path,
+                              )
                             }
                           >
                             View diff
@@ -5562,7 +6349,10 @@ const MessagesTimeline = memo(function MessagesTimeline({
                     row.message.createdAt,
                     row.message.streaming
                       ? formatElapsed(row.message.createdAt, nowIso)
-                      : formatElapsed(row.message.createdAt, row.message.completedAt),
+                      : formatElapsed(
+                          row.message.createdAt,
+                          row.message.completedAt,
+                        ),
                   )}
                 </p>
               </div>
@@ -5616,7 +6406,10 @@ const MessagesTimeline = memo(function MessagesTimeline({
       className="mx-auto w-full min-w-0 max-w-3xl overflow-x-hidden"
     >
       {virtualizedRowCount > 0 && (
-        <div className="relative" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
+        <div
+          className="relative"
+          style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+        >
           {virtualRows.map((virtualRow: VirtualItem) => {
             const row = rows[virtualRow.index];
             if (!row) return null;
@@ -5643,7 +6436,9 @@ const MessagesTimeline = memo(function MessagesTimeline({
   );
 });
 
-function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): option is {
+function isAvailableProviderOption(
+  option: (typeof PROVIDER_OPTIONS)[number],
+): option is {
   value: ProviderKind;
   label: string;
   available: true;
@@ -5651,8 +6446,12 @@ function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): o
   return option.available;
 }
 
-const AVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter(isAvailableProviderOption);
-const UNAVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter((option) => !option.available);
+const AVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter(
+  isAvailableProviderOption,
+);
+const UNAVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter(
+  (option) => !option.available,
+);
 const COMING_SOON_PROVIDER_OPTIONS = [
   { id: "opencode", label: "OpenCode", icon: OpenCodeIcon },
   { id: "gemini", label: "Gemini", icon: Gemini },
@@ -5689,7 +6488,9 @@ function resolveModelForProviderPicker(
     return direct.slug;
   }
 
-  const byName = options.find((option) => option.name.toLowerCase() === trimmedValue.toLowerCase());
+  const byName = options.find(
+    (option) => option.name.toLowerCase() === trimmedValue.toLowerCase(),
+  );
   if (byName) {
     return byName.slug;
   }
@@ -5711,7 +6512,10 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   provider: ProviderKind;
   model: ModelSlug;
   lockedProvider: ProviderKind | null;
-  modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>>;
+  modelOptionsByProvider: Record<
+    ProviderKind,
+    ReadonlyArray<{ slug: string; name: string }>
+  >;
   compact?: boolean;
   disabled?: boolean;
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
@@ -5719,7 +6523,8 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const selectedProviderOptions = props.modelOptionsByProvider[props.provider];
   const selectedModelLabel =
-    selectedProviderOptions.find((option) => option.slug === props.model)?.name ?? props.model;
+    selectedProviderOptions.find((option) => option.slug === props.model)
+      ?.name ?? props.model;
   const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[props.provider];
 
   return (
@@ -5747,9 +6552,15 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         }
       >
         <span
-          className={cn("flex min-w-0 items-center gap-2", props.compact ? "max-w-36" : undefined)}
+          className={cn(
+            "flex min-w-0 items-center gap-2",
+            props.compact ? "max-w-36" : undefined,
+          )}
         >
-          <ProviderIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground/70" />
+          <ProviderIcon
+            aria-hidden="true"
+            className="size-4 shrink-0 text-muted-foreground/70"
+          />
           <span className="truncate">{selectedModelLabel}</span>
           <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
         </span>
@@ -5758,7 +6569,8 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         {AVAILABLE_PROVIDER_OPTIONS.map((option) => {
           const OptionIcon = PROVIDER_ICON_BY_PROVIDER[option.value];
           const isDisabledByProviderLock =
-            props.lockedProvider !== null && props.lockedProvider !== option.value;
+            props.lockedProvider !== null &&
+            props.lockedProvider !== option.value;
           return (
             <MenuSub key={option.value}>
               <MenuSubTrigger disabled={isDisabledByProviderLock}>
@@ -5786,15 +6598,17 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                       setIsMenuOpen(false);
                     }}
                   >
-                    {props.modelOptionsByProvider[option.value].map((modelOption) => (
-                      <MenuRadioItem
-                        key={`${option.value}:${modelOption.slug}`}
-                        value={modelOption.slug}
-                        onClick={() => setIsMenuOpen(false)}
-                      >
-                        {modelOption.name}
-                      </MenuRadioItem>
-                    ))}
+                    {props.modelOptionsByProvider[option.value].map(
+                      (modelOption) => (
+                        <MenuRadioItem
+                          key={`${option.value}:${modelOption.slug}`}
+                          value={modelOption.slug}
+                          onClick={() => setIsMenuOpen(false)}
+                        >
+                          {modelOption.name}
+                        </MenuRadioItem>
+                      ),
+                    )}
                   </MenuRadioGroup>
                 </MenuGroup>
               </MenuSubPopup>
@@ -5825,7 +6639,10 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           const OptionIcon = option.icon;
           return (
             <MenuItem key={option.id} disabled>
-              <OptionIcon aria-hidden="true" className="size-4 shrink-0 opacity-80" />
+              <OptionIcon
+                aria-hidden="true"
+                className="size-4 shrink-0 opacity-80"
+              />
               <span>{option.label}</span>
               <span className="ms-auto text-[11px] text-muted-foreground/80 uppercase tracking-[0.08em]">
                 Coming soon
@@ -5838,121 +6655,138 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   );
 });
 
-const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
-  activePlan: boolean;
-  interactionMode: ProviderInteractionMode;
-  planSidebarOpen: boolean;
-  runtimeMode: RuntimeMode;
-  selectedEffort: CodexReasoningEffort | null;
-  selectedProvider: ProviderKind;
-  selectedCodexFastModeEnabled: boolean;
-  reasoningOptions: ReadonlyArray<CodexReasoningEffort>;
-  onEffortSelect: (effort: CodexReasoningEffort) => void;
-  onCodexFastModeChange: (enabled: boolean) => void;
-  onToggleInteractionMode: () => void;
-  onTogglePlanSidebar: () => void;
-  onToggleRuntimeMode: () => void;
-}) {
-  const defaultReasoningEffort = getDefaultReasoningEffort("codex");
-  const reasoningLabelByOption: Record<CodexReasoningEffort, string> = {
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    xhigh: "Extra High",
-  };
+const CompactComposerControlsMenu = memo(
+  function CompactComposerControlsMenu(props: {
+    activePlan: boolean;
+    interactionMode: ProviderInteractionMode;
+    planSidebarOpen: boolean;
+    runtimeMode: RuntimeMode;
+    selectedEffort: CodexReasoningEffort | null;
+    selectedProvider: ProviderKind;
+    selectedCodexFastModeEnabled: boolean;
+    reasoningOptions: ReadonlyArray<CodexReasoningEffort>;
+    onEffortSelect: (effort: CodexReasoningEffort) => void;
+    onCodexFastModeChange: (enabled: boolean) => void;
+    onToggleInteractionMode: () => void;
+    onTogglePlanSidebar: () => void;
+    onToggleRuntimeMode: () => void;
+  }) {
+    const defaultReasoningEffort = getDefaultReasoningEffort("codex");
+    const reasoningLabelByOption: Record<CodexReasoningEffort, string> = {
+      low: "Low",
+      medium: "Medium",
+      high: "High",
+      xhigh: "Extra High",
+    };
 
-  return (
-    <Menu>
-      <MenuTrigger
-        render={
-          <Button
-            size="sm"
-            variant="ghost"
-            className="shrink-0 px-2 text-muted-foreground/70 hover:text-foreground/80"
-            aria-label="More composer controls"
-          />
-        }
-      >
-        <EllipsisIcon aria-hidden="true" className="size-4" />
-      </MenuTrigger>
-      <MenuPopup align="start">
-        {props.selectedProvider === "codex" && props.selectedEffort != null ? (
-          <>
-            <MenuGroup>
-              <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Reasoning</div>
-              <MenuRadioGroup
-                value={props.selectedEffort}
-                onValueChange={(value) => {
-                  if (!value) return;
-                  const nextEffort = props.reasoningOptions.find((option) => option === value);
-                  if (!nextEffort) return;
-                  props.onEffortSelect(nextEffort);
-                }}
-              >
-                {props.reasoningOptions.map((effort) => (
-                  <MenuRadioItem key={effort} value={effort}>
-                    {reasoningLabelByOption[effort]}
-                    {effort === defaultReasoningEffort ? " (default)" : ""}
-                  </MenuRadioItem>
-                ))}
-              </MenuRadioGroup>
-            </MenuGroup>
-            <MenuDivider />
-            <MenuGroup>
-              <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Fast Mode</div>
-              <MenuRadioGroup
-                value={props.selectedCodexFastModeEnabled ? "on" : "off"}
-                onValueChange={(value) => {
-                  props.onCodexFastModeChange(value === "on");
-                }}
-              >
-                <MenuRadioItem value="off">off</MenuRadioItem>
-                <MenuRadioItem value="on">on</MenuRadioItem>
-              </MenuRadioGroup>
-            </MenuGroup>
-            <MenuDivider />
-          </>
-        ) : null}
-        <MenuGroup>
-          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Mode</div>
-          <MenuRadioGroup
-            value={props.interactionMode}
-            onValueChange={(value) => {
-              if (!value || value === props.interactionMode) return;
-              props.onToggleInteractionMode();
-            }}
-          >
-            <MenuRadioItem value="default">Chat</MenuRadioItem>
-            <MenuRadioItem value="plan">Plan</MenuRadioItem>
-          </MenuRadioGroup>
-        </MenuGroup>
-        <MenuDivider />
-        <MenuGroup>
-          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
-          <MenuRadioGroup
-            value={props.runtimeMode}
-            onValueChange={(value) => {
-              if (!value || value === props.runtimeMode) return;
-              props.onToggleRuntimeMode();
-            }}
-          >
-            <MenuRadioItem value="approval-required">Supervised</MenuRadioItem>
-            <MenuRadioItem value="full-access">Full access</MenuRadioItem>
-          </MenuRadioGroup>
-        </MenuGroup>
-        {props.activePlan ? (
-          <>
-            <MenuDivider />
-            <MenuItem onClick={props.onTogglePlanSidebar}>
-              <ListTodoIcon className="size-4 shrink-0" />
-              {props.planSidebarOpen ? "Hide plan sidebar" : "Show plan sidebar"}
-            </MenuItem>
-          </>
-        ) : null}
-      </MenuPopup>
-    </Menu>
-  );
-});
+    return (
+      <Menu>
+        <MenuTrigger
+          render={
+            <Button
+              size="sm"
+              variant="ghost"
+              className="shrink-0 px-2 text-muted-foreground/70 hover:text-foreground/80"
+              aria-label="More composer controls"
+            />
+          }
+        >
+          <EllipsisIcon aria-hidden="true" className="size-4" />
+        </MenuTrigger>
+        <MenuPopup align="start">
+          {props.selectedProvider === "codex" &&
+          props.selectedEffort != null ? (
+            <>
+              <MenuGroup>
+                <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+                  Reasoning
+                </div>
+                <MenuRadioGroup
+                  value={props.selectedEffort}
+                  onValueChange={(value) => {
+                    if (!value) return;
+                    const nextEffort = props.reasoningOptions.find(
+                      (option) => option === value,
+                    );
+                    if (!nextEffort) return;
+                    props.onEffortSelect(nextEffort);
+                  }}
+                >
+                  {props.reasoningOptions.map((effort) => (
+                    <MenuRadioItem key={effort} value={effort}>
+                      {reasoningLabelByOption[effort]}
+                      {effort === defaultReasoningEffort ? " (default)" : ""}
+                    </MenuRadioItem>
+                  ))}
+                </MenuRadioGroup>
+              </MenuGroup>
+              <MenuDivider />
+              <MenuGroup>
+                <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+                  Fast Mode
+                </div>
+                <MenuRadioGroup
+                  value={props.selectedCodexFastModeEnabled ? "on" : "off"}
+                  onValueChange={(value) => {
+                    props.onCodexFastModeChange(value === "on");
+                  }}
+                >
+                  <MenuRadioItem value="off">off</MenuRadioItem>
+                  <MenuRadioItem value="on">on</MenuRadioItem>
+                </MenuRadioGroup>
+              </MenuGroup>
+              <MenuDivider />
+            </>
+          ) : null}
+          <MenuGroup>
+            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+              Mode
+            </div>
+            <MenuRadioGroup
+              value={props.interactionMode}
+              onValueChange={(value) => {
+                if (!value || value === props.interactionMode) return;
+                props.onToggleInteractionMode();
+              }}
+            >
+              <MenuRadioItem value="default">Chat</MenuRadioItem>
+              <MenuRadioItem value="plan">Plan</MenuRadioItem>
+            </MenuRadioGroup>
+          </MenuGroup>
+          <MenuDivider />
+          <MenuGroup>
+            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+              Access
+            </div>
+            <MenuRadioGroup
+              value={props.runtimeMode}
+              onValueChange={(value) => {
+                if (!value || value === props.runtimeMode) return;
+                props.onToggleRuntimeMode();
+              }}
+            >
+              <MenuRadioItem value="approval-required">
+                Supervised
+              </MenuRadioItem>
+              <MenuRadioItem value="full-access">Full access</MenuRadioItem>
+            </MenuRadioGroup>
+          </MenuGroup>
+          {props.activePlan ? (
+            <>
+              <MenuDivider />
+              <MenuItem onClick={props.onTogglePlanSidebar}>
+                <ListTodoIcon className="size-4 shrink-0" />
+                {props.planSidebarOpen
+                  ? "Hide plan sidebar"
+                  : "Show plan sidebar"}
+              </MenuItem>
+            </>
+          ) : null}
+        </MenuPopup>
+      </Menu>
+    );
+  },
+);
 
 const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
   effort: CodexReasoningEffort;
@@ -5997,12 +6831,16 @@ const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
       </MenuTrigger>
       <MenuPopup align="start">
         <MenuGroup>
-          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Reasoning</div>
+          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+            Reasoning
+          </div>
           <MenuRadioGroup
             value={props.effort}
             onValueChange={(value) => {
               if (!value) return;
-              const nextEffort = props.options.find((option) => option === value);
+              const nextEffort = props.options.find(
+                (option) => option === value,
+              );
               if (!nextEffort) return;
               props.onEffortChange(nextEffort);
             }}
@@ -6017,7 +6855,9 @@ const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
         </MenuGroup>
         <MenuDivider />
         <MenuGroup>
-          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Fast Mode</div>
+          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+            Fast Mode
+          </div>
           <MenuRadioGroup
             value={props.fastModeEnabled ? "on" : "off"}
             onValueChange={(value) => {
@@ -6044,10 +6884,14 @@ const OpenInPicker = memo(function OpenInPicker({
 }) {
   const [lastEditor, setLastEditor] = useState<EditorId>(() => {
     const stored = localStorage.getItem(LAST_EDITOR_KEY);
-    return EDITORS.some((e) => e.id === stored) ? (stored as EditorId) : EDITORS[0].id;
+    return EDITORS.some((e) => e.id === stored)
+      ? (stored as EditorId)
+      : EDITORS[0].id;
   });
 
-  const allOptions = useMemo<Array<{ label: string; Icon: Icon; value: EditorId }>>(
+  const allOptions = useMemo<
+    Array<{ label: string; Icon: Icon; value: EditorId }>
+  >(
     () => [
       {
         label: "Cursor",
@@ -6077,14 +6921,16 @@ const OpenInPicker = memo(function OpenInPicker({
     [],
   );
   const options = useMemo(
-    () => allOptions.filter((option) => availableEditors.includes(option.value)),
+    () =>
+      allOptions.filter((option) => availableEditors.includes(option.value)),
     [allOptions, availableEditors],
   );
 
   const effectiveEditor = options.some((option) => option.value === lastEditor)
     ? lastEditor
     : (options[0]?.value ?? null);
-  const primaryOption = options.find(({ value }) => value === effectiveEditor) ?? null;
+  const primaryOption =
+    options.find(({ value }) => value === effectiveEditor) ?? null;
 
   const openInEditor = useCallback(
     (editorId: EditorId | null) => {
@@ -6126,18 +6972,30 @@ const OpenInPicker = memo(function OpenInPicker({
         disabled={!effectiveEditor || !openInCwd}
         onClick={() => openInEditor(effectiveEditor)}
       >
-        {primaryOption?.Icon && <primaryOption.Icon aria-hidden="true" className="size-3.5" />}
+        {primaryOption?.Icon && (
+          <primaryOption.Icon aria-hidden="true" className="size-3.5" />
+        )}
         <span className="sr-only @sm/header-actions:not-sr-only @sm/header-actions:ml-0.5">
           Open
         </span>
       </Button>
       <GroupSeparator className="hidden @sm/header-actions:block" />
       <Menu>
-        <MenuTrigger render={<Button aria-label="Copy options" size="icon-xs" variant="outline" />}>
+        <MenuTrigger
+          render={
+            <Button
+              aria-label="Copy options"
+              size="icon-xs"
+              variant="outline"
+            />
+          }
+        >
           <ChevronDownIcon aria-hidden="true" className="size-4" />
         </MenuTrigger>
         <MenuPopup align="end">
-          {options.length === 0 && <MenuItem disabled>No installed editors found</MenuItem>}
+          {options.length === 0 && (
+            <MenuItem disabled>No installed editors found</MenuItem>
+          )}
           {options.map(({ label, Icon, value }) => (
             <MenuItem key={value} onClick={() => openInEditor(value)}>
               <Icon aria-hidden="true" className="text-muted-foreground" />

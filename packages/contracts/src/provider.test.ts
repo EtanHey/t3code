@@ -34,6 +34,19 @@ describe("ProviderSessionStartInput", () => {
     expect(parsed.providerOptions?.codex?.homePath).toBe("/tmp/.codex");
   });
 
+  it("accepts claude-compatible payloads without codex-only options", () => {
+    const parsed = decodeProviderSessionStartInput({
+      threadId: "thread-claude",
+      provider: "claude",
+      cwd: "/tmp/workspace",
+      model: "sonnet",
+      runtimeMode: "approval-required",
+    });
+    expect(parsed.provider).toBe("claude");
+    expect(parsed.model).toBe("sonnet");
+    expect(parsed.providerOptions).toBeUndefined();
+  });
+
   it("rejects payloads without runtime mode", () => {
     expect(() =>
       decodeProviderSessionStartInput({

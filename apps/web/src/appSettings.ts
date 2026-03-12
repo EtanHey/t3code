@@ -79,6 +79,19 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
   };
 }
 
+export function getCustomModelsForProvider(
+  settings: Pick<AppSettings, "customCodexModels" | "customClaudeModels">,
+  provider: ProviderKind,
+): readonly string[] {
+  switch (provider) {
+    case "claude":
+      return settings.customClaudeModels;
+    case "codex":
+    default:
+      return settings.customCodexModels;
+  }
+}
+
 export function getAppModelOptions(
   provider: ProviderKind,
   customModels: readonly string[],

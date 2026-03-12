@@ -26,6 +26,23 @@ interface ThreadTerminalState {
 }
 
 const TERMINAL_STATE_STORAGE_KEY = "t3code:terminal-state:v1";
+const NOOP_STORAGE: Pick<Storage, "getItem" | "setItem" | "removeItem"> = {
+  getItem: () => null,
+  setItem: () => undefined,
+  removeItem: () => undefined,
+};
+
+function resolveTerminalStateStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
+  if (typeof localStorage === "undefined") {
+    return NOOP_STORAGE;
+  }
+
+  return typeof localStorage.getItem === "function" &&
+    typeof localStorage.setItem === "function" &&
+    typeof localStorage.removeItem === "function"
+    ? localStorage
+    : NOOP_STORAGE;
+}
 
 function normalizeTerminalIds(terminalIds: string[]): string[] {
   const ids = [...new Set(terminalIds.map((id) => id.trim()).filter((id) => id.length > 0))].slice(
@@ -541,7 +558,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
     {
       name: TERMINAL_STATE_STORAGE_KEY,
       version: 1,
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(resolveTerminalStateStorage),
       partialize: (state) => ({
         terminalStateByThreadId: state.terminalStateByThreadId,
       }),

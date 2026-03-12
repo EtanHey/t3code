@@ -20,6 +20,15 @@ describe("normalizeCustomModelSlugs", () => {
       ]),
     ).toEqual(["custom/internal-model"]);
   });
+
+  it("normalizes claude aliases separately from codex", () => {
+    expect(
+      normalizeCustomModelSlugs(
+        [" claude-sonnet-4-5 ", "sonnet", "custom/claude-preview"],
+        "claude",
+      ),
+    ).toEqual(["custom/claude-preview"]);
+  });
 });
 
 describe("getAppModelOptions", () => {
@@ -45,6 +54,17 @@ describe("getAppModelOptions", () => {
       isCustom: true,
     });
   });
+
+  it("returns built-in claude options with custom models appended", () => {
+    const options = getAppModelOptions("claude", ["custom/claude-preview"]);
+
+    expect(options.map((option) => option.slug)).toEqual([
+      "opus",
+      "sonnet",
+      "haiku",
+      "custom/claude-preview",
+    ]);
+  });
 });
 
 describe("resolveAppModelSelection", () => {
@@ -56,6 +76,7 @@ describe("resolveAppModelSelection", () => {
 
   it("falls back to the provider default when no model is selected", () => {
     expect(resolveAppModelSelection("codex", [], "")).toBe("gpt-5.4");
+    expect(resolveAppModelSelection("claude", [], "")).toBe("sonnet");
   });
 });
 

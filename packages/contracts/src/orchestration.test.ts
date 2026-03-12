@@ -140,6 +140,27 @@ it.effect("preserves explicit provider and runtime mode in thread.turn.start", (
   }),
 );
 
+it.effect("accepts claude as an explicit provider in thread.turn.start", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-turn-claude",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-claude",
+        role: "user",
+        text: "hello",
+        attachments: [],
+      },
+      provider: "claude",
+      model: "sonnet",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.provider, "claude");
+    assert.strictEqual(parsed.model, "sonnet");
+  }),
+);
+
 it.effect("decodes thread.created runtime mode for historical events", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadCreatedPayload({
