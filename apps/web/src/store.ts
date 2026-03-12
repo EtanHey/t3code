@@ -9,7 +9,6 @@ import {
 import {
   getModelOptions,
   normalizeModelSlug,
-  resolveModelSlug,
   resolveModelSlugForProvider,
 } from "@t3tools/shared/model";
 import { create } from "zustand";
@@ -140,7 +139,10 @@ function mapProjectsFromReadModel(
       cwd: project.workspaceRoot,
       model:
         existing?.model ??
-        resolveModelSlug(project.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
+        resolveModelSlugForProvider(
+          inferProviderFromModel(project.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
+          project.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex,
+        ),
       expanded:
         existing?.expanded ??
         (persistedExpandedProjectCwds.size > 0
@@ -189,26 +191,36 @@ function toLegacySessionStatus(
 }
 
 function toLegacyProvider(providerName: string | null): ProviderKind {
-  if (providerName === "codex") {
+  if (providerName === "codex" || providerName === "claude") {
     return providerName;
   }
   return "codex";
 }
 
-const CODEX_MODEL_SLUGS = new Set<string>(getModelOptions("codex").map((option) => option.slug));
+const MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
+  codex: new Set<string>(getModelOptions("codex").map((option) => option.slug)),
+  claude: new Set<string>(getModelOptions("claude").map((option) => option.slug)),
+};
+
+function inferProviderFromModel(model: string | null | undefined): ProviderKind {
+  for (const provider of ["codex", "claude"] as const) {
+    const normalized = normalizeModelSlug(model, provider);
+    if (normalized && MODEL_SLUGS_BY_PROVIDER[provider].has(normalized)) {
+      return provider;
+    }
+  }
+
+  return "codex";
+}
 
 function inferProviderForThreadModel(input: {
   readonly model: string;
   readonly sessionProviderName: string | null;
 }): ProviderKind {
-  if (input.sessionProviderName === "codex") {
+  if (input.sessionProviderName === "codex" || input.sessionProviderName === "claude") {
     return input.sessionProviderName;
   }
-  const normalizedCodex = normalizeModelSlug(input.model, "codex");
-  if (normalizedCodex && CODEX_MODEL_SLUGS.has(normalizedCodex)) {
-    return "codex";
-  }
-  return "codex";
+  return inferProviderFromModel(input.model);
 }
 
 function resolveWsHttpOrigin(): string {

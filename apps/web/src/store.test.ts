@@ -191,7 +191,21 @@ describe("store pure functions", () => {
 });
 
 describe("store read model sync", () => {
-  it("falls back to the codex default for unsupported provider models without an active session", () => {
+  it("infers the claude provider from built-in thread models without an active session", () => {
+    const initialState = makeState(makeThread());
+    const readModel = makeReadModel(
+      makeReadModelThread({
+        model: "sonnet",
+      }),
+    );
+
+    const next = syncServerReadModel(initialState, readModel);
+
+    expect(next.threads[0]?.model).toBe(DEFAULT_MODEL_BY_PROVIDER.claude);
+    expect(next.threads[0]?.session?.provider).toBeUndefined();
+  });
+
+  it("falls back to the codex default for unknown provider models without an active session", () => {
     const initialState = makeState(makeThread());
     const readModel = makeReadModel(
       makeReadModelThread({
@@ -202,6 +216,28 @@ describe("store read model sync", () => {
     const next = syncServerReadModel(initialState, readModel);
 
     expect(next.threads[0]?.model).toBe(DEFAULT_MODEL_BY_PROVIDER.codex);
+  });
+
+  it("infers claude project defaults from built-in model slugs", () => {
+    const initialState = {
+      projects: [],
+      threads: [],
+      threadsHydrated: true,
+    } satisfies AppState;
+    const readModel = {
+      snapshotSequence: 1,
+      updatedAt: "2026-02-27T00:00:00.000Z",
+      projects: [
+        makeReadModelProject({
+          defaultModel: "sonnet",
+        }),
+      ],
+      threads: [],
+    } satisfies OrchestrationReadModel;
+
+    const next = syncServerReadModel(initialState, readModel);
+
+    expect(next.projects[0]?.model).toBe(DEFAULT_MODEL_BY_PROVIDER.claude);
   });
 
   it("preserves the current project order when syncing incoming read model updates", () => {

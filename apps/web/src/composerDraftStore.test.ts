@@ -405,6 +405,14 @@ describe("composerDraftStore setProvider", () => {
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.provider).toBe("codex");
   });
 
+  it("persists claude provider-only selection even when prompt/model are empty", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setProvider(threadId, "claude");
+
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.provider).toBe("claude");
+  });
+
   it("removes empty provider-only draft when provider is reset", () => {
     const store = useComposerDraftStore.getState();
 

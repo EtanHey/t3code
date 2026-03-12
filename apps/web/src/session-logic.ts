@@ -16,16 +16,22 @@ import type {
   TurnDiffSummary,
 } from "./types";
 
-export type ProviderPickerKind = ProviderKind | "claudeCode" | "cursor";
+export type ProviderPickerKind = ProviderKind | "cursor";
+
+export const PROVIDER_LABELS: Record<ProviderPickerKind, string> = {
+  codex: "Codex",
+  claude: "Claude Code",
+  cursor: "Cursor",
+};
 
 export const PROVIDER_OPTIONS: Array<{
   value: ProviderPickerKind;
   label: string;
   available: boolean;
 }> = [
-  { value: "codex", label: "Codex", available: true },
-  { value: "claudeCode", label: "Claude Code", available: false },
-  { value: "cursor", label: "Cursor", available: false },
+  { value: "codex", label: PROVIDER_LABELS.codex, available: true },
+  { value: "claude", label: PROVIDER_LABELS.claude, available: true },
+  { value: "cursor", label: PROVIDER_LABELS.cursor, available: false },
 ];
 
 export interface WorkLogEntry {

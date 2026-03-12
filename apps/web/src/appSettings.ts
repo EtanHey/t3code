@@ -8,6 +8,7 @@ const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
+  claude: new Set(getModelOptions("claude").map((option) => option.slug)),
 };
 
 const AppSettingsSchema = Schema.Struct({
@@ -22,6 +23,9 @@ const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(false)),
   ),
   customCodexModels: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  customClaudeModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),
 });
@@ -71,7 +75,21 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
+    customClaudeModels: normalizeCustomModelSlugs(settings.customClaudeModels, "claude"),
   };
+}
+
+export function getCustomModelsForProvider(
+  settings: Pick<AppSettings, "customCodexModels" | "customClaudeModels">,
+  provider: ProviderKind,
+): readonly string[] {
+  switch (provider) {
+    case "claude":
+      return settings.customClaudeModels;
+    case "codex":
+    default:
+      return settings.customCodexModels;
+  }
 }
 
 export function getAppModelOptions(

@@ -28,6 +28,11 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     { slug: "gpt-5.2-codex", name: "GPT-5.2 Codex" },
     { slug: "gpt-5.2", name: "GPT-5.2" },
   ],
+  claude: [
+    { slug: "opus", name: "Opus" },
+    { slug: "sonnet", name: "Sonnet" },
+    { slug: "haiku", name: "Haiku" },
+  ],
 } as const satisfies Record<ProviderKind, readonly ModelOption[]>;
 export type ModelOptionsByProvider = typeof MODEL_OPTIONS_BY_PROVIDER;
 
@@ -36,6 +41,7 @@ export type ModelSlug = BuiltInModelSlug | (string & {});
 
 export const DEFAULT_MODEL_BY_PROVIDER = {
   codex: "gpt-5.4",
+  claude: "sonnet",
 } as const satisfies Record<ProviderKind, ModelSlug>;
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
@@ -46,12 +52,22 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
     "5.3-spark": "gpt-5.3-codex-spark",
     "gpt-5.3-spark": "gpt-5.3-codex-spark",
   },
+  claude: {
+    "claude-opus-4-1": "opus",
+    "claude-opus-4-1-20250805": "opus",
+    "claude-sonnet-4-5": "sonnet",
+    "claude-sonnet-4-5-20250929": "sonnet",
+    "claude-haiku-4-5": "haiku",
+    "claude-haiku-4-5-20251001": "haiku",
+  },
 } as const satisfies Record<ProviderKind, Record<string, ModelSlug>>;
 
 export const REASONING_EFFORT_OPTIONS_BY_PROVIDER = {
   codex: CODEX_REASONING_EFFORT_OPTIONS,
+  claude: [],
 } as const satisfies Record<ProviderKind, readonly CodexReasoningEffort[]>;
 
 export const DEFAULT_REASONING_EFFORT_BY_PROVIDER = {
   codex: "high",
+  claude: null,
 } as const satisfies Record<ProviderKind, CodexReasoningEffort | null>;

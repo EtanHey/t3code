@@ -73,6 +73,7 @@ import {
   type PendingApproval,
   type PendingUserInput,
   type ProviderPickerKind,
+  PROVIDER_LABELS,
   PROVIDER_OPTIONS,
   deriveWorkLogEntries,
   hasToolActivityForTurn,
@@ -203,7 +204,12 @@ import { Toggle } from "./ui/toggle";
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
-import { getAppModelOptions, resolveAppModelSelection, useAppSettings } from "../appSettings";
+import {
+  getAppModelOptions,
+  getCustomModelsForProvider,
+  resolveAppModelSelection,
+  useAppSettings,
+} from "../appSettings";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -289,6 +295,31 @@ function workToneClass(tone: "thinking" | "tool" | "info" | "error"): string {
   if (tone === "tool") return "text-muted-foreground/70";
   if (tone === "thinking") return "text-muted-foreground/50";
   return "text-muted-foreground/40";
+}
+
+function ProviderRuntimeBadge(props: {
+  provider: ProviderKind;
+  label?: string;
+  streaming?: boolean;
+  className?: string;
+}) {
+  const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[props.provider];
+
+  return (
+    <div
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em]",
+        props.provider === "claude"
+          ? "border-[#D97757]/25 bg-[#D97757]/10 text-[#C86747]"
+          : "border-border/80 bg-muted/35 text-muted-foreground/75",
+        props.className,
+      )}
+    >
+      <ProviderIcon aria-hidden="true" className="size-3 shrink-0" />
+      <span>{props.label ?? PROVIDER_LABELS[props.provider]}</span>
+      {props.streaming ? <span className="opacity-70">Streaming</span> : null}
+    </div>
+  );
 }
 
 interface ExpandedImageItem {
@@ -879,7 +910,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     selectedProvider,
     activeThread?.model ?? activeProject?.model ?? getDefaultModel(selectedProvider),
   );
-  const customModelsForSelectedProvider = settings.customCodexModels;
+  const customModelsForSelectedProvider = getCustomModelsForProvider(settings, selectedProvider);
   const selectedModel = useMemo(() => {
     const draftModel = composerDraft.model;
     if (!draftModel) {
@@ -1359,7 +1390,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
   const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
   const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
-  const activeProvider = activeThread?.session?.provider ?? "codex";
+  const activeProvider = activeThread?.session?.provider ?? selectedProvider;
   const activeProviderStatus = useMemo(
     () => providerStatuses.find((status) => status.provider === activeProvider) ?? null,
     [activeProvider, providerStatuses],
@@ -3231,7 +3262,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerDraftProvider(activeThread.id, provider);
       setComposerDraftModel(
         activeThread.id,
-        resolveAppModelSelection(provider, settings.customCodexModels, model),
+        resolveAppModelSelection(provider, getCustomModelsForProvider(settings, provider), model),
       );
       scheduleComposerFocus();
     },
@@ -3241,7 +3272,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       scheduleComposerFocus,
       setComposerDraftModel,
       setComposerDraftProvider,
-      settings.customCodexModels,
+      settings,
     ],
   );
   const onEffortSelect = useCallback(
@@ -3602,6 +3633,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           >
             <MessagesTimeline
               key={activeThread.id}
+              activeProvider={activeProvider}
               hasMessages={timelineEntries.length > 0}
               isWorking={isWorking}
               activeTurnInProgress={isWorking || !latestTurnSettled}
@@ -3647,6 +3679,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     <ComposerPendingApprovalPanel
                       approval={activePendingApproval}
                       pendingCount={pendingApprovals.length}
+                      provider={activeProvider}
                     />
                   </div>
                 ) : pendingUserInputs.length > 0 ? (
@@ -4405,16 +4438,14 @@ const ProviderHealthBanner = memo(function ProviderHealthBanner({
 
   const defaultMessage =
     status.status === "error"
-      ? `${status.provider} provider is unavailable.`
-      : `${status.provider} provider has limited availability.`;
+      ? `${PROVIDER_LABELS[status.provider]} provider is unavailable.`
+      : `${PROVIDER_LABELS[status.provider]} provider has limited availability.`;
 
   return (
     <div className="pt-3 mx-auto max-w-3xl">
       <Alert variant={status.status === "error" ? "error" : "warning"}>
         <CircleAlertIcon />
-        <AlertTitle>
-          {status.provider === "codex" ? "Codex provider status" : `${status.provider} status`}
-        </AlertTitle>
+        <AlertTitle>{`${PROVIDER_LABELS[status.provider]} provider status`}</AlertTitle>
         <AlertDescription className="line-clamp-3" title={status.message ?? defaultMessage}>
           {status.message ?? defaultMessage}
         </AlertDescription>
@@ -4426,11 +4457,13 @@ const ProviderHealthBanner = memo(function ProviderHealthBanner({
 interface ComposerPendingApprovalPanelProps {
   approval: PendingApproval;
   pendingCount: number;
+  provider: ProviderKind;
 }
 
 const ComposerPendingApprovalPanel = memo(function ComposerPendingApprovalPanel({
   approval,
   pendingCount,
+  provider,
 }: ComposerPendingApprovalPanelProps) {
   const approvalSummary =
     approval.requestKind === "command"
@@ -4441,6 +4474,9 @@ const ComposerPendingApprovalPanel = memo(function ComposerPendingApprovalPanel(
 
   return (
     <div className="px-4 py-3.5 sm:px-5 sm:py-4">
+      <div className="mb-2">
+        <ProviderRuntimeBadge provider={provider} label={`${PROVIDER_LABELS[provider]} approval`} />
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         <span className="uppercase text-sm tracking-[0.2em]">PENDING APPROVAL</span>
         <span className="text-sm font-medium">{approvalSummary}</span>
@@ -5047,6 +5083,7 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
 });
 
 interface MessagesTimelineProps {
+  activeProvider: ProviderKind;
   hasMessages: boolean;
   isWorking: boolean;
   activeTurnInProgress: boolean;
@@ -5101,6 +5138,7 @@ function estimateTimelineProposedPlanHeight(proposedPlan: TimelineProposedPlan):
 }
 
 const MessagesTimeline = memo(function MessagesTimeline({
+  activeProvider,
   hasMessages,
   isWorking,
   activeTurnInProgress,
@@ -5340,13 +5378,29 @@ const MessagesTimeline = memo(function MessagesTimeline({
             : groupedEntries.length === 1
               ? "Work event"
               : `Work log (${groupedEntries.length})`;
+          const providerLabel = PROVIDER_LABELS[activeProvider];
+          const claudeStyledGroup = activeProvider === "claude";
 
           return (
-            <div className="rounded-lg border border-border/80 bg-card/45 px-3 py-2">
+            <div
+              className={cn(
+                "rounded-lg border px-3 py-2",
+                claudeStyledGroup
+                  ? "border-[#D97757]/20 bg-[#D97757]/[0.05]"
+                  : "border-border/80 bg-card/45",
+              )}
+            >
               <div className="mb-1.5 flex items-center justify-between gap-3">
-                <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
-                  {groupLabel}
-                </p>
+                <div className="flex items-center gap-2">
+                  <ProviderRuntimeBadge
+                    provider={activeProvider}
+                    label={onlyToolEntries ? `${providerLabel} tools` : `${providerLabel} work`}
+                    className="shrink-0"
+                  />
+                  <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
+                    {groupLabel}
+                  </p>
+                </div>
                 {hasOverflow && (
                   <button
                     type="button"
@@ -5484,6 +5538,7 @@ const MessagesTimeline = memo(function MessagesTimeline({
         row.message.role === "assistant" &&
         (() => {
           const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+          const claudeStyledMessage = activeProvider === "claude";
           return (
             <>
               {row.showCompletionDivider && (
@@ -5495,7 +5550,22 @@ const MessagesTimeline = memo(function MessagesTimeline({
                   <span className="h-px flex-1 bg-border" />
                 </div>
               )}
-              <div className="min-w-0 px-1 py-0.5">
+              <div
+                className={cn(
+                  "min-w-0 px-1 py-0.5",
+                  claudeStyledMessage &&
+                    "rounded-2xl border border-[#D97757]/20 bg-[#D97757]/[0.05] px-3 py-3",
+                )}
+              >
+                {claudeStyledMessage ? (
+                  <div className="mb-2">
+                    <ProviderRuntimeBadge
+                      provider="claude"
+                      streaming={row.message.streaming}
+                      className="align-middle"
+                    />
+                  </div>
+                ) : null}
                 <ChatMarkdown
                   text={messageText}
                   cwd={markdownCwd}
@@ -5648,7 +5718,7 @@ function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): o
   label: string;
   available: true;
 } {
-  return option.available && option.value !== "claudeCode";
+  return option.available;
 }
 
 const AVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter(isAvailableProviderOption);
@@ -5660,15 +5730,17 @@ const COMING_SOON_PROVIDER_OPTIONS = [
 
 function getCustomModelOptionsByProvider(settings: {
   customCodexModels: readonly string[];
+  customClaudeModels: readonly string[];
 }): Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>> {
   return {
     codex: getAppModelOptions("codex", settings.customCodexModels),
+    claude: getAppModelOptions("claude", settings.customClaudeModels),
   };
 }
 
 const PROVIDER_ICON_BY_PROVIDER: Record<ProviderPickerKind, Icon> = {
   codex: OpenAI,
-  claudeCode: ClaudeAI,
+  claude: ClaudeAI,
   cursor: CursorIcon,
 };
 
@@ -5806,10 +5878,7 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             <MenuItem key={option.value} disabled>
               <OptionIcon
                 aria-hidden="true"
-                className={cn(
-                  "size-4 shrink-0 opacity-80",
-                  option.value === "claudeCode" ? "" : "text-muted-foreground/85",
-                )}
+                className="size-4 shrink-0 text-muted-foreground/85 opacity-80"
               />
               <span>{option.label}</span>
               <span className="ms-auto text-[11px] text-muted-foreground/80 uppercase tracking-[0.08em]">

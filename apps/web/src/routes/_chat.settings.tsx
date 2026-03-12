@@ -4,7 +4,11 @@ import { useCallback, useState } from "react";
 import { type ProviderKind } from "@t3tools/contracts";
 import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 
-import { MAX_CUSTOM_MODEL_LENGTH, useAppSettings } from "../appSettings";
+import {
+  getCustomModelsForProvider,
+  MAX_CUSTOM_MODEL_LENGTH,
+  useAppSettings,
+} from "../appSettings";
 import { isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
@@ -48,24 +52,22 @@ const MODEL_PROVIDER_SETTINGS: Array<{
     placeholder: "your-codex-model-slug",
     example: "gpt-6.7-codex-ultra-preview",
   },
+  {
+    provider: "claude",
+    title: "Claude Code",
+    description: "Save additional Claude model slugs for the picker and `/model` command.",
+    placeholder: "your-claude-model-slug",
+    example: "claude-sonnet-4-5",
+  },
 ] as const;
-
-function getCustomModelsForProvider(
-  settings: ReturnType<typeof useAppSettings>["settings"],
-  provider: ProviderKind,
-) {
-  switch (provider) {
-    case "codex":
-    default:
-      return settings.customCodexModels;
-  }
-}
 
 function getDefaultCustomModelsForProvider(
   defaults: ReturnType<typeof useAppSettings>["defaults"],
   provider: ProviderKind,
 ) {
   switch (provider) {
+    case "claude":
+      return defaults.customClaudeModels;
     case "codex":
     default:
       return defaults.customCodexModels;
@@ -74,6 +76,8 @@ function getDefaultCustomModelsForProvider(
 
 function patchCustomModels(provider: ProviderKind, models: string[]) {
   switch (provider) {
+    case "claude":
+      return { customClaudeModels: models };
     case "codex":
     default:
       return { customCodexModels: models };
@@ -90,6 +94,7 @@ function SettingsRouteView() {
     Record<ProviderKind, string>
   >({
     codex: "",
+    claude: "",
   });
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>
