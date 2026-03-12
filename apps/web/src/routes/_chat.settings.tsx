@@ -63,20 +63,6 @@ const MODEL_PROVIDER_SETTINGS: Array<{
   },
 ] as const;
 
-function getCustomModelsForProvider(
-  settings: ReturnType<typeof useAppSettings>["settings"],
-  provider: ProviderKind,
-) {
-  switch (provider) {
-    case "codex":
-      return settings.customCodexModels;
-    case "claude":
-      return settings.customClaudeModels;
-    default:
-      return [];
-  }
-}
-
 function getDefaultCustomModelsForProvider(
   defaults: ReturnType<typeof useAppSettings>["defaults"],
   provider: ProviderKind,
