@@ -379,6 +379,58 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
         ),
       );
 
+      it.effect("treats Codex-compatible app-server bridges as ready without CLI probes", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(
+            () =>
+              Effect.succeed({
+                type: "unknown" as const,
+                planType: null,
+                sparkEnabled: true,
+              }),
+            () =>
+              Effect.succeed([
+                {
+                  name: "cmux-agents",
+                  path: "/Users/test/.codex/skills/cmux-agents/SKILL.md",
+                  enabled: true,
+                },
+              ]),
+          ).pipe(
+            Effect.provide(
+              ServerSettingsService.layerTest({
+                providers: {
+                  codex: {
+                    binaryPath: "/usr/local/bin/cmuxlayer-app-server",
+                  },
+                },
+              }),
+            ),
+          );
+
+          assert.strictEqual(status.provider, "codex");
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.installed, true);
+          assert.strictEqual(status.auth.status, "unknown");
+          assert.strictEqual(status.version, null);
+          assert.strictEqual(
+            status.message,
+            "Using a Codex-compatible app-server bridge; CLI version and login checks skipped.",
+          );
+          assert.deepStrictEqual(
+            status.models.some((model) => model.slug === "gpt-5.3-codex-spark"),
+            true,
+          );
+          assert.deepStrictEqual(status.skills, [
+            {
+              name: "cmux-agents",
+              path: "/Users/test/.codex/skills/cmux-agents/SKILL.md",
+              enabled: true,
+            },
+          ]);
+        }).pipe(Effect.provide(failingSpawnerLayer("bridge provider must not spawn codex CLI"))),
+      );
+
       it.effect.skipIf(process.platform === "win32")(
         "inherits PATH when launching the codex probe with a CODEX_HOME override",
         () =>

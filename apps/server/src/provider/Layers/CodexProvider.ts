@@ -45,7 +45,7 @@ import {
   codexAuthSubType,
   type CodexAccountSnapshot,
 } from "../codexAccount.ts";
-import { probeCodexDiscovery } from "../codexAppServer.ts";
+import { isCodexAppServerBridgeBinary, probeCodexDiscovery } from "../codexAppServer.ts";
 import { CodexProvider } from "../Services/CodexProvider.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ServerSettingsError } from "@t3tools/contracts";
@@ -373,6 +373,46 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         status: "warning",
         auth: { status: "unknown" },
         message: "Codex is disabled in T3 Code settings.",
+      },
+    });
+  }
+
+  if (isCodexAppServerBridgeBinary(codexSettings.binaryPath)) {
+    const account = resolveAccount
+      ? yield* resolveAccount({
+          binaryPath: codexSettings.binaryPath,
+          homePath: codexSettings.homePath,
+        }).pipe(Effect.orElseSucceed(() => undefined))
+      : undefined;
+    const skills =
+      (resolveSkills
+        ? yield* resolveSkills({
+            binaryPath: codexSettings.binaryPath,
+            homePath: codexSettings.homePath,
+            cwd: process.cwd(),
+          }).pipe(Effect.orElseSucceed(() => undefined))
+        : undefined) ?? [];
+    const resolvedModels = adjustCodexModelsForAccount(models, account);
+    const authType = codexAuthSubType(account);
+    const authLabel = codexAuthSubLabel(account);
+
+    return buildServerProvider({
+      provider: PROVIDER,
+      enabled: codexSettings.enabled,
+      checkedAt,
+      models: resolvedModels,
+      skills,
+      probe: {
+        installed: true,
+        version: null,
+        status: "ready",
+        auth: {
+          status: "unknown",
+          ...(authType ? { type: authType } : {}),
+          ...(authLabel ? { label: authLabel } : {}),
+        },
+        message:
+          "Using a Codex-compatible app-server bridge; CLI version and login checks skipped.",
       },
     });
   }

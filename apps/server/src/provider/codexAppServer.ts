@@ -16,6 +16,18 @@ export interface CodexDiscoverySnapshot {
   readonly skills: ReadonlyArray<ServerProviderSkill>;
 }
 
+export function isCodexAppServerBridgeBinary(binaryPath: string): boolean {
+  const base = binaryPath.replaceAll("\\", "/").split("/").pop()?.toLowerCase() ?? "";
+  if (!base || base === "codex" || /^codex(\.[a-z0-9]+)?$/.test(base)) {
+    return false;
+  }
+  return /app-server(?:\.[a-z0-9]+)?$/.test(base);
+}
+
+export function codexAppServerLaunchArgs(binaryPath: string): ReadonlyArray<string> {
+  return isCodexAppServerBridgeBinary(binaryPath) ? [] : ["app-server"];
+}
+
 function readErrorMessage(response: JsonRpcProbeResponse): string | undefined {
   return typeof response.error?.message === "string" ? response.error.message : undefined;
 }
@@ -35,6 +47,10 @@ function readString(value: unknown): string | undefined {
 function nonEmptyTrimmed(value: unknown): string | undefined {
   const candidate = readString(value)?.trim();
   return candidate ? candidate : undefined;
+}
+
+function isMethodNotFoundErrorMessage(message: string | undefined): boolean {
+  return (message ?? "").toLowerCase().includes("method not found");
 }
 
 function parseCodexSkillsResult(result: unknown, cwd: string): ReadonlyArray<ServerProviderSkill> {
@@ -112,7 +128,7 @@ export async function probeCodexDiscovery(input: {
   readonly signal?: AbortSignal;
 }): Promise<CodexDiscoverySnapshot> {
   return await new Promise((resolve, reject) => {
-    const child = spawn(input.binaryPath, ["app-server"], {
+    const child = spawn(input.binaryPath, [...codexAppServerLaunchArgs(input.binaryPath)], {
       env: {
         ...process.env,
         ...(input.homePath ? { CODEX_HOME: input.homePath } : {}),
@@ -205,6 +221,10 @@ export async function probeCodexDiscovery(input: {
 
       if (response.id === 2) {
         const errorMessage = readErrorMessage(response);
+        if (errorMessage && !isMethodNotFoundErrorMessage(errorMessage)) {
+          fail(new Error(`skills/list failed: ${errorMessage}`));
+          return;
+        }
         skills = errorMessage ? [] : parseCodexSkillsResult(response.result, input.cwd);
         maybeResolve();
         return;

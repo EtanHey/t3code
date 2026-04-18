@@ -31,7 +31,12 @@ import {
   resolveCodexModelForAccount,
   type CodexAccountSnapshot,
 } from "./provider/codexAccount.ts";
-import { buildCodexInitializeParams, killCodexChildProcess } from "./provider/codexAppServer.ts";
+import {
+  buildCodexInitializeParams,
+  codexAppServerLaunchArgs,
+  isCodexAppServerBridgeBinary,
+  killCodexChildProcess,
+} from "./provider/codexAppServer.ts";
 
 export { buildCodexInitializeParams } from "./provider/codexAppServer.ts";
 export { readCodexAccountSnapshot, resolveCodexModelForAccount } from "./provider/codexAccount.ts";
@@ -489,7 +494,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         cwd: resolvedCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
-      const child = spawn(codexBinaryPath, ["app-server"], {
+      const child = spawn(codexBinaryPath, [...codexAppServerLaunchArgs(codexBinaryPath)], {
         cwd: resolvedCwd,
         env: {
           ...process.env,
@@ -1567,6 +1572,10 @@ function assertSupportedCodexCliVersion(input: {
   readonly cwd: string;
   readonly homePath?: string;
 }): void {
+  if (isCodexAppServerBridgeBinary(input.binaryPath)) {
+    return;
+  }
+
   const result = spawnSync(input.binaryPath, ["--version"], {
     cwd: input.cwd,
     env: {

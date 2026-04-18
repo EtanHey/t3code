@@ -36,12 +36,14 @@ export function readCodexAccountSnapshot(response: unknown): CodexAccountSnapsho
   const record = asObject(response);
   const account = asObject(record?.account) ?? record;
   const accountType = asString(account?.type);
+  const explicitSparkEnabled =
+    typeof account?.sparkEnabled === "boolean" ? account.sparkEnabled : undefined;
 
   if (accountType === "apiKey") {
     return {
       type: "apiKey",
       planType: null,
-      sparkEnabled: false,
+      sparkEnabled: explicitSparkEnabled ?? false,
     };
   }
 
@@ -50,14 +52,14 @@ export function readCodexAccountSnapshot(response: unknown): CodexAccountSnapsho
     return {
       type: "chatgpt",
       planType,
-      sparkEnabled: CODEX_SPARK_ENABLED_PLAN_TYPES.has(planType),
+      sparkEnabled: explicitSparkEnabled ?? CODEX_SPARK_ENABLED_PLAN_TYPES.has(planType),
     };
   }
 
   return {
     type: "unknown",
     planType: null,
-    sparkEnabled: false,
+    sparkEnabled: explicitSparkEnabled ?? false,
   };
 }
 
