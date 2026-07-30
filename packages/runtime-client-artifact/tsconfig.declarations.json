@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "paths": {
+      "@t3tools/client-runtime/runtime-client": ["../client-runtime/src/rpc/runtimeClient.ts"],
+      "@t3tools/contracts/runtime-client": ["../contracts/src/runtimeClient.ts"]
+    },
+    "rootDir": "../.."
+  },
+  "include": [
+    "src/index.ts",
+    "../client-runtime/src/rpc/runtimeClient.ts",
+    "../contracts/src/**/*.ts"
+  ],
+  "exclude": ["../contracts/src/**/*.test.ts", "../contracts/src/index.ts"]
+}

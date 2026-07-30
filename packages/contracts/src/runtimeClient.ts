@@ -7,5 +7,7 @@ export {
   T3_RPC_SERIALIZATION,
   T3_RPC_TRANSPORT,
 } from "./rpcCompatibility.ts";
+export { EnvironmentId } from "./baseSchemas.ts";
+export type { ServerConfig } from "./server.ts";
 export { WS_METHODS, WsRpcGroup } from "./rpc.ts";
 export * from "./orchestration.ts";

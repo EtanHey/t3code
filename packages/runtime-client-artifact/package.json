@@ -1,0 +1,19 @@
+{
+  "name": "@t3tools/runtime-client-artifact-source",
+  "private": true,
+  "description": "Private build source for the standalone T3 Effect RPC client artifact.",
+  "type": "module",
+  "scripts": {
+    "artifact": "node ../../scripts/build-runtime-client-artifact.ts",
+    "artifact:test": "node ../../scripts/build-runtime-client-artifact.integration.ts",
+    "typecheck": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@t3tools/client-runtime": "workspace:*",
+    "@t3tools/contracts": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "vite-plus": "catalog:"
+  }
+}
