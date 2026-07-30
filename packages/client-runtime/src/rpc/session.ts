@@ -4,7 +4,7 @@ import {
   type RpcCompatibilityDescriptor,
   type ServerConfig,
   WS_METHODS,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/runtime-client";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
