@@ -23,6 +23,10 @@
       "types": "./src/rpc/index.ts",
       "default": "./src/rpc/index.ts"
     },
+    "./runtime-client": {
+      "types": "./src/rpc/runtimeClient.ts",
+      "default": "./src/rpc/runtimeClient.ts"
+    },
     "./operations": {
       "types": "./src/operations/index.ts",
       "default": "./src/operations/index.ts"

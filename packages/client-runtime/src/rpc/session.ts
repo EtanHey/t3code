@@ -1,4 +1,10 @@
-import { type ServerConfig, WS_METHODS } from "@t3tools/contracts";
+import {
+  T3_RPC_COMPATIBILITY,
+  type EnvironmentId,
+  type RpcCompatibilityDescriptor,
+  type ServerConfig,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -10,15 +16,12 @@ import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { makeWsRpcProtocolClient, type WsRpcProtocolClient } from "./protocol.ts";
-import type {
-  ConnectionAttemptError,
-  ConnectionTransientError,
-  PreparedConnection,
-} from "../connection/model.ts";
+import type { ConnectionAttemptError, ConnectionTransientError } from "../connection/model.ts";
 import {
   ConnectionBlockedError,
   ConnectionTransientError as ConnectionTransientErrorClass,
 } from "../connection/model.ts";
+import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 
 const SOCKET_OPEN_TIMEOUT = "15 seconds";
 
@@ -30,11 +33,23 @@ export interface RpcSession {
   readonly closed: Effect.Effect<never, ConnectionTransientError>;
 }
 
+/** Deliberately excludes HTTP authorization and connection target metadata. */
+export interface RpcSessionConnection {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly socketUrl: string;
+}
+
+export interface RpcSessionConnectOptions {
+  readonly requireRpcCompatibility?: boolean;
+}
+
 export class RpcSessionFactory extends Context.Service<
   RpcSessionFactory,
   {
     readonly connect: (
-      connection: PreparedConnection,
+      connection: RpcSessionConnection,
+      options?: RpcSessionConnectOptions,
     ) => Effect.Effect<RpcSession, ConnectionAttemptError, Scope.Scope>;
   }
 >()("@t3tools/client-runtime/rpc/session/RpcSessionFactory") {}
@@ -44,7 +59,17 @@ type InitialConfigError = Effect.Error<
 >;
 type ProbeError = Effect.Error<ReturnType<WsRpcProtocolClient[typeof WS_METHODS.serverProbe]>>;
 
-function mapSessionRpcError(error: InitialConfigError | ProbeError): ConnectionAttemptError {
+function protocolFailure(label: string): ConnectionTransientError {
+  return new ConnectionTransientErrorClass({
+    reason: "transport",
+    detail: `${label} RPC protocol failed.`,
+  });
+}
+
+function mapSessionRpcError(
+  error: InitialConfigError | ProbeError,
+  label: string,
+): ConnectionAttemptError {
   switch (error._tag) {
     case "EnvironmentAuthorizationError":
       return new ConnectionBlockedError({
@@ -58,17 +83,57 @@ function mapSessionRpcError(error: InitialConfigError | ProbeError): ConnectionA
         detail: error.message,
       });
     case "RpcClientError":
-      return new ConnectionTransientErrorClass({
-        reason: "transport",
-        detail: error.message,
-      });
+      return protocolFailure(label);
   }
 }
+
+function catchProtocolDefects<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  connection: RpcSessionConnection,
+): Effect.Effect<A, E | ConnectionTransientError, R> {
+  return effect.pipe(
+    Effect.tapDefect((defect) =>
+      Effect.logError("RPC session defect.").pipe(
+        Effect.annotateLogs({
+          "connection.environment.id": connection.environmentId,
+          "connection.environment.label": connection.label,
+          ...safeErrorLogAttributes(defect),
+        }),
+      ),
+    ),
+    Effect.catchDefect(() => Effect.fail(protocolFailure(connection.label))),
+  );
+}
+
+function isCompatibleRpcDescriptor(descriptor: RpcCompatibilityDescriptor | undefined): boolean {
+  return (
+    descriptor?.protocol === T3_RPC_COMPATIBILITY.protocol &&
+    descriptor.transport === T3_RPC_COMPATIBILITY.transport &&
+    descriptor.serialization === T3_RPC_COMPATIBILITY.serialization &&
+    descriptor.contractFingerprint === T3_RPC_COMPATIBILITY.contractFingerprint
+  );
+}
+
+const validateRpcCompatibility = Effect.fn("RpcSession.validateRpcCompatibility")(function* (
+  config: ServerConfig,
+  label: string,
+) {
+  if (isCompatibleRpcDescriptor(config.environment.rpc)) {
+    return config;
+  }
+  return yield* new ConnectionBlockedError({
+    reason: "version_mismatch",
+    detail: `${label} uses incompatible T3 RPC contracts.`,
+  });
+});
 
 export const make = Effect.gen(function* () {
   const webSocketConstructor = yield* Socket.WebSocketConstructor;
 
-  const connect = Effect.fnUntraced(function* (connection: PreparedConnection) {
+  const connect = Effect.fnUntraced(function* (
+    connection: RpcSessionConnection,
+    options?: RpcSessionConnectOptions,
+  ) {
     yield* Effect.annotateCurrentSpan({
       "connection.environment.id": connection.environmentId,
     });
@@ -114,22 +179,39 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("environment.websocket.connect"),
     );
     const client = yield* makeWsRpcProtocolClient.pipe(Effect.provide(protocolContext));
+    const mapRpcError = (error: InitialConfigError | ProbeError) =>
+      mapSessionRpcError(error, connection.label);
     const initialConfig = yield* Effect.cached(
       client[WS_METHODS.serverGetConfig]({}).pipe(
-        Effect.mapError(mapSessionRpcError),
+        Effect.mapError(mapRpcError),
+        (effect) => catchProtocolDefects(effect, connection),
+        Effect.flatMap((config) =>
+          options?.requireRpcCompatibility === true
+            ? validateRpcCompatibility(config, connection.label)
+            : Effect.succeed(config),
+        ),
         Effect.withSpan("environment.initialSync"),
       ),
     );
-    const probe = initialConfig.pipe(
-      Effect.flatMap((config) =>
-        (config.environment.capabilities.connectionProbe === true
-          ? client[WS_METHODS.serverProbe]({})
-          : client[WS_METHODS.serverGetConfig]({})
-        ).pipe(Effect.mapError(mapSessionRpcError)),
-      ),
+    const probe = Effect.gen(function* () {
+      const config = yield* initialConfig;
+      if (config.environment.capabilities.connectionProbe === true) {
+        yield* client[WS_METHODS.serverProbe]({}).pipe(Effect.mapError(mapRpcError));
+        return;
+      }
+      yield* client[WS_METHODS.serverGetConfig]({}).pipe(Effect.mapError(mapRpcError));
+    }).pipe(
+      (effect) => catchProtocolDefects(effect, connection),
       Effect.asVoid,
       Effect.withSpan("clientRuntime.connection.rpcSession.probe"),
     );
+
+    if (options?.requireRpcCompatibility === true) {
+      yield* Deferred.await(connected).pipe(
+        Effect.andThen(initialConfig),
+        Effect.raceFirst(Deferred.await(disconnected)),
+      );
+    }
 
     return {
       client,

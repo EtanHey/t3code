@@ -25,6 +25,7 @@ policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../A
 - [Glossary](./internals/glossary.md)
 - [Scripts](./internals/scripts.md)
 - [Connection runtime](./internals/connection-runtime.md)
+- [Runtime client contracts](./internals/runtime-client-contracts.md)
 - [Providers](./internals/providers.md)
 - [Remote environments](./internals/remote.md)
 - [Server updates](./internals/server-updates.md)

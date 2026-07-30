@@ -10,6 +10,7 @@ This is a living glossary for T3 Code. It explains what common terms mean in thi
 - [Thread timeline](#thread-timeline)
 - [Orchestration](#orchestration)
 - [Provider runtime](#provider-runtime)
+- [RPC compatibility](#rpc-compatibility)
 - [Checkpointing](#checkpointing)
 
 ## Concepts
@@ -116,6 +117,25 @@ Controls how assistant text reaches the thread timeline. In [the contracts][1], 
 
 A point-in-time view of state. The word is used in multiple layers, including orchestration, provider, and checkpointing. See [ProjectionSnapshotQuery.ts][10], [ProviderAdapter.ts][15], and [CheckpointStore.ts][19].
 
+### RPC compatibility
+
+#### RPC compatibility descriptor
+
+The optional `environment.rpc` identity advertised by `server.getConfig`. It
+names the protocol, transport, serialization, and contract fingerprint used by
+the native WebSocket RPC seam. Its schema accepts unknown non-empty values so a
+client can classify incompatibility instead of failing config decoding. See
+[runtime-client-contracts.md][25].
+
+#### Contract fingerprint
+
+The versioned compatibility identity in `T3_RPC_CONTRACT_FINGERPRINT`. It is
+separate from the server's release version and changes when the exported RPC
+group, serialization, or Effect framing becomes incompatible. First-party T3
+clients continue connecting under version skew; version-locked integrations
+use the strict runtime-client factory and receive `version_mismatch` when the
+descriptor is missing or unequal. See [runtime-client-contracts.md][25].
+
 ### Checkpointing
 
 Checkpointing captures workspace state over time so the app can diff turns and restore earlier points. The main pieces are [CheckpointStore.ts][19], [CheckpointDiffQuery.ts][20], and [CheckpointReactor.ts][6].
@@ -153,6 +173,7 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 - [Architecture overview][24]
 - [Provider architecture][16]
 - [Permission modes][18]
+- [Runtime client contracts][25]
 - [Workspace layout][2]
 
 [1]: ../../packages/contracts/src/orchestration.ts
@@ -179,3 +200,4 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [22]: ../../apps/server/src/checkpointing/Utils.ts
 [23]: ../../apps/server/src/checkpointing/Diffs.ts
 [24]: ./overview.md
+[25]: ./runtime-client-contracts.md

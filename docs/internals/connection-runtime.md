@@ -39,6 +39,13 @@ effects with that supervisor provided.
 session scope. React components do not create connections, transports, retry
 loops, or RPC clients.
 
+The application connection layer remains tolerant of server version skew. It
+can connect to servers that predate the optional RPC compatibility descriptor,
+then uses the existing release-version warning and update flow. The separate
+`@t3tools/client-runtime/runtime-client` boundary opts into exact descriptor
+matching for version-locked integrations; its mismatch error is
+`version_mismatch`.
+
 ## Connection State
 
 The supervisor is the only retry owner.

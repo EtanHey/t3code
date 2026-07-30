@@ -72,6 +72,7 @@ export const ConnectionBlockedReason = Schema.Literals([
   "configuration",
   "permission",
   "unsupported",
+  "version_mismatch",
 ]);
 export type ConnectionBlockedReason = typeof ConnectionBlockedReason.Type;
 
