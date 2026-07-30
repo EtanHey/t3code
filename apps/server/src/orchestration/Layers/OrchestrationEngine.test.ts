@@ -17,7 +17,7 @@ import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -27,7 +27,7 @@ import {
   OrchestrationEventStore,
   type OrchestrationEventStoreShape,
 } from "../../persistence/Services/OrchestrationEventStore.ts";
-import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
+import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -57,7 +57,7 @@ async function createOrchestrationSystem() {
   ).pipe(
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
-    Layer.provide(RepositoryIdentityResolverLive),
+    Layer.provide(RepositoryIdentityResolver.layer),
     Layer.provide(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
@@ -146,6 +146,8 @@ describe("OrchestrationEngine", () => {
           createdAt: "2026-03-03T00:00:02.000Z",
           updatedAt: "2026-03-03T00:00:03.000Z",
           archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],
@@ -200,6 +202,8 @@ describe("OrchestrationEngine", () => {
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+          searchThreads: () => Effect.succeed({ matches: [] }),
         }),
       ),
       Layer.provide(
@@ -217,6 +221,7 @@ describe("OrchestrationEngine", () => {
     const runtime = ManagedRuntime.make(layer);
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    expect(await runtime.runPromise(engine.latestSequence)).toBe(7);
     const result = await runtime.runPromise(
       engine.dispatch({
         type: "thread.meta.update",
@@ -227,6 +232,7 @@ describe("OrchestrationEngine", () => {
     );
 
     expect(result.sequence).toBe(8);
+    expect(await runtime.runPromise(engine.latestSequence)).toBe(8);
     expect(fullSnapshotReadCount).toBe(0);
 
     await runtime.dispose();
@@ -332,6 +338,14 @@ describe("OrchestrationEngine", () => {
 
     await system.run(
       engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-archive-title-regeneration"),
+        threadId: ThreadId.make("thread-archive"),
+        regenerateTitle: true,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
         type: "thread.archive",
         commandId: CommandId.make("cmd-thread-archive"),
         threadId: ThreadId.make("thread-archive"),
@@ -341,6 +355,10 @@ describe("OrchestrationEngine", () => {
       (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
         ?.archivedAt,
     ).not.toBeNull();
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
+        ?.titleRegeneration,
+    ).toBeNull();
 
     await system.run(
       engine.dispatch({
@@ -353,6 +371,22 @@ describe("OrchestrationEngine", () => {
       (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
         ?.archivedAt,
     ).toBeNull();
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
+        ?.titleRegeneration,
+    ).toBeNull();
+    await system.run(
+      engine.dispatch({
+        type: "thread.title.regeneration.complete",
+        commandId: CommandId.make("cmd-thread-archive-stale-title-completion"),
+        threadId: ThreadId.make("thread-archive"),
+        requestId: CommandId.make("cmd-thread-archive-title-regeneration"),
+        title: "Stale generated title",
+      }),
+    );
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")?.title,
+    ).toBe("Archive me");
 
     await system.dispose();
   });
@@ -473,6 +507,112 @@ describe("OrchestrationEngine", () => {
     );
 
     expect(eventTypes).toEqual(["thread.created", "thread.meta-updated"]);
+    await system.dispose();
+  });
+
+  it("does not regress a generated branch to a stale temporary worktree branch", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-branch-race-project-create"),
+        projectId: asProjectId("project-branch-race"),
+        title: "Branch Race Project",
+        workspaceRoot: "/tmp/project-branch-race",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-branch-race-thread-create"),
+        threadId: ThreadId.make("thread-branch-race"),
+        projectId: asProjectId("project-branch-race"),
+        title: "Branch Race Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: "t3code/generated-branch-name",
+        worktreePath: "/tmp/project-branch-race-worktree",
+        createdAt,
+      }),
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-stale-temporary-branch-sync"),
+        threadId: ThreadId.make("thread-branch-race"),
+        branch: "t3code/1234abcd",
+        expectedBranch: "t3code/1234abcd",
+      }),
+    );
+
+    const snapshot = await system.readModel();
+    expect(snapshot.threads[0]?.branch).toBe("t3code/generated-branch-name");
+    await system.dispose();
+  });
+
+  it("allows authoritative worktree bootstrap to assign a temporary branch", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-worktree-bootstrap-project-create"),
+        projectId: asProjectId("project-worktree-bootstrap"),
+        title: "Worktree Bootstrap Project",
+        workspaceRoot: "/tmp/project-worktree-bootstrap",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-worktree-bootstrap-thread-create"),
+        threadId: ThreadId.make("thread-worktree-bootstrap"),
+        projectId: asProjectId("project-worktree-bootstrap"),
+        title: "Worktree Bootstrap Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: "main",
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-authoritative-worktree-bootstrap"),
+        threadId: ThreadId.make("thread-worktree-bootstrap"),
+        branch: "t3code/1234abcd",
+        worktreePath: "/tmp/project-worktree-bootstrap-worktree",
+      }),
+    );
+
+    const snapshot = await system.readModel();
+    expect(snapshot.threads[0]?.branch).toBe("t3code/1234abcd");
+    expect(snapshot.threads[0]?.worktreePath).toBe("/tmp/project-worktree-bootstrap-worktree");
     await system.dispose();
   });
 
@@ -680,7 +820,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationProjectionPipelineLive),
         Layer.provide(Layer.succeed(OrchestrationEventStore, flakyStore)),
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
-        Layer.provide(RepositoryIdentityResolverLive),
+        Layer.provide(RepositoryIdentityResolver.layer),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provideMerge(ServerConfigLayer),
         Layer.provideMerge(NodeServices.layer),
@@ -785,7 +925,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(Layer.succeed(OrchestrationProjectionPipeline, flakyProjectionPipeline)),
         Layer.provide(OrchestrationEventStoreLive),
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
-        Layer.provide(RepositoryIdentityResolverLive),
+        Layer.provide(RepositoryIdentityResolver.layer),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provide(NodeServices.layer),
       ),
@@ -928,7 +1068,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(Layer.succeed(OrchestrationProjectionPipeline, flakyProjectionPipeline)),
         Layer.provide(Layer.succeed(OrchestrationEventStore, nonTransactionalStore)),
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
-        Layer.provide(RepositoryIdentityResolverLive),
+        Layer.provide(RepositoryIdentityResolver.layer),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provide(NodeServices.layer),
       ),

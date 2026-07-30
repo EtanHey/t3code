@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.0.24",
+  "version": "0.0.31",
   "private": true,
   "files": [
     "dist"
@@ -14,17 +14,25 @@
     "./settings": {
       "types": "./src/settings.ts",
       "import": "./src/settings.ts"
+    },
+    "./relay": {
+      "types": "./src/relay.ts",
+      "import": "./src/relay.ts"
+    },
+    "./runtime-client": {
+      "types": "./src/runtimeClient.ts",
+      "import": "./src/runtimeClient.ts"
     }
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "test": "vitest run"
+    "test": "vp test run"
   },
   "dependencies": {
     "effect": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "vitest": "catalog:"
+    "vite-plus": "catalog:"
   }
 }

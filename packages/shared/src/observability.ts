@@ -8,7 +8,8 @@ import { OtlpResource, OtlpTracer } from "effect/unstable/observability";
 
 import { RotatingFileSink } from "./logging.ts";
 
-const FLUSH_BUFFER_THRESHOLD = 32;
+const FLUSH_BUFFER_THRESHOLD = 256;
+const textEncoder = new TextEncoder();
 
 export type TraceAttributes = Readonly<Record<string, unknown>>;
 
@@ -73,11 +74,49 @@ export interface OtlpTraceRecord extends BaseTraceRecord {
 
 export type TraceRecord = EffectTraceRecord | OtlpTraceRecord;
 
+function isStructuralTag(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 128 &&
+    /^[A-Za-z][A-Za-z0-9._:/-]*$/.test(value)
+  );
+}
+
+export function errorTag(error: unknown): string {
+  try {
+    if (typeof error === "object" && error !== null && "_tag" in error) {
+      return isStructuralTag(error._tag) ? error._tag : "TaggedError";
+    }
+    if (error instanceof Error) {
+      return isStructuralTag(error.name) ? error.name : "Error";
+    }
+  } catch {
+    return "UnknownError";
+  }
+  return typeof error;
+}
+
+export function causeErrorTag(cause: Cause.Cause<unknown>): string {
+  const failure = Cause.findErrorOption(cause);
+  if (Option.isSome(failure)) {
+    return errorTag(failure.value);
+  }
+  return cause.reasons[0]?._tag ?? "Empty";
+}
+
 export interface TraceSinkOptions {
   readonly filePath: string;
   readonly maxBytes: number;
   readonly maxFiles: number;
   readonly batchWindowMs: number;
+  readonly onFlush?: (stats: TraceSinkFlushStats) => Effect.Effect<void>;
+}
+
+export interface TraceSinkFlushStats {
+  readonly logicalWriteBytes: number;
+  readonly count: number;
+  readonly durationMs: number;
 }
 
 export interface TraceSink {
@@ -244,26 +283,73 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     filePath: options.filePath,
     maxBytes: options.maxBytes,
     maxFiles: options.maxFiles,
+    throwOnError: true,
   });
 
   let buffer: Array<string> = [];
+  let pendingFlushStats: TraceSinkFlushStats = {
+    logicalWriteBytes: 0,
+    count: 0,
+    durationMs: 0,
+  };
 
   const flushUnsafe = () => {
     if (buffer.length === 0) {
       return;
     }
 
-    const chunk = buffer.join("");
+    const records = buffer;
     buffer = [];
+    let persistedCount = 0;
 
-    try {
-      sink.write(chunk);
-    } catch {
-      buffer.unshift(chunk);
+    while (persistedCount < records.length) {
+      const firstRecordBytes = textEncoder.encode(records[persistedCount]).byteLength;
+      if (firstRecordBytes > options.maxBytes) {
+        persistedCount += 1;
+        continue;
+      }
+
+      let nextIndex = persistedCount + 1;
+      let chunkBytes = firstRecordBytes;
+      while (nextIndex < records.length) {
+        const nextRecordBytes = textEncoder.encode(records[nextIndex]).byteLength;
+        if (chunkBytes + nextRecordBytes > options.maxBytes) break;
+        chunkBytes += nextRecordBytes;
+        nextIndex += 1;
+      }
+
+      const chunk = records.slice(persistedCount, nextIndex).join("");
+      const startedAt = performance.now();
+      try {
+        sink.write(chunk);
+      } catch {
+        buffer.unshift(...records.slice(persistedCount));
+        return;
+      }
+      pendingFlushStats = {
+        logicalWriteBytes: pendingFlushStats.logicalWriteBytes + chunkBytes,
+        count: pendingFlushStats.count + nextIndex - persistedCount,
+        durationMs: pendingFlushStats.durationMs + Math.max(0, performance.now() - startedAt),
+      };
+      persistedCount = nextIndex;
     }
   };
 
-  const flush = Effect.sync(flushUnsafe).pipe(Effect.withTracerEnabled(false));
+  const flush = Effect.sync(() => {
+    flushUnsafe();
+    const stats = pendingFlushStats;
+    pendingFlushStats = {
+      logicalWriteBytes: 0,
+      count: 0,
+      durationMs: 0,
+    };
+    return stats;
+  }).pipe(
+    Effect.flatMap((stats) =>
+      stats.count > 0 && options.onFlush ? options.onFlush(stats).pipe(Effect.ignore) : Effect.void,
+    ),
+    Effect.withTracerEnabled(false),
+  );
 
   yield* Effect.addFinalizer(() => flush.pipe(Effect.ignore));
   yield* Effect.forkScoped(
@@ -368,6 +454,7 @@ export const makeLocalFileTracer = Effect.fn("makeLocalFileTracer")(function* (
       maxBytes: options.maxBytes,
       maxFiles: options.maxFiles,
       batchWindowMs: options.batchWindowMs,
+      ...(options.onFlush ? { onFlush: options.onFlush } : {}),
     }));
 
   const delegate =

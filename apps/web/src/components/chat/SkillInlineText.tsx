@@ -3,11 +3,12 @@ import type { ServerProviderSkill } from "@t3tools/contracts";
 
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import {
+  CHAT_INLINE_CHIP_CLASS_NAME,
+  CHAT_INLINE_CHIP_LABEL_CLASS_NAME,
   COMPOSER_INLINE_CHIP_ICON_CLASS_NAME,
-  COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME,
-  COMPOSER_INLINE_SKILL_CHIP_CLASS_NAME,
   SKILL_CHIP_ICON_SVG,
 } from "../composerInlineChip";
+import { cn } from "~/lib/utils";
 
 const SKILL_TOKEN_REGEX = /(^|\s)\$([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
 
@@ -51,10 +52,13 @@ export function renderSkillInlineMarkdownChildren(
     if (typeof child === "string") {
       return <SkillInlineText text={child} skills={skills} />;
     }
-    if (!isValidElement<{ children?: ReactNode }>(child)) {
+    if (!isValidElement<{ children?: ReactNode; node?: { tagName?: string } }>(child)) {
       return child;
     }
-    if (child.type === "code" || child.type === "a") {
+    // Custom react-markdown components replace the intrinsic type, so also
+    // check the hast node they carry.
+    const markdownTagName = typeof child.type === "string" ? child.type : child.props.node?.tagName;
+    if (markdownTagName === "code" || markdownTagName === "a") {
       return child;
     }
     if (!("children" in child.props)) {
@@ -70,15 +74,19 @@ export function renderSkillInlineMarkdownChildren(
 
 function SkillChip(props: { skill: InlineSkill; rawText: string }) {
   return (
-    <span className="inline-flex align-middle leading-none">
-      <span className="sr-only">{props.rawText}</span>
-      <span aria-hidden="true" className={COMPOSER_INLINE_SKILL_CHIP_CLASS_NAME}>
+    <span className="inline-flex align-middle leading-none" data-markdown-copy={props.rawText}>
+      <span
+        className={cn(
+          CHAT_INLINE_CHIP_CLASS_NAME,
+          "border-fuchsia-500/25 bg-fuchsia-500/12 text-fuchsia-700 dark:text-fuchsia-300",
+        )}
+      >
         <span
           aria-hidden="true"
           className={COMPOSER_INLINE_CHIP_ICON_CLASS_NAME}
           dangerouslySetInnerHTML={{ __html: SKILL_CHIP_ICON_SVG }}
         />
-        <span className={COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME}>
+        <span className={CHAT_INLINE_CHIP_LABEL_CLASS_NAME}>
           {formatProviderSkillDisplayName(props.skill)}
         </span>
       </span>
