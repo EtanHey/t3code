@@ -293,6 +293,26 @@ describe("runtime-client immutable release contract", () => {
     assert.notInclude(workflow, "npm.pkg.github.com");
   });
 
+  it("pins repository-compatible checkout v4 before full-depth exact-SHA validation", () => {
+    const workflow = NodeFS.readFileSync(workflowPath, "utf8");
+    const checkoutPin = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2";
+    const checkoutIndex = workflow.indexOf(`uses: ${checkoutPin}`);
+    const fullDepthIndex = workflow.indexOf("fetch-depth: 0", checkoutIndex);
+    const exactSourceGateIndex = workflow.indexOf("- name: Verify exact clean source on main");
+
+    assert.deepStrictEqual(
+      [...workflow.matchAll(/uses: actions\/checkout@([^\s]+)/g)].map((match) => match[1]),
+      ["11bd71901bbe5b1630ceea73d27597364c9af683"],
+    );
+    assert.isAtLeast(checkoutIndex, 0);
+    assert.isAbove(fullDepthIndex, checkoutIndex);
+    assert.isAbove(
+      exactSourceGateIndex,
+      fullDepthIndex,
+      "full-history checkout must precede exact source validation",
+    );
+  });
+
   it("keeps privileged publication minimal and gates it behind a fixed environment", () => {
     const workflow = NodeFS.readFileSync(workflowPath, "utf8");
     const publishJob = workflow.slice(
