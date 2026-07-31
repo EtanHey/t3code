@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { deriveThreadLifecycle } from "./lifecycle.ts";
 
 const baseInput = {
+  isEvidenceComplete: true,
   sessionStatus: null,
   latestTurnState: null,
   hasPendingApprovals: false,
@@ -10,6 +11,19 @@ const baseInput = {
 } as const;
 
 describe("deriveThreadLifecycle", () => {
+  it("returns unknown before using incomplete structural evidence", () => {
+    expect(
+      deriveThreadLifecycle({
+        ...baseInput,
+        isEvidenceComplete: false,
+        sessionStatus: "error",
+        latestTurnState: "error",
+        hasPendingApprovals: true,
+        hasPendingUserInput: true,
+      }),
+    ).toBe("unknown");
+  });
+
   it("gives terminal session states highest precedence", () => {
     for (const status of ["error", "interrupted", "stopped"] as const) {
       expect(

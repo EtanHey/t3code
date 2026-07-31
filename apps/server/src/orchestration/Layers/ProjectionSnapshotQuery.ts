@@ -280,18 +280,28 @@ function mapThreadLifecycleFields(
 ) {
   const hasPendingApprovals = row.pendingApprovalCount > 0;
   const hasPendingUserInput = row.pendingUserInputCount > 0;
+  const isEvidenceComplete = row.hasUnmatchedLifecycleActivity === 0;
   return {
-    lifecycle:
-      row.hasUnmatchedLifecycleActivity > 0
-        ? ("unknown" as const)
-        : deriveThreadLifecycle({
-            sessionStatus: session?.status ?? null,
-            latestTurnState: latestTurn?.state ?? null,
-            hasPendingApprovals,
-            hasPendingUserInput,
-          }),
+    lifecycle: deriveThreadLifecycle({
+      isEvidenceComplete,
+      sessionStatus: session?.status ?? null,
+      latestTurnState: latestTurn?.state ?? null,
+      hasPendingApprovals,
+      hasPendingUserInput,
+    }),
     hasPendingApprovals,
     hasPendingUserInput,
+  };
+}
+
+function mapFullThreadLifecycleFields(
+  row: Schema.Schema.Type<typeof ProjectionThreadDbRowSchema>,
+  latestTurn: OrchestrationLatestTurn | null,
+  session: OrchestrationSession | null,
+) {
+  return {
+    ...mapThreadLifecycleFields(row, latestTurn, session),
+    isLifecycleEvidenceComplete: row.hasUnmatchedLifecycleActivity === 0,
   };
 }
 
@@ -1416,7 +1426,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   activities: activitiesByThread.get(row.threadId) ?? [],
                   checkpoints: checkpointsByThread.get(row.threadId) ?? [],
                   session,
-                  ...mapThreadLifecycleFields(row, latestTurn, session),
+                  ...mapFullThreadLifecycleFields(row, latestTurn, session),
                 };
               });
 
@@ -1624,7 +1634,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   activities: [],
                   checkpoints: [],
                   session,
-                  ...mapThreadLifecycleFields(row, latestTurn, session),
+                  ...mapFullThreadLifecycleFields(row, latestTurn, session),
                 });
               }
 
@@ -2314,7 +2324,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           completedAt: row.completedAt,
         })),
         session,
-        ...mapThreadLifecycleFields(threadRow.value, latestTurn, session),
+        ...mapFullThreadLifecycleFields(threadRow.value, latestTurn, session),
       };
 
       return Option.some(

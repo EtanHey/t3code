@@ -95,6 +95,7 @@ export function buildLocalDraftThread(
     activities: [],
     proposedPlans: [],
     lifecycle: "unknown",
+    isLifecycleEvidenceComplete: false,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
   };
@@ -130,6 +131,7 @@ export function buildLoadingThreadFromShell(shell: ThreadShell): Thread {
     activities: [],
     checkpoints: [],
     deletedAt: null,
+    isLifecycleEvidenceComplete: false,
   };
 }
 

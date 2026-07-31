@@ -361,6 +361,7 @@ export const OrchestrationThreadLifecycle = Schema.Literals([
 export type OrchestrationThreadLifecycle = typeof OrchestrationThreadLifecycle.Type;
 
 export interface ThreadLifecycleInput {
+  readonly isEvidenceComplete: boolean;
   readonly sessionStatus: OrchestrationSessionStatus | null;
   readonly latestTurnState: OrchestrationLatestTurnState | null;
   readonly hasPendingApprovals: boolean;
@@ -368,6 +369,10 @@ export interface ThreadLifecycleInput {
 }
 
 export function deriveThreadLifecycle(input: ThreadLifecycleInput): OrchestrationThreadLifecycle {
+  if (!input.isEvidenceComplete) {
+    return "unknown";
+  }
+
   switch (input.sessionStatus) {
     case "error":
     case "interrupted":
@@ -445,6 +450,9 @@ export const OrchestrationThread = Schema.Struct({
   session: Schema.NullOr(OrchestrationSession),
   lifecycle: OrchestrationThreadLifecycle.pipe(
     Schema.withDecodingDefault(Effect.succeed("unknown")),
+  ),
+  isLifecycleEvidenceComplete: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   hasPendingApprovals: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   hasPendingUserInput: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),

@@ -53,6 +53,7 @@ describe("threadDetailToShell", () => {
       checkpoints: [],
       session: null,
       lifecycle: "awaiting-input",
+      isLifecycleEvidenceComplete: true,
       hasPendingApprovals: true,
       hasPendingUserInput: false,
     };

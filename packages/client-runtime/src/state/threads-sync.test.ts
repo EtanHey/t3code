@@ -80,6 +80,7 @@ const BASE_THREAD: OrchestrationThread = {
   checkpoints: [],
   session: null,
   lifecycle: "unknown",
+  isLifecycleEvidenceComplete: true,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
 };
@@ -450,6 +451,97 @@ describe("EnvironmentThreads", () => {
       expect(Option.getOrThrow(state.data).lifecycle).toBe("running");
       expect(Option.getOrThrow(state.data).hasPendingApprovals).toBe(false);
       expect(Option.getOrThrow(state.data).hasPendingUserInput).toBe(false);
+    }),
+  );
+
+  it.effect("preserves unknown while replaying from incomplete lifecycle evidence", () =>
+    Effect.gen(function* () {
+      const incompleteThread = {
+        ...BASE_THREAD,
+        lifecycle: "unknown" as const,
+        isLifecycleEvidenceComplete: false,
+        session: {
+          threadId: THREAD_ID,
+          status: "ready" as const,
+          providerName: "codex",
+          runtimeMode: "full-access" as const,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-04-01T00:02:00.000Z",
+        },
+        activities: [
+          {
+            id: EventId.make("activity-legacy-unmatched"),
+            tone: "approval" as const,
+            kind: "approval.requested",
+            summary: "Legacy approval request with unknown append order",
+            payload: { requestId: "approval-legacy" },
+            turnId: null,
+            createdAt: "2026-04-01T00:01:00.000Z",
+          },
+        ],
+      } satisfies OrchestrationThread & {
+        readonly isLifecycleEvidenceComplete: boolean;
+      };
+      const harness = yield* makeHarness({ cached: incompleteThread });
+
+      yield* Queue.offer(
+        harness.inputs,
+        titleUpdated("Unrelated replay", CACHED_SNAPSHOT_SEQUENCE + 1),
+      );
+      const unrelated = yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.isSome(value.data) && value.data.value.title === "Unrelated replay",
+      );
+      expect(Option.getOrThrow(unrelated.data).lifecycle).toBe("unknown");
+
+      yield* Queue.offer(harness.inputs, sessionSet("running", CACHED_SNAPSHOT_SEQUENCE + 2));
+      const running = yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.isSome(value.data) && value.data.value.session?.status === "running",
+      );
+      expect(Option.getOrThrow(running.data).lifecycle).toBe("unknown");
+
+      yield* Queue.offer(
+        harness.inputs,
+        activityAppended("user-input.requested", "user-input-live", CACHED_SNAPSHOT_SEQUENCE + 3),
+      );
+      const requested = yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.isSome(value.data) && value.data.value.hasPendingUserInput,
+      );
+      expect(Option.getOrThrow(requested.data).lifecycle).toBe("unknown");
+
+      yield* Queue.offer(
+        harness.inputs,
+        activityAppended("user-input.resolved", "user-input-live", CACHED_SNAPSHOT_SEQUENCE + 4),
+      );
+      const resolved = yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.isSome(value.data) && value.data.value.activities.length >= 3,
+      );
+      expect(Option.getOrThrow(resolved.data).lifecycle).toBe("unknown");
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+    }),
+  );
+
+  it.effect("transitions an unknown thread when lifecycle evidence is complete", () =>
+    Effect.gen(function* () {
+      const completeThread = {
+        ...BASE_THREAD,
+        isLifecycleEvidenceComplete: true,
+      } satisfies OrchestrationThread & {
+        readonly isLifecycleEvidenceComplete: boolean;
+      };
+      const harness = yield* makeHarness({ cached: completeThread });
+
+      yield* Queue.offer(harness.inputs, sessionSet("running", CACHED_SNAPSHOT_SEQUENCE + 1));
+      const running = yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.isSome(value.data) && value.data.value.session?.status === "running",
+      );
+
+      expect(Option.getOrThrow(running.data).lifecycle).toBe("running");
     }),
   );
 

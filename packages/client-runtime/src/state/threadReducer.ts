@@ -61,6 +61,7 @@ export function applyThreadDetailEvent(
     thread: {
       ...withPendingFields,
       lifecycle: deriveThreadLifecycle({
+        isEvidenceComplete: withPendingFields.isLifecycleEvidenceComplete,
         sessionStatus: withPendingFields.session?.status ?? null,
         latestTurnState: withPendingFields.latestTurn?.state ?? null,
         hasPendingApprovals: withPendingFields.hasPendingApprovals,
@@ -110,6 +111,7 @@ function reduceThreadDetailEvent(
           checkpoints: [],
           session: null,
           lifecycle: "unknown",
+          isLifecycleEvidenceComplete: true,
           hasPendingApprovals: false,
           hasPendingUserInput: false,
         },

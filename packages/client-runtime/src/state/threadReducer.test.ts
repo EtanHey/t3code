@@ -45,6 +45,7 @@ const baseThread: OrchestrationThread = {
   checkpoints: [],
   session: null,
   lifecycle: "unknown",
+  isLifecycleEvidenceComplete: true,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
 };

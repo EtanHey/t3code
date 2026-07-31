@@ -52,6 +52,7 @@ function makeReadModel(
         checkpoints: [],
         session,
         lifecycle: "unknown",
+        isLifecycleEvidenceComplete: true,
         hasPendingApprovals: false,
         hasPendingUserInput: false,
       },

@@ -383,6 +383,14 @@ it.effect("defaults parentThreadId for historical thread data and events", () =>
     assert.strictEqual(thread.lifecycle, "awaiting-input");
     assert.strictEqual(thread.hasPendingApprovals, true);
     assert.strictEqual(thread.hasPendingUserInput, false);
+    assert.strictEqual(
+      (
+        thread as typeof thread & {
+          readonly isLifecycleEvidenceComplete?: boolean;
+        }
+      ).isLifecycleEvidenceComplete,
+      false,
+    );
     assert.strictEqual(shell.lifecycle, "awaiting-input");
     assert.strictEqual(shell.hasPendingApprovals, true);
     assert.strictEqual(shell.hasPendingUserInput, false);

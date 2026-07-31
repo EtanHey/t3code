@@ -371,6 +371,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           lifecycle: "awaiting-input",
           hasPendingApprovals: true,
           hasPendingUserInput: false,
+          isLifecycleEvidenceComplete: true,
         },
       ]);
 
@@ -588,6 +589,21 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       });
 
       assert.equal(yield* readLifecycle, "unknown");
+
+      const detail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-legacy-activity-order"),
+      );
+      assert.equal(detail._tag, "Some");
+      if (detail._tag === "Some") {
+        assert.equal(
+          (
+            detail.value as typeof detail.value & {
+              readonly isLifecycleEvidenceComplete?: boolean;
+            }
+          ).isLifecycleEvidenceComplete,
+          false,
+        );
+      }
 
       yield* sql`
         UPDATE projection_thread_activities

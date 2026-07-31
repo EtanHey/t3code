@@ -51,6 +51,7 @@ function makeThread(input: {
     checkpoints: [],
     session: null,
     lifecycle: "unknown",
+    isLifecycleEvidenceComplete: true,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
   };

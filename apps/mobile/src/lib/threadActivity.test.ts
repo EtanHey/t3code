@@ -54,6 +54,7 @@ function makeThread(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     ...input,
+    isLifecycleEvidenceComplete: input.isLifecycleEvidenceComplete ?? true,
     settledOverride: input.settledOverride ?? null,
     settledAt: input.settledAt ?? null,
   };

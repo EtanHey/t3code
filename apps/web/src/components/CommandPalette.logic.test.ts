@@ -64,6 +64,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     checkpoints: [],
     activities: [],
     lifecycle: "unknown",
+    isLifecycleEvidenceComplete: true,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     ...overrides,
