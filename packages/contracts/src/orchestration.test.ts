@@ -266,6 +266,7 @@ it.effect("accepts bootstrap metadata in thread.turn.start", () =>
       bootstrap: {
         createThread: {
           projectId: "project-1",
+          parentThreadId: "thread-parent",
           title: "Bootstrap thread",
           modelSelection: {
             provider: "codex",
@@ -288,15 +289,16 @@ it.effect("accepts bootstrap metadata in thread.turn.start", () =>
       createdAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.bootstrap?.createThread?.projectId, "project-1");
+    assert.strictEqual(parsed.bootstrap?.createThread?.parentThreadId, "thread-parent");
     assert.strictEqual(parsed.bootstrap?.prepareWorktree?.baseBranch, "main");
     assert.strictEqual(parsed.bootstrap?.prepareWorktree?.startFromOrigin, true);
     assert.strictEqual(parsed.bootstrap?.runSetupScript, true);
   }),
 );
 
-it.effect("decodes thread.created runtime mode for historical events", () =>
+it.effect("defaults parentThreadId for historical thread data and events", () =>
   Effect.gen(function* () {
-    const parsed = yield* decodeThreadCreatedPayload({
+    const eventPayload = yield* decodeThreadCreatedPayload({
       threadId: "thread-1",
       projectId: "project-1",
       title: "Thread title",
@@ -311,8 +313,129 @@ it.effect("decodes thread.created runtime mode for historical events", () =>
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
 
-    assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
-    assert.strictEqual(parsed.modelSelection.instanceId, "codex");
+    const common = {
+      id: "thread-1",
+      projectId: "project-1",
+      title: "Historical thread",
+      modelSelection: { provider: "codex", model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+      session: null,
+    };
+    const thread = yield* decodeOrchestrationThread({
+      ...common,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    });
+    const shell = yield* decodeOrchestrationThreadShell({
+      ...common,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+    });
+
+    assert.strictEqual(eventPayload.parentThreadId, null);
+    assert.strictEqual(thread.parentThreadId, null);
+    assert.strictEqual(shell.parentThreadId, null);
+    assert.strictEqual(eventPayload.runtimeMode, DEFAULT_RUNTIME_MODE);
+    assert.strictEqual(eventPayload.modelSelection.instanceId, "codex");
+  }),
+);
+
+it.effect("decodes create commands with explicit and omitted parentThreadId", () =>
+  Effect.gen(function* () {
+    const common = {
+      type: "thread.create",
+      commandId: "cmd-thread-create",
+      threadId: "thread-child",
+      projectId: "project-1",
+      title: "Child thread",
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const child = yield* decodeOrchestrationCommand({
+      ...common,
+      parentThreadId: "thread-parent",
+    });
+    const standalone = yield* decodeOrchestrationCommand(common);
+
+    assert.strictEqual(child.type, "thread.create");
+    assert.strictEqual(standalone.type, "thread.create");
+    if (child.type === "thread.create" && standalone.type === "thread.create") {
+      assert.strictEqual(child.parentThreadId, "thread-parent");
+      assert.strictEqual(standalone.parentThreadId, null);
+    }
+  }),
+);
+
+it.effect("defaults omitted bootstrap parentThreadId for older clients", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-turn-bootstrap-legacy",
+      threadId: "thread-standalone",
+      message: {
+        messageId: "msg-bootstrap-legacy",
+        role: "user",
+        text: "hello",
+        attachments: [],
+      },
+      bootstrap: {
+        createThread: {
+          projectId: "project-1",
+          title: "Standalone thread",
+          modelSelection: {
+            provider: "codex",
+            model: "gpt-5.4",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.bootstrap?.createThread?.parentThreadId, null);
+  }),
+);
+
+it.effect("does not expose parentThreadId through thread metadata updates", () =>
+  Effect.gen(function* () {
+    const command = yield* decodeOrchestrationCommand({
+      type: "thread.meta.update",
+      commandId: "cmd-thread-meta-parent",
+      threadId: "thread-child",
+      parentThreadId: "thread-other-parent",
+    });
+    const payload = yield* decodeThreadMetaUpdatedPayload({
+      threadId: "thread-child",
+      parentThreadId: "thread-other-parent",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(command.type, "thread.meta.update");
+    assert.strictEqual(Object.hasOwn(command, "parentThreadId"), false);
+    assert.strictEqual(Object.hasOwn(payload, "parentThreadId"), false);
   }),
 );
 

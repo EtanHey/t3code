@@ -149,6 +149,10 @@ const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 export const CorrelationId = CommandId;
 export type CorrelationId = typeof CorrelationId.Type;
 
+const NullableParentThreadId = Schema.NullOr(ThreadId).pipe(
+  Schema.withDecodingDefault(Effect.succeed(null)),
+);
+
 const ChatAttachmentId = TrimmedNonEmptyString.check(
   Schema.isMaxLength(CHAT_ATTACHMENT_ID_MAX_CHARS),
   Schema.isPattern(/^[a-z0-9_-]+$/i),
@@ -352,6 +356,7 @@ export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  parentThreadId: NullableParentThreadId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -410,6 +415,7 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  parentThreadId: NullableParentThreadId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -556,6 +562,7 @@ const ThreadCreateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
+  parentThreadId: NullableParentThreadId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -658,6 +665,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   projectId: ProjectId,
+  parentThreadId: NullableParentThreadId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -966,6 +974,7 @@ export const ProjectDeletedPayload = Schema.Struct({
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  parentThreadId: NullableParentThreadId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
