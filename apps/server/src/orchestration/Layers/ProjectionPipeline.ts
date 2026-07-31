@@ -119,37 +119,16 @@ function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
   return typeof requestId === "string" ? ApprovalRequestId.make(requestId) : null;
 }
 
-function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
-  if (detail === null) {
-    return false;
-  }
-  return (
-    detail.includes("stale pending approval request") ||
-    detail.includes("unknown pending approval request") ||
-    detail.includes("unknown pending permission request")
-  );
-}
-
 function derivePendingUserInputCountFromActivities(
   activities: ReadonlyArray<ProjectionThreadActivity>,
 ): number {
   const openRequestIds = new Set<string>();
-  const ordered = [...activities].toSorted(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.activityId.localeCompare(right.activityId),
-  );
 
-  for (const activity of ordered) {
+  for (const activity of activities) {
     const requestId = extractActivityRequestId(activity.payload);
     if (requestId === null) {
       continue;
     }
-    const payload =
-      typeof activity.payload === "object" && activity.payload !== null
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const detail = typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
 
     if (activity.kind === "user-input.requested") {
       openRequestIds.add(requestId);
@@ -157,18 +136,6 @@ function derivePendingUserInputCountFromActivities(
     }
 
     if (activity.kind === "user-input.resolved") {
-      openRequestIds.delete(requestId);
-      continue;
-    }
-
-    if (
-      activity.kind === "provider.user-input.respond.failed" &&
-      detail !== null &&
-      (detail.includes("stale pending user-input request") ||
-        detail.includes("unknown pending user-input request") ||
-        detail.includes("unknown pending user input request") ||
-        detail.includes("unknown pending codex user input request"))
-    ) {
       openRequestIds.delete(requestId);
     }
   }
@@ -1469,39 +1436,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             });
             return;
           }
-          if (event.payload.activity.kind === "provider.approval.respond.failed") {
-            const payload =
-              typeof event.payload.activity.payload === "object" &&
-              event.payload.activity.payload !== null
-                ? (event.payload.activity.payload as Record<string, unknown>)
-                : null;
-            const detail =
-              typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
-            if (isStalePendingApprovalFailureDetail(detail)) {
-              if (Option.isNone(existingRow)) {
-                return;
-              }
-              if (existingRow.value.status === "resolved") {
-                return;
-              }
-              yield* projectionPendingApprovalRepository.upsert({
-                requestId,
-                threadId: existingRow.value.threadId,
-                turnId: existingRow.value.turnId,
-                status: "resolved",
-                decision: null,
-                createdAt: existingRow.value.createdAt,
-                resolvedAt: event.payload.activity.createdAt,
-              });
-              return;
-            }
-            return;
-          }
           // Only approval-requested activities should create pending-approval
           // rows.  Other activity kinds that happen to carry a requestId
-          // (e.g. user-input.requested / user-input.resolved) must not
-          // pollute this projection — they have their own accounting via
-          // derivePendingUserInputCountFromActivities.
+          // (including provider response failures) must not
+          // pollute this projection. User input has separate structural
+          // accounting via derivePendingUserInputCountFromActivities.
           if (event.payload.activity.kind !== "approval.requested") {
             return;
           }
