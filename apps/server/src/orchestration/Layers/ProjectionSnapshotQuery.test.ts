@@ -1911,3 +1911,200 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+it.effect(
+  "ProjectionSnapshotQuery retains a child's parent across existing thread read shapes and filters child lifecycle targets",
+  () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const parentThreadId = "thread-parent";
+      const childThreadId = "thread-child";
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_turns`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-parentage',
+          'Parentage Project',
+          '/tmp/parentage-project',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-07-31T00:00:00.000Z',
+          '2026-07-31T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          parent_thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at
+        )
+        VALUES
+          (
+            ${parentThreadId},
+            NULL,
+            'project-parentage',
+            'Parent',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-07-31T00:00:01.000Z',
+            '2026-07-31T00:00:01.000Z',
+            NULL,
+            NULL
+          ),
+          (
+            ${childThreadId},
+            ${parentThreadId},
+            'project-parentage',
+            'Active child',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-07-31T00:00:02.000Z',
+            '2026-07-31T00:00:02.000Z',
+            NULL,
+            NULL
+          ),
+          (
+            'thread-archived-child',
+            ${parentThreadId},
+            'project-parentage',
+            'Archived child',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-07-31T00:00:03.000Z',
+            '2026-07-31T00:00:03.000Z',
+            '2026-07-31T00:00:04.000Z',
+            NULL
+          ),
+          (
+            'thread-deleted-child',
+            ${parentThreadId},
+            'project-parentage',
+            'Deleted child',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-07-31T00:00:05.000Z',
+            '2026-07-31T00:00:05.000Z',
+            NULL,
+            '2026-07-31T00:00:06.000Z'
+          )
+      `;
+
+      const fullSnapshot = yield* snapshotQuery.getSnapshot();
+      const commandReadModel = yield* snapshotQuery.getCommandReadModel();
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      const archivedShellSnapshot = yield* snapshotQuery.getArchivedShellSnapshot();
+      const shell = yield* snapshotQuery.getThreadShellById(ThreadId.make(childThreadId));
+      const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make(childThreadId));
+      const detailSnapshot = yield* snapshotQuery.getThreadDetailSnapshot(ThreadId.make(childThreadId));
+
+      assert.equal(
+        fullSnapshot.threads.find((thread) => thread.id === childThreadId)?.parentThreadId,
+        parentThreadId,
+      );
+      assert.equal(
+        commandReadModel.threads.find((thread) => thread.id === childThreadId)?.parentThreadId,
+        parentThreadId,
+      );
+      assert.deepStrictEqual(
+        shellSnapshot.threads.map((thread) => thread.id),
+        [parentThreadId, childThreadId],
+      );
+      assert.equal(
+        shellSnapshot.threads.find((thread) => thread.id === childThreadId)?.parentThreadId,
+        parentThreadId,
+      );
+      assert.equal(archivedShellSnapshot.threads[0]?.parentThreadId, parentThreadId);
+      assert.equal(shell._tag, "Some");
+      assert.equal(shell._tag === "Some" ? shell.value.parentThreadId : null, parentThreadId);
+      assert.equal(detail._tag, "Some");
+      assert.equal(detail._tag === "Some" ? detail.value.parentThreadId : null, parentThreadId);
+      assert.equal(detailSnapshot._tag, "Some");
+      assert.equal(
+        detailSnapshot._tag === "Some" ? detailSnapshot.value.thread.parentThreadId : null,
+        parentThreadId,
+      );
+
+      yield* sql`
+        UPDATE projection_threads
+        SET deleted_at = '2026-07-31T00:00:07.000Z'
+        WHERE thread_id = ${parentThreadId}
+      `;
+      const afterParentDelete = yield* snapshotQuery.getShellSnapshot();
+      assert.deepStrictEqual(afterParentDelete.threads.map((thread) => thread.id), [childThreadId]);
+      assert.equal(afterParentDelete.threads[0]?.parentThreadId, parentThreadId);
+
+      yield* sql`
+        UPDATE projection_threads
+        SET deleted_at = NULL,
+            archived_at = '2026-07-31T00:00:08.000Z'
+        WHERE thread_id = ${parentThreadId}
+      `;
+      const afterParentArchive = yield* snapshotQuery.getShellSnapshot();
+      assert.deepStrictEqual(afterParentArchive.threads.map((thread) => thread.id), [childThreadId]);
+      assert.equal(afterParentArchive.threads[0]?.parentThreadId, parentThreadId);
+    }),
+);
