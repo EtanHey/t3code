@@ -41,12 +41,18 @@ jobs:
       artifact_name: ${{ steps.verify_assets.outputs.artifact_name }}
       sha256: ${{ steps.verify_assets.outputs.sha256 }}
     steps:
-      - name: Checkout exact release source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: refs/heads/main
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Fetch public main without submodules
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/EtanHey/t3code.git"
+          git fetch --no-tags --no-recurse-submodules origin "+refs/heads/main:refs/remotes/origin/main"
+          if [[ "$(git rev-parse --is-shallow-repository)" != "false" ]]; then
+            echo "Release source fetch must include full history." >&2
+            exit 1
+          fi
 
       - name: Verify exact clean source on main
         env:
@@ -58,7 +64,7 @@ jobs:
             exit 1
           fi
           git rev-parse --verify --quiet "origin/main^{commit}" >/dev/null || {
-            echo "Checkout did not provide an origin/main commit for ancestry verification." >&2
+            echo "Fetch did not provide an origin/main commit for ancestry verification." >&2
             exit 1
           }
           git cat-file -e "${SOURCE_REVISION}^{commit}" || {

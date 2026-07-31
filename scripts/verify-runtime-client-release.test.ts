@@ -256,13 +256,10 @@ describe("runtime-client immutable release contract", () => {
       assert.include(workflow, input);
     }
     assert.notInclude(workflow, "0.0.31-rpc.1");
-    assert.match(workflow, /actions\/checkout@[0-9a-f]{40}/);
+    assert.notInclude(workflow, "actions/checkout");
     assert.match(workflow, /voidzero-dev\/setup-vp@[0-9a-f]{40}/);
-    assert.include(workflow, "ref: refs/heads/main");
-    assert.include(workflow, "fetch-depth: 0");
     assert.include(workflow, 'git checkout --detach "$SOURCE_REVISION"');
     assert.include(workflow, 'git merge-base --is-ancestor "$SOURCE_REVISION" origin/main');
-    assert.notInclude(workflow, "git fetch --no-tags origin main");
     assert.include(workflow, 'node-version: "24.13.1"');
     assert.include(workflow, "build-runtime-client-artifact.test.ts");
     assert.include(workflow, "verify-runtime-client-release.test.ts");
@@ -293,24 +290,49 @@ describe("runtime-client immutable release contract", () => {
     assert.notInclude(workflow, "npm.pkg.github.com");
   });
 
-  it("pins repository-compatible checkout v4 before full-depth exact-SHA validation", () => {
+  it("fetches only public main before exact-SHA validation and all repository execution", () => {
     const workflow = NodeFS.readFileSync(workflowPath, "utf8");
-    const checkoutPin = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2";
-    const checkoutIndex = workflow.indexOf(`uses: ${checkoutPin}`);
-    const fullDepthIndex = workflow.indexOf("fetch-depth: 0", checkoutIndex);
+    const manualFetchIndex = workflow.indexOf("- name: Fetch public main without submodules");
     const exactSourceGateIndex = workflow.indexOf("- name: Verify exact clean source on main");
-
-    assert.deepStrictEqual(
-      [...workflow.matchAll(/uses: actions\/checkout@([^\s]+)/g)].map((match) => match[1]),
-      ["11bd71901bbe5b1630ceea73d27597364c9af683"],
+    const setupToolchainIndex = workflow.indexOf("- name: Setup pinned repository toolchain");
+    const runInstallIndex = workflow.indexOf("run-install: true", setupToolchainIndex);
+    const unitVerificationIndex = workflow.indexOf("- name: Run runtime-client unit verification");
+    const distributionVerificationIndex = workflow.indexOf(
+      "- name: Run runtime-client distribution verification",
     );
-    assert.isAtLeast(checkoutIndex, 0);
-    assert.isAbove(fullDepthIndex, checkoutIndex);
+    const buildIndex = workflow.indexOf("- name: Build publishable runtime-client assets");
+    const manualFetchStep = workflow.slice(manualFetchIndex, exactSourceGateIndex);
+
+    assert.notInclude(workflow, "actions/checkout");
+    assert.isAtLeast(manualFetchIndex, 0);
+    assert.include(manualFetchStep, "git init .");
+    assert.include(
+      manualFetchStep,
+      'git remote add origin "https://github.com/EtanHey/t3code.git"',
+    );
+    assert.include(
+      manualFetchStep,
+      'git fetch --no-tags --no-recurse-submodules origin "+refs/heads/main:refs/remotes/origin/main"',
+    );
+    assert.include(manualFetchStep, "git rev-parse --is-shallow-repository");
+    assert.notMatch(manualFetchStep, /--depth(?:=|\s)/);
+    assert.notInclude(manualFetchStep, "refs/heads/*");
+    assert.notInclude(manualFetchStep, "${{");
+    assert.notInclude(manualFetchStep, "REPOSITORY");
+    assert.notInclude(manualFetchStep, "github.token");
+    assert.notInclude(manualFetchStep, "extraheader");
+    assert.notInclude(manualFetchStep, "credential");
+    assert.notMatch(workflow, /\bgit submodule\b/);
     assert.isAbove(
       exactSourceGateIndex,
-      fullDepthIndex,
-      "full-history checkout must precede exact source validation",
+      manualFetchIndex,
+      "the bounded public fetch must precede exact source validation",
     );
+    assert.isAbove(setupToolchainIndex, exactSourceGateIndex);
+    assert.isAbove(runInstallIndex, exactSourceGateIndex);
+    assert.isAbove(unitVerificationIndex, exactSourceGateIndex);
+    assert.isAbove(distributionVerificationIndex, exactSourceGateIndex);
+    assert.isAbove(buildIndex, exactSourceGateIndex);
   });
 
   it("keeps privileged publication minimal and gates it behind a fixed environment", () => {
