@@ -85,6 +85,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         },
         runtimeMode: "full-access",
         interactionMode: "default",
+        parentThreadId: null,
         branch: null,
         worktreePath: null,
         latestTurnId: null,
@@ -147,6 +148,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         },
         runtimeMode: "full-access",
         interactionMode: "default",
+        parentThreadId: null,
         branch: null,
         worktreePath: null,
         latestTurnId: null,
@@ -193,6 +195,62 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       assert.strictEqual(updated?.settledAt, null);
       assert.strictEqual(updated?.snoozedUntil, null);
       assert.strictEqual(updated?.snoozedAt, null);
+    }),
+  );
+  it.effect("preserves a thread parent while updating a soft-deleted row", () =>
+    Effect.gen(function* () {
+      const threads = yield* ProjectionThreadRepository;
+      const parentThreadId = ThreadId.make("thread-parent");
+
+      yield* threads.upsert({
+        threadId: ThreadId.make("thread-child"),
+        projectId: ProjectId.make("project-1"),
+        title: "Child thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        parentThreadId,
+        branch: null,
+        worktreePath: null,
+        latestTurnId: null,
+        createdAt: "2026-03-24T00:00:00.000Z",
+        updatedAt: "2026-03-24T00:00:00.000Z",
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        snoozedUntil: null,
+        snoozedAt: null,
+        latestUserMessageAt: null,
+        pendingApprovalCount: 0,
+        pendingUserInputCount: 0,
+        hasActionableProposedPlan: 0,
+        deletedAt: null,
+      });
+
+      const persisted = yield* threads.getById({
+        threadId: ThreadId.make("thread-child"),
+      });
+      const row = Option.getOrNull(persisted);
+      if (!row) {
+        return yield* Effect.die("Expected child projection_threads row to exist.");
+      }
+      assert.strictEqual(row.parentThreadId, parentThreadId);
+
+      yield* threads.upsert({
+        ...row,
+        parentThreadId: ThreadId.make("thread-other-parent"),
+        deletedAt: "2026-03-25T00:00:00.000Z",
+        updatedAt: "2026-03-25T00:00:00.000Z",
+      });
+
+      const deleted = yield* threads.getById({
+        threadId: ThreadId.make("thread-child"),
+      });
+      assert.strictEqual(Option.getOrNull(deleted)?.parentThreadId, parentThreadId);
+      assert.strictEqual(Option.getOrNull(deleted)?.deletedAt, "2026-03-25T00:00:00.000Z");
     }),
   );
 });

@@ -19,6 +19,7 @@ import {
   requireThreadArchived,
   requireThreadAbsent,
   requireThreadNotArchived,
+  requireValidParentThread,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -355,6 +356,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      yield* requireValidParentThread({
+        readModel,
+        command,
+      });
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -366,6 +371,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
+          parentThreadId: command.parentThreadId,
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,

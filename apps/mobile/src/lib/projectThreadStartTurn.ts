@@ -64,6 +64,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
     bootstrap: {
       createThread: {
         projectId: spec.projectId,
+        parentThreadId: null,
         title,
         modelSelection: spec.modelSelection,
         runtimeMode: spec.runtimeMode,

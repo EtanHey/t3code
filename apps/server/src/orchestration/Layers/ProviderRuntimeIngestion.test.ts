@@ -272,6 +272,7 @@ describe("ProviderRuntimeIngestion", () => {
         commandId: CommandId.make("cmd-thread-create"),
         threadId: ThreadId.make("thread-1"),
         projectId: asProjectId("project-1"),
+        parentThreadId: null,
         title: "Thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -1162,6 +1163,7 @@ describe("ProviderRuntimeIngestion", () => {
         commandId: CommandId.make("cmd-thread-create-plan-source"),
         threadId: sourceThreadId,
         projectId: asProjectId("project-1"),
+        parentThreadId: null,
         title: "Plan Source",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -1197,6 +1199,7 @@ describe("ProviderRuntimeIngestion", () => {
         commandId: CommandId.make("cmd-thread-create-plan-target"),
         threadId: targetThreadId,
         projectId: asProjectId("project-1"),
+        parentThreadId: null,
         title: "Plan Target",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -1350,6 +1353,7 @@ describe("ProviderRuntimeIngestion", () => {
           commandId: CommandId.make("cmd-thread-create-plan-source-guarded"),
           threadId: sourceThreadId,
           projectId: asProjectId("project-1"),
+          parentThreadId: null,
           title: "Plan Source",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -1588,6 +1592,7 @@ describe("ProviderRuntimeIngestion", () => {
         commandId: CommandId.make("cmd-thread-create-plan-source-unrelated"),
         threadId: sourceThreadId,
         projectId: asProjectId("project-1"),
+        parentThreadId: null,
         title: "Plan Source",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -1623,6 +1628,7 @@ describe("ProviderRuntimeIngestion", () => {
         commandId: CommandId.make("cmd-thread-create-plan-target-unrelated"),
         threadId: targetThreadId,
         projectId: asProjectId("project-1"),
+        parentThreadId: null,
         title: "Plan Target",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),

@@ -86,6 +86,7 @@ describe("scoped entity keys", () => {
 const THREAD_SHELL = {
   id: THREAD_ID,
   projectId: PROJECT_ID,
+  parentThreadId: null,
   title: "Thread",
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
   runtimeMode: "full-access",

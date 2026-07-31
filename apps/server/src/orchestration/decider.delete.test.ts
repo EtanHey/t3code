@@ -59,6 +59,7 @@ const seedReadModel = Effect.gen(function* () {
     payload: {
       threadId: asThreadId("thread-delete-1"),
       projectId: asProjectId("project-delete"),
+      parentThreadId: null,
       title: "Thread Delete 1",
       modelSelection: {
         instanceId: ProviderInstanceId.make("codex"),
@@ -87,6 +88,7 @@ const seedReadModel = Effect.gen(function* () {
     payload: {
       threadId: asThreadId("thread-delete-2"),
       projectId: asProjectId("project-delete"),
+      parentThreadId: null,
       title: "Thread Delete 2",
       modelSelection: {
         instanceId: ProviderInstanceId.make("codex"),

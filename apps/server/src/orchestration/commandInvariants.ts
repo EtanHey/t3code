@@ -167,6 +167,50 @@ export function requireThreadAbsent(input: {
   );
 }
 
+export function requireValidParentThread(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: Extract<OrchestrationCommand, { type: "thread.create" }>;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  const parentThreadId = input.command.parentThreadId;
+  if (parentThreadId === null) {
+    return Effect.void;
+  }
+  if (parentThreadId === input.command.threadId) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Thread '${input.command.threadId}' cannot be its own parent for command '${input.command.type}'.`,
+      ),
+    );
+  }
+  const parent = findThreadById(input.readModel, parentThreadId);
+  if (parent === undefined) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Parent thread '${parentThreadId}' does not exist for command '${input.command.type}'.`,
+      ),
+    );
+  }
+  if (parent.deletedAt !== null) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Parent thread '${parentThreadId}' is deleted and cannot be used for command '${input.command.type}'.`,
+      ),
+    );
+  }
+  if (parent.projectId !== input.command.projectId) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Parent thread '${parentThreadId}' belongs to project '${parent.projectId}', not '${input.command.projectId}'.`,
+      ),
+    );
+  }
+  return Effect.void;
+}
+
 export function requireNonNegativeInteger(input: {
   readonly commandType: OrchestrationCommand["type"];
   readonly field: string;

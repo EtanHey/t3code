@@ -507,6 +507,7 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
           commandId: CommandId.make("cmd-cli-force-remove-thread"),
           threadId: ThreadId.make("thread-cli-force-remove"),
           projectId: project!.id,
+          parentThreadId: null,
           title: "Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),

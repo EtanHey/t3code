@@ -163,6 +163,7 @@ const makeDefaultOrchestrationReadModel = () => {
       {
         id: defaultThreadId,
         projectId: defaultProjectId,
+        parentThreadId: null,
         title: "Default Thread",
         modelSelection: defaultModelSelection,
         interactionMode: "default" as const,
@@ -193,6 +194,7 @@ const makeDefaultOrchestrationThreadShell = (
   return {
     id: defaultThreadId,
     projectId: defaultProjectId,
+    parentThreadId: null,
     title: "Default Thread",
     modelSelection: defaultModelSelection,
     runtimeMode: "full-access",
@@ -5698,6 +5700,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           {
             id: ThreadId.make("thread-1"),
             projectId: ProjectId.make("project-a"),
+            parentThreadId: null,
             title: "Thread A",
             modelSelection: defaultModelSelection,
             interactionMode: "default" as const,
@@ -6189,6 +6192,106 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(collected[2]?.kind, "synchronized");
       assert.equal(shellFetches.filter((id) => id === busyThreadId).length, 1);
       assert.equal(replayLimit, 50);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("subscribeShell relays parentage while preserving delete and archive removals", () =>
+    Effect.gen(function* () {
+      const childThreadId = ThreadId.make("thread-child");
+      const deletedThreadId = ThreadId.make("thread-deleted");
+      const archivedThreadId = ThreadId.make("thread-archived");
+      const now = "2026-07-31T00:00:00.000Z";
+
+      const events: ReadonlyArray<OrchestrationEvent> = [
+        {
+          sequence: 1,
+          eventId: EventId.make("event-child-created"),
+          aggregateKind: "thread",
+          aggregateId: childThreadId,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.created",
+          payload: {} as never,
+        },
+        {
+          sequence: 2,
+          eventId: EventId.make("event-child-deleted"),
+          aggregateKind: "thread",
+          aggregateId: deletedThreadId,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.deleted",
+          payload: { threadId: deletedThreadId, deletedAt: now },
+        },
+        {
+          sequence: 3,
+          eventId: EventId.make("event-child-archived"),
+          aggregateKind: "thread",
+          aggregateId: archivedThreadId,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.archived",
+          payload: { threadId: archivedThreadId, archivedAt: now, updatedAt: now },
+        },
+      ];
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(3),
+            readEvents: () => Stream.fromIterable(events),
+          },
+          projectionSnapshotQuery: {
+            getThreadShellById: (threadId) =>
+              Effect.succeed(
+                threadId === childThreadId
+                  ? Option.some(
+                      makeDefaultOrchestrationThreadShell({
+                        id: childThreadId,
+                        parentThreadId: defaultThreadId,
+                      }),
+                    )
+                  : Option.none(),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 0 }).pipe(
+            Stream.take(3),
+            Stream.runCollect,
+          ),
+        ),
+      );
+
+      const [upsertedChild, deletedChild, archivedChild] = Array.from(items);
+      assert.equal(upsertedChild?.kind, "thread-upserted");
+      assert.equal(
+        upsertedChild?.kind === "thread-upserted" ? upsertedChild.thread.parentThreadId : null,
+        defaultThreadId,
+      );
+      assert.deepEqual(deletedChild, {
+        kind: "thread-removed",
+        sequence: 2,
+        threadId: deletedThreadId,
+      });
+      assert.deepEqual(archivedChild, {
+        kind: "thread-removed",
+        sequence: 3,
+        threadId: archivedThreadId,
+      });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -7001,6 +7104,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               bootstrap: {
                 createThread: {
                   projectId: defaultProjectId,
+                  parentThreadId: ThreadId.make("thread-parent"),
                   title: "Bootstrap Thread",
                   modelSelection: defaultModelSelection,
                   runtimeMode: "full-access",
@@ -7033,6 +7137,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             "thread.turn.start",
           ],
         );
+        const createThreadCommand = dispatchedCommands[0];
+        assertTrue(createThreadCommand?.type === "thread.create");
+        if (createThreadCommand?.type === "thread.create") {
+          assert.equal(createThreadCommand.parentThreadId, ThreadId.make("thread-parent"));
+        }
         assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
           cwd: "/tmp/project",
           refName: fetchedOriginCommit,
@@ -7145,6 +7254,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             bootstrap: {
               createThread: {
                 projectId: defaultProjectId,
+                parentThreadId: null,
                 title: "Bootstrap Thread",
                 modelSelection: defaultModelSelection,
                 runtimeMode: "full-access",
@@ -7266,6 +7376,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             bootstrap: {
               createThread: {
                 projectId: defaultProjectId,
+                parentThreadId: null,
                 title: "Bootstrap Thread",
                 modelSelection: defaultModelSelection,
                 runtimeMode: "full-access",
@@ -7350,6 +7461,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             bootstrap: {
               createThread: {
                 projectId: defaultProjectId,
+                parentThreadId: null,
                 title: "Bootstrap Thread",
                 modelSelection: defaultModelSelection,
                 runtimeMode: "full-access",

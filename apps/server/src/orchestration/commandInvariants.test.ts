@@ -56,6 +56,7 @@ const readModel: OrchestrationReadModel = {
     {
       id: ThreadId.make("thread-1"),
       projectId: ProjectId.make("project-a"),
+      parentThreadId: null,
       title: "Thread A",
       modelSelection: {
         instanceId: ProviderInstanceId.make("codex"),
@@ -81,6 +82,7 @@ const readModel: OrchestrationReadModel = {
     {
       id: ThreadId.make("thread-2"),
       projectId: ProjectId.make("project-b"),
+      parentThreadId: null,
       title: "Thread B",
       modelSelection: {
         instanceId: ProviderInstanceId.make("codex"),
@@ -160,6 +162,7 @@ describe("commandInvariants", () => {
           commandId: CommandId.make("cmd-2"),
           threadId: ThreadId.make("thread-3"),
           projectId: ProjectId.make("project-a"),
+          parentThreadId: null,
           title: "new",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -184,6 +187,7 @@ describe("commandInvariants", () => {
             commandId: CommandId.make("cmd-3"),
             threadId: ThreadId.make("thread-1"),
             projectId: ProjectId.make("project-a"),
+            parentThreadId: null,
             title: "dup",
             modelSelection: {
               instanceId: ProviderInstanceId.make("codex"),

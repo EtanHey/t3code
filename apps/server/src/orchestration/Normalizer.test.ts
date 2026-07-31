@@ -46,6 +46,7 @@ describe("canonicalizeClientCommandTimestamps", () => {
       bootstrap: {
         createThread: {
           projectId: ProjectId.make("project-1"),
+          parentThreadId: null,
           title: "Clock-safe thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
