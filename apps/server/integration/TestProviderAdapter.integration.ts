@@ -3,6 +3,7 @@ import {
   EventId,
   ProviderApprovalDecision,
   ProviderRuntimeEvent,
+  RuntimeRequestId,
   RuntimeSessionId,
   ProviderSession,
   ProviderTurnStartResult,
@@ -418,7 +419,7 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
       decision,
     ) =>
       sessions.has(threadId)
-        ? Effect.sync(() => {
+        ? Effect.gen(function* () {
             const existing = approvalResponsesBySession.get(threadId) ?? [];
             existing.push({
               threadId,
@@ -426,6 +427,18 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
               decision,
             });
             approvalResponsesBySession.set(threadId, existing);
+            yield* emit({
+              type: "request.resolved",
+              eventId: EventId.make(yield* randomUUIDv4(threadId)),
+              provider,
+              threadId,
+              createdAt: nowIso(),
+              requestId: RuntimeRequestId.make(String(requestId)),
+              payload: {
+                requestType: "command_execution_approval",
+                decision,
+              },
+            });
           })
         : missingSessionEffect(provider, threadId);
 

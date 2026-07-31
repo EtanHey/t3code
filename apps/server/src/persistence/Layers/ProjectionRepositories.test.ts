@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
+import { EventId, ProjectId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -8,13 +8,16 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { ProjectionProjectRepositoryLive } from "./ProjectionProjects.ts";
 import { ProjectionThreadRepositoryLive } from "./ProjectionThreads.ts";
+import { ProjectionThreadActivityRepositoryLive } from "./ProjectionThreadActivities.ts";
 import { ProjectionProjectRepository } from "../Services/ProjectionProjects.ts";
 import { ProjectionThreadRepository } from "../Services/ProjectionThreads.ts";
+import { ProjectionThreadActivityRepository } from "../Services/ProjectionThreadActivities.ts";
 
 const projectionRepositoriesLayer = it.layer(
   Layer.mergeAll(
     ProjectionProjectRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     ProjectionThreadRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+    ProjectionThreadActivityRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     SqlitePersistenceMemory,
   ),
 );
@@ -196,6 +199,68 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       assert.strictEqual(updated?.snoozedUntil, null);
       assert.strictEqual(updated?.snoozedAt, null);
     }),
+  );
+
+  it.effect(
+    "orders activities by authoritative event sequence and preserves provider sequence",
+    () =>
+      Effect.gen(function* () {
+        const activities = yield* ProjectionThreadActivityRepository;
+        const threadId = ThreadId.make("thread-event-order");
+        const upsert = (
+          activityId: string,
+          eventSequence: number | undefined,
+          providerSequence: number | undefined,
+          createdAt: string,
+        ) =>
+          activities.upsert({
+            activityId: EventId.make(activityId),
+            threadId,
+            turnId: null,
+            tone: "info",
+            kind: "runtime.note",
+            summary: activityId,
+            payload: {},
+            ...(providerSequence !== undefined ? { sequence: providerSequence } : {}),
+            ...(eventSequence !== undefined ? { eventSequence } : {}),
+            createdAt,
+          });
+
+        yield* upsert("activity-event-second", 2, 1, "2026-03-24T00:00:01.000Z");
+        yield* upsert("activity-event-first", 1, 99, "2026-03-24T00:00:10.000Z");
+        yield* upsert(
+          "activity-legacy-unmatched",
+          undefined,
+          undefined,
+          "2026-03-24T00:00:00.000Z",
+        );
+
+        const rows = yield* activities.listByThreadId({ threadId });
+        assert.deepStrictEqual(
+          rows.map((row) => ({
+            activityId: String(row.activityId),
+            providerSequence: row.sequence ?? null,
+            eventSequence: row.eventSequence ?? null,
+          })),
+          [
+            {
+              activityId: "activity-event-first",
+              providerSequence: 99,
+              eventSequence: 1,
+            },
+            {
+              activityId: "activity-event-second",
+              providerSequence: 1,
+              eventSequence: 2,
+            },
+            {
+              activityId: "activity-legacy-unmatched",
+              providerSequence: null,
+              eventSequence: null,
+            },
+          ],
+        );
+      }),
   );
   it.effect("preserves a thread parent while updating a soft-deleted row", () =>
     Effect.gen(function* () {

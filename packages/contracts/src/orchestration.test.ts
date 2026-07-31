@@ -16,6 +16,7 @@ import {
   OrchestrationProposedPlan,
   OrchestrationSession,
   OrchestrationThread,
+  OrchestrationThreadLifecycle,
   OrchestrationThreadShell,
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
@@ -40,6 +41,7 @@ const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLa
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
 const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
+const decodeOrchestrationThreadLifecycle = Schema.decodeUnknownEffect(OrchestrationThreadLifecycle);
 const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
 const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
 
@@ -53,6 +55,33 @@ const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPaylo
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
+
+it.effect("accepts every public orchestration thread lifecycle", () =>
+  Effect.gen(function* () {
+    const values = [
+      "starting",
+      "running",
+      "ready",
+      "awaiting-input",
+      "completed",
+      "interrupted",
+      "stopped",
+      "error",
+      "unknown",
+    ] as const;
+
+    for (const value of values) {
+      assert.strictEqual(yield* decodeOrchestrationThreadLifecycle(value), value);
+    }
+  }),
+);
+
+it.effect("rejects lifecycle values outside the public contract", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(decodeOrchestrationThreadLifecycle("idle"));
+    assert.strictEqual(result._tag, "Failure");
+  }),
+);
 
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
@@ -330,6 +359,9 @@ it.effect("defaults parentThreadId for historical thread data and events", () =>
     };
     const thread = yield* decodeOrchestrationThread({
       ...common,
+      lifecycle: "awaiting-input",
+      hasPendingApprovals: true,
+      hasPendingUserInput: false,
       deletedAt: null,
       messages: [],
       proposedPlans: [],
@@ -338,8 +370,9 @@ it.effect("defaults parentThreadId for historical thread data and events", () =>
     });
     const shell = yield* decodeOrchestrationThreadShell({
       ...common,
+      lifecycle: "awaiting-input",
       latestUserMessageAt: null,
-      hasPendingApprovals: false,
+      hasPendingApprovals: true,
       hasPendingUserInput: false,
       hasActionableProposedPlan: false,
     });
@@ -347,6 +380,20 @@ it.effect("defaults parentThreadId for historical thread data and events", () =>
     assert.strictEqual(eventPayload.parentThreadId, null);
     assert.strictEqual(thread.parentThreadId, null);
     assert.strictEqual(shell.parentThreadId, null);
+    assert.strictEqual(thread.lifecycle, "awaiting-input");
+    assert.strictEqual(thread.hasPendingApprovals, true);
+    assert.strictEqual(thread.hasPendingUserInput, false);
+    assert.strictEqual(
+      (
+        thread as typeof thread & {
+          readonly isLifecycleEvidenceComplete?: boolean;
+        }
+      ).isLifecycleEvidenceComplete,
+      false,
+    );
+    assert.strictEqual(shell.lifecycle, "awaiting-input");
+    assert.strictEqual(shell.hasPendingApprovals, true);
+    assert.strictEqual(shell.hasPendingUserInput, false);
     assert.strictEqual(eventPayload.runtimeMode, DEFAULT_RUNTIME_MODE);
     assert.strictEqual(eventPayload.modelSelection.instanceId, "codex");
   }),

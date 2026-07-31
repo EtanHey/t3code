@@ -104,6 +104,7 @@ function makeReadModel(
       settledOverride: null,
       settledAt: null,
       latestUserMessageAt: null,
+      lifecycle: "unknown" as const,
       hasPendingApprovals: false,
       hasPendingUserInput: false,
       hasActionableProposedPlan: false,

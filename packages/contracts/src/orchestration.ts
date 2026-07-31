@@ -324,6 +324,7 @@ export const OrchestrationThreadActivity = Schema.Struct({
   payload: Schema.Unknown,
   turnId: Schema.NullOr(TurnId),
   sequence: Schema.optional(NonNegativeInt),
+  eventSequence: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
@@ -346,6 +347,65 @@ export const OrchestrationLatestTurn = Schema.Struct({
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
+
+export const OrchestrationThreadLifecycle = Schema.Literals([
+  "starting",
+  "running",
+  "ready",
+  "awaiting-input",
+  "completed",
+  "interrupted",
+  "stopped",
+  "error",
+  "unknown",
+]);
+export type OrchestrationThreadLifecycle = typeof OrchestrationThreadLifecycle.Type;
+
+export interface ThreadLifecycleInput {
+  readonly isEvidenceComplete: boolean;
+  readonly sessionStatus: OrchestrationSessionStatus | null;
+  readonly latestTurnState: OrchestrationLatestTurnState | null;
+  readonly hasPendingApprovals: boolean;
+  readonly hasPendingUserInput: boolean;
+}
+
+export function deriveThreadLifecycle(input: ThreadLifecycleInput): OrchestrationThreadLifecycle {
+  if (!input.isEvidenceComplete) {
+    return "unknown";
+  }
+
+  switch (input.sessionStatus) {
+    case "error":
+    case "interrupted":
+    case "stopped":
+      return input.sessionStatus;
+  }
+
+  if (input.hasPendingApprovals || input.hasPendingUserInput) {
+    return "awaiting-input";
+  }
+
+  if (input.sessionStatus === "starting" || input.sessionStatus === "running") {
+    return input.latestTurnState === "completed" ||
+      input.latestTurnState === "interrupted" ||
+      input.latestTurnState === "error"
+      ? "unknown"
+      : input.sessionStatus;
+  }
+
+  switch (input.latestTurnState) {
+    case "completed":
+    case "interrupted":
+    case "error":
+      return input.latestTurnState;
+  }
+
+  if (input.sessionStatus === "ready" && input.latestTurnState === null) {
+    return "ready";
+  }
+
+  return "unknown";
+}
 
 export const ThreadTitleRegeneration = Schema.Struct({
   requestId: CommandId,
@@ -389,6 +449,14 @@ export const OrchestrationThread = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
+  lifecycle: OrchestrationThreadLifecycle.pipe(
+    Schema.withDecodingDefault(Effect.succeed("unknown")),
+  ),
+  isLifecycleEvidenceComplete: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  hasPendingApprovals: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  hasPendingUserInput: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
@@ -436,6 +504,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   session: Schema.NullOr(OrchestrationSession),
+  lifecycle: OrchestrationThreadLifecycle.pipe(
+    Schema.withDecodingDefault(Effect.succeed("unknown")),
+  ),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,

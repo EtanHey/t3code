@@ -100,6 +100,7 @@ const THREAD_SHELL = {
   settledOverride: null,
   settledAt: null,
   session: null,
+  lifecycle: "unknown",
   latestUserMessageAt: null,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
@@ -211,6 +212,7 @@ describe("environment entity projections", () => {
       proposedPlans: [],
       activities: [],
       checkpoints: [],
+      isLifecycleEvidenceComplete: true,
     } satisfies OrchestrationThread & { readonly environmentId: EnvironmentId };
     const shell = {
       ...THREAD_SHELL,
@@ -326,6 +328,7 @@ describe("environment entity projections", () => {
       proposedPlans: [],
       activities: [],
       checkpoints: [],
+      isLifecycleEvidenceComplete: true,
     } satisfies OrchestrationThread;
 
     harness.registry.set(

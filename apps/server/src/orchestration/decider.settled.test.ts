@@ -51,6 +51,10 @@ function makeReadModel(
         activities,
         checkpoints: [],
         session,
+        lifecycle: "unknown",
+        isLifecycleEvidenceComplete: true,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
       },
     ],
     updatedAt: NOW,
@@ -192,7 +196,7 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
     }),
   );
 
-  it.effect("clears an open request when its respond failure marks it stale", () =>
+  it.effect("keeps open requests blocked when provider failure detail changes", () =>
     Effect.gen(function* () {
       const activity = (
         kind: string,
@@ -209,9 +213,9 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
           createdAt: NOW,
         }) as OrchestrationThread["activities"][number];
 
-      // Stale-failure detail clears the request — mirrors the projection's
-      // pending accounting, which is what the client's canSettle sees.
-      const settled = yield* decideOrchestrationCommand({
+      // Provider failure prose is diagnostic only. Without typed resolved
+      // activities, both requests remain open and settling is rejected.
+      const staleFailure = yield* decideOrchestrationCommand({
         command: {
           type: "thread.settle",
           commandId: CommandId.make("cmd-settle-stale-failed"),
@@ -227,9 +231,8 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
             detail: "stale pending user-input request req-2",
           }),
         ]),
-      });
-      const settledEvents = Array.isArray(settled) ? settled : [settled];
-      expect(settledEvents[0]?.type).toBe("thread.settled");
+      }).pipe(Effect.flip);
+      expect(staleFailure._tag).toBe("OrchestrationCommandInvariantError");
 
       // A non-stale respond failure (transient provider error) keeps the
       // request open: the user can retry, so it is still blocked-on-you.

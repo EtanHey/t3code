@@ -1,4 +1,5 @@
 import {
+  ApprovalRequestId,
   CheckpointRef,
   CommandId,
   CorrelationId,
@@ -130,6 +131,30 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
+      yield* eventStore.append({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-4"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-4"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-4"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("activity-bootstrap"),
+            tone: "info",
+            kind: "runtime.note",
+            summary: "Bootstrapped activity",
+            payload: {},
+            turnId: null,
+            createdAt: now,
+          },
+        },
+      });
+
       yield* projectionPipeline.bootstrap;
 
       const projectRows = yield* sql<{
@@ -158,6 +183,25 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.deepEqual(messageRows, [{ messageId: "message-1", text: "hello" }]);
 
+      const activityRows = yield* sql<{
+        readonly activityId: string;
+        readonly providerSequence: number | null;
+        readonly eventSequence: number | null;
+      }>`
+        SELECT
+          activity_id AS "activityId",
+          sequence AS "providerSequence",
+          event_sequence AS "eventSequence"
+        FROM projection_thread_activities
+      `;
+      assert.deepEqual(activityRows, [
+        {
+          activityId: "activity-bootstrap",
+          providerSequence: null,
+          eventSequence: 4,
+        },
+      ]);
+
       const threadRows = yield* sql<{
         readonly threadId: string;
         readonly parentThreadId: string | null;
@@ -181,7 +225,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
       for (const row of stateRows) {
-        assert.equal(row.lastAppliedSequence, 3);
+        assert.equal(row.lastAppliedSequence, 4);
       }
 
       // Settled lifecycle through the DB pipeline: thread.settled writes the
@@ -1810,7 +1854,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       }),
   );
 
-  it.effect("clears stale pending approvals from projected shell summaries", () =>
+  it.effect("keeps concurrent approvals open until typed resolution", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
@@ -1870,6 +1914,33 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
 
       yield* appendAndProject({
         type: "thread.activity-appended",
+        eventId: EventId.make("evt-stale-approval-pre-resolved"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-approval"),
+        occurredAt: "2026-02-26T12:30:01.500Z",
+        commandId: CommandId.make("cmd-stale-approval-pre-resolved"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-approval-pre-resolved"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-approval"),
+          activity: {
+            id: EventId.make("activity-stale-approval-pre-resolved"),
+            tone: "approval",
+            kind: "approval.resolved",
+            summary: "Earlier approval resolution",
+            payload: {
+              requestId: "approval-request-stale-1",
+              decision: "accept",
+            },
+            turnId: null,
+            createdAt: "2026-02-26T12:30:01.500Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
         eventId: EventId.make("evt-stale-approval-3"),
         aggregateKind: "thread",
         aggregateId: ThreadId.make("thread-stale-approval"),
@@ -1922,6 +1993,51 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stale-approval-5"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-approval"),
+        occurredAt: "2026-02-26T12:30:04.000Z",
+        commandId: CommandId.make("cmd-stale-approval-5"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-approval-5"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-approval"),
+          activity: {
+            id: EventId.make("activity-stale-approval-requested-2"),
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "Second command approval requested",
+            payload: {
+              requestId: "approval-request-stale-2",
+              requestKind: "command",
+            },
+            turnId: null,
+            createdAt: "2026-02-26T12:30:04.000Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.approval-response-requested",
+        eventId: EventId.make("evt-stale-approval-6"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-approval"),
+        occurredAt: "2026-02-26T12:30:05.000Z",
+        commandId: CommandId.make("cmd-stale-approval-6"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-approval-6"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-approval"),
+          requestId: ApprovalRequestId.make("approval-request-stale-1"),
+          decision: "accept",
+          createdAt: "2026-02-26T12:30:05.000Z",
+        },
+      });
+
       const approvalRows = yield* sql<{
         readonly requestId: string;
         readonly status: string;
@@ -1932,13 +2048,19 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           status,
           resolved_at AS "resolvedAt"
         FROM projection_pending_approvals
-        WHERE request_id = 'approval-request-stale-1'
+        WHERE request_id IN ('approval-request-stale-1', 'approval-request-stale-2')
+        ORDER BY request_id
       `;
       assert.deepEqual(approvalRows, [
         {
           requestId: "approval-request-stale-1",
-          status: "resolved",
-          resolvedAt: "2026-02-26T12:30:03.000Z",
+          status: "pending",
+          resolvedAt: null,
+        },
+        {
+          requestId: "approval-request-stale-2",
+          status: "pending",
+          resolvedAt: null,
         },
       ]);
 
@@ -1949,11 +2071,61 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         FROM projection_threads
         WHERE thread_id = 'thread-stale-approval'
       `;
-      assert.deepEqual(threadRows, [{ pendingApprovalCount: 0 }]);
+      assert.deepEqual(threadRows, [{ pendingApprovalCount: 2 }]);
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stale-approval-7"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-approval"),
+        occurredAt: "2026-02-26T12:30:06.000Z",
+        commandId: CommandId.make("cmd-stale-approval-7"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-approval-7"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-approval"),
+          activity: {
+            id: EventId.make("activity-stale-approval-resolved"),
+            tone: "approval",
+            kind: "approval.resolved",
+            summary: "First command approval resolved",
+            payload: {
+              requestId: "approval-request-stale-1",
+              decision: "accept",
+            },
+            turnId: null,
+            createdAt: "2026-02-26T12:30:06.000Z",
+          },
+        },
+      });
+
+      const resolvedApprovalRows = yield* sql<{
+        readonly requestId: string;
+        readonly status: string;
+      }>`
+        SELECT request_id AS "requestId", status
+        FROM projection_pending_approvals
+        WHERE request_id IN ('approval-request-stale-1', 'approval-request-stale-2')
+        ORDER BY request_id
+      `;
+      assert.deepEqual(resolvedApprovalRows, [
+        { requestId: "approval-request-stale-1", status: "resolved" },
+        { requestId: "approval-request-stale-2", status: "pending" },
+      ]);
+
+      const resolvedThreadRows = yield* sql<{
+        readonly pendingApprovalCount: number;
+      }>`
+        SELECT pending_approval_count AS "pendingApprovalCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-stale-approval'
+      `;
+      assert.deepEqual(resolvedThreadRows, [{ pendingApprovalCount: 1 }]);
     }),
   );
 
-  it.effect("clears stale pending user input from projected shell summaries", () =>
+  it.effect("keeps pending user input open when only provider failure detail changes", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
@@ -2084,6 +2256,156 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         SELECT pending_user_input_count AS "pendingUserInputCount"
         FROM projection_threads
         WHERE thread_id = 'thread-stale-user-input'
+      `;
+      assert.deepEqual(threadRows, [{ pendingUserInputCount: 1 }]);
+    }),
+  );
+
+  it.effect("persists event order for unsequenced user-input activities", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.tap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-user-input-order-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-user-input-order"),
+        occurredAt: "2026-02-26T12:40:00.000Z",
+        commandId: CommandId.make("cmd-user-input-order-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-user-input-order-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-user-input-order"),
+          title: "Project User Input Order",
+          workspaceRoot: "/tmp/project-user-input-order",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-02-26T12:40:00.000Z",
+          updatedAt: "2026-02-26T12:40:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-user-input-order-2"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-user-input-order"),
+        occurredAt: "2026-02-26T12:40:01.000Z",
+        commandId: CommandId.make("cmd-user-input-order-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-user-input-order-2"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-user-input-order"),
+          projectId: ProjectId.make("project-user-input-order"),
+          title: "Thread User Input Order",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-02-26T12:40:01.000Z",
+          updatedAt: "2026-02-26T12:40:01.000Z",
+        },
+      });
+
+      const requestedEvent = yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-user-input-order-3"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-user-input-order"),
+        occurredAt: "2026-02-26T12:40:02.000Z",
+        commandId: CommandId.make("cmd-user-input-order-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-user-input-order-3"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-user-input-order"),
+          activity: {
+            id: EventId.make("activity-user-input-order-requested"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            payload: {
+              requestId: "user-input-request-order-1",
+              questions: [],
+            },
+            turnId: null,
+            // Provider timestamps may skew and this legacy-shaped payload has
+            // no provider sequence. The event append order is authoritative.
+            createdAt: "2026-02-26T12:40:10.000Z",
+          },
+        },
+      });
+
+      const resolvedEvent = yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-user-input-order-4"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-user-input-order"),
+        occurredAt: "2026-02-26T12:40:03.000Z",
+        commandId: CommandId.make("cmd-user-input-order-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-user-input-order-4"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-user-input-order"),
+          activity: {
+            id: EventId.make("activity-user-input-order-resolved"),
+            tone: "info",
+            kind: "user-input.resolved",
+            summary: "User input resolved",
+            payload: {
+              requestId: "user-input-request-order-1",
+            },
+            turnId: null,
+            createdAt: "2026-02-26T12:40:02.000Z",
+          },
+        },
+      });
+
+      const activityRows = yield* sql<{
+        readonly kind: string;
+        readonly providerSequence: number | null;
+        readonly eventSequence: number | null;
+      }>`
+        SELECT
+          kind,
+          sequence AS "providerSequence",
+          event_sequence AS "eventSequence"
+        FROM projection_thread_activities
+        WHERE thread_id = 'thread-user-input-order'
+        ORDER BY event_sequence ASC
+      `;
+      assert.deepEqual(activityRows, [
+        {
+          kind: "user-input.requested",
+          providerSequence: null,
+          eventSequence: requestedEvent.sequence,
+        },
+        {
+          kind: "user-input.resolved",
+          providerSequence: null,
+          eventSequence: resolvedEvent.sequence,
+        },
+      ]);
+
+      const threadRows = yield* sql<{
+        readonly pendingUserInputCount: number;
+      }>`
+        SELECT pending_user_input_count AS "pendingUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-user-input-order'
       `;
       assert.deepEqual(threadRows, [{ pendingUserInputCount: 0 }]);
     }),
@@ -2269,7 +2591,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
-  it.effect("does not fallback-retain messages whose turnId is removed by revert", () =>
+  it.effect("prunes messages and pending requests whose turnId is removed by revert", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
@@ -2437,6 +2759,54 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       });
 
       yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-revert-approval-request"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-revert"),
+        occurredAt: "2026-02-26T12:00:03.200Z",
+        commandId: CommandId.make("cmd-revert-approval-request"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-revert-approval-request"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-revert"),
+          activity: {
+            id: EventId.make("activity-revert-approval-request"),
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "Approval requested",
+            payload: { requestId: "approval-revert-turn-2" },
+            turnId: TurnId.make("turn-2"),
+            createdAt: "2026-02-26T12:00:03.200Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-revert-user-input-request"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-revert"),
+        occurredAt: "2026-02-26T12:00:03.300Z",
+        commandId: CommandId.make("cmd-revert-user-input-request"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-revert-user-input-request"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-revert"),
+          activity: {
+            id: EventId.make("activity-revert-user-input-request"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            payload: { requestId: "user-input-revert-turn-2" },
+            turnId: TurnId.make("turn-2"),
+            createdAt: "2026-02-26T12:00:03.300Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
         type: "thread.reverted",
         eventId: EventId.make("evt-revert-8"),
         aggregateKind: "thread",
@@ -2470,6 +2840,37 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           messageId: "assistant-keep",
           turnId: "turn-1",
           role: "assistant",
+        },
+      ]);
+
+      const activityRows = yield* sql<{ readonly activityId: string }>`
+        SELECT activity_id AS "activityId"
+        FROM projection_thread_activities
+        WHERE thread_id = 'thread-revert'
+      `;
+      assert.deepEqual(activityRows, []);
+
+      const approvalRows = yield* sql<{ readonly requestId: string }>`
+        SELECT request_id AS "requestId"
+        FROM projection_pending_approvals
+        WHERE thread_id = 'thread-revert'
+      `;
+      assert.deepEqual(approvalRows, []);
+
+      const threadRows = yield* sql<{
+        readonly pendingApprovalCount: number;
+        readonly pendingUserInputCount: number;
+      }>`
+        SELECT
+          pending_approval_count AS "pendingApprovalCount",
+          pending_user_input_count AS "pendingUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-revert'
+      `;
+      assert.deepEqual(threadRows, [
+        {
+          pendingApprovalCount: 0,
+          pendingUserInputCount: 0,
         },
       ]);
     }),

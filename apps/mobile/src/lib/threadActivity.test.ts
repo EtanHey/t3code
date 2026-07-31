@@ -50,7 +50,11 @@ function makeThread(
     activities: [],
     checkpoints: [],
     session: null,
+    lifecycle: "unknown",
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
     ...input,
+    isLifecycleEvidenceComplete: input.isLifecycleEvidenceComplete ?? true,
     settledOverride: input.settledOverride ?? null,
     settledAt: input.settledAt ?? null,
   };

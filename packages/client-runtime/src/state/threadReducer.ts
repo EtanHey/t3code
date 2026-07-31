@@ -10,6 +10,7 @@ import type {
   OrchestrationThread,
   OrchestrationThreadActivity,
 } from "@t3tools/contracts/runtime-client";
+import { deriveThreadLifecycle } from "@t3tools/contracts/runtime-client";
 
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
@@ -33,6 +34,11 @@ const activityOrder = O.combineAll<OrchestrationThreadActivity>([
   O.mapInput(O.String, (a) => a.id),
 ]);
 
+const activityEventOrder = O.combineAll<OrchestrationThreadActivity>([
+  O.mapInput(O.Number, (a) => a.eventSequence ?? Number.MAX_SAFE_INTEGER),
+  O.mapInput(O.String, (a) => a.id),
+]);
+
 /**
  * Apply a single orchestration event to an `OrchestrationThread`, returning
  * the updated thread, a deletion signal, or an "unchanged" marker when the
@@ -43,6 +49,34 @@ const activityOrder = O.combineAll<OrchestrationThreadActivity>([
  * scoped fields like `environmentId`) is the caller's responsibility.
  */
 export function applyThreadDetailEvent(
+  thread: OrchestrationThread,
+  event: OrchestrationEvent,
+): ThreadDetailReducerResult {
+  const result = reduceThreadDetailEvent(thread, event);
+  if (result.kind !== "updated" || !eventChangesLifecycleEvidence(event)) {
+    return result;
+  }
+
+  const withPendingFields =
+    event.type === "thread.activity-appended" || event.type === "thread.reverted"
+      ? refreshPendingRequestFields(result.thread)
+      : result.thread;
+  return {
+    kind: "updated",
+    thread: {
+      ...withPendingFields,
+      lifecycle: deriveThreadLifecycle({
+        isEvidenceComplete: withPendingFields.isLifecycleEvidenceComplete,
+        sessionStatus: withPendingFields.session?.status ?? null,
+        latestTurnState: withPendingFields.latestTurn?.state ?? null,
+        hasPendingApprovals: withPendingFields.hasPendingApprovals,
+        hasPendingUserInput: withPendingFields.hasPendingUserInput,
+      }),
+    },
+  };
+}
+
+function reduceThreadDetailEvent(
   thread: OrchestrationThread,
   event: OrchestrationEvent,
 ): ThreadDetailReducerResult {
@@ -81,6 +115,10 @@ export function applyThreadDetailEvent(
           activities: [],
           checkpoints: [],
           session: null,
+          lifecycle: "unknown",
+          isLifecycleEvidenceComplete: true,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
         },
       };
 
@@ -508,10 +546,14 @@ export function applyThreadDetailEvent(
 
     // ── Activities ──────────────────────────────────────────────────
     case "thread.activity-appended": {
+      const appendedActivity = {
+        ...event.payload.activity,
+        eventSequence: event.sequence,
+      };
       const activities = pipe(
         thread.activities,
         Arr.filter((activity) => activity.id !== event.payload.activity.id),
-        Arr.append(event.payload.activity),
+        Arr.append(appendedActivity),
         Arr.sort(activityOrder),
       );
 
@@ -533,6 +575,64 @@ export function applyThreadDetailEvent(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+function eventChangesLifecycleEvidence(event: OrchestrationEvent): boolean {
+  switch (event.type) {
+    case "thread.activity-appended":
+    case "thread.message-sent":
+    case "thread.reverted":
+    case "thread.session-set":
+    case "thread.session-stop-requested":
+    case "thread.turn-diff-completed":
+    case "thread.turn-interrupt-requested":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function refreshPendingRequestFields(thread: OrchestrationThread): OrchestrationThread {
+  const pendingApprovalIds = new Set<string>();
+  const pendingUserInputIds = new Set<string>();
+
+  for (const activity of pipe(thread.activities, Arr.sort(activityEventOrder))) {
+    if (activity.eventSequence === undefined) {
+      continue;
+    }
+    const requestId = extractActivityRequestId(activity);
+    if (requestId === null) {
+      continue;
+    }
+    switch (activity.kind) {
+      case "approval.requested":
+        pendingApprovalIds.add(requestId);
+        break;
+      case "approval.resolved":
+        pendingApprovalIds.delete(requestId);
+        break;
+      case "user-input.requested":
+        pendingUserInputIds.add(requestId);
+        break;
+      case "user-input.resolved":
+        pendingUserInputIds.delete(requestId);
+        break;
+    }
+  }
+
+  return {
+    ...thread,
+    hasPendingApprovals: pendingApprovalIds.size > 0,
+    hasPendingUserInput: pendingUserInputIds.size > 0,
+  };
+}
+
+function extractActivityRequestId(activity: OrchestrationThreadActivity): string | null {
+  if (typeof activity.payload !== "object" || activity.payload === null) {
+    return null;
+  }
+  const requestId = (activity.payload as Record<string, unknown>).requestId;
+  return typeof requestId === "string" ? requestId : null;
+}
 
 /**
  * Turn state to settle a still-running latest turn with when its session

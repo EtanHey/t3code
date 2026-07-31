@@ -42,6 +42,7 @@ function makeThread(
     updatedAt: "2026-06-01T00:00:00.000Z",
     archivedAt: null,
     session: null,
+    lifecycle: "unknown",
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,

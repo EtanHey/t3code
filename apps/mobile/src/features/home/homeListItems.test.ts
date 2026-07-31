@@ -51,6 +51,7 @@ function makeThread(id: string, projectId: ProjectId): EnvironmentThreadShell {
     settledOverride: null,
     settledAt: null,
     session: null,
+    lifecycle: "unknown",
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
