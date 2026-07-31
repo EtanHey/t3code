@@ -545,6 +545,78 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect("replays pending transitions in authoritative append order across request ids", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: ACTIVE_THREAD });
+
+      yield* Queue.offer(
+        harness.inputs,
+        activityAppended(
+          "user-input.resolved",
+          "user-input-out-of-order",
+          CACHED_SNAPSHOT_SEQUENCE + 1,
+        ),
+      );
+      yield* Queue.offer(
+        harness.inputs,
+        activityAppended(
+          "user-input.requested",
+          "user-input-out-of-order",
+          CACHED_SNAPSHOT_SEQUENCE + 2,
+        ),
+      );
+      const reopened = yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.isSome(value.data) && value.data.value.activities.length >= 2,
+      );
+      expect(Option.getOrThrow(reopened.data).hasPendingUserInput).toBe(true);
+      expect(Option.getOrThrow(reopened.data).lifecycle).toBe("awaiting-input");
+
+      yield* Queue.offer(
+        harness.inputs,
+        activityAppended(
+          "user-input.requested",
+          "user-input-concurrent",
+          CACHED_SNAPSHOT_SEQUENCE + 3,
+        ),
+      );
+      yield* Queue.offer(
+        harness.inputs,
+        activityAppended(
+          "user-input.resolved",
+          "user-input-out-of-order",
+          CACHED_SNAPSHOT_SEQUENCE + 4,
+        ),
+      );
+      const concurrentStillOpen = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          Option.isSome(value.data) &&
+          value.data.value.activities.length >= 4 &&
+          value.data.value.hasPendingUserInput,
+      );
+      expect(Option.getOrThrow(concurrentStillOpen.data).lifecycle).toBe("awaiting-input");
+
+      yield* Queue.offer(
+        harness.inputs,
+        activityAppended(
+          "user-input.resolved",
+          "user-input-concurrent",
+          CACHED_SNAPSHOT_SEQUENCE + 5,
+        ),
+      );
+      const allResolved = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          Option.isSome(value.data) &&
+          value.data.value.activities.length >= 5 &&
+          !value.data.value.hasPendingUserInput,
+      );
+      expect(Option.getOrThrow(allResolved.data).lifecycle).toBe("running");
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+    }),
+  );
+
   it.effect("replays typed pending transitions to the same fields as a fresh snapshot", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: ACTIVE_THREAD });

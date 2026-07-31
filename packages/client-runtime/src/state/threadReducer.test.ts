@@ -765,6 +765,7 @@ describe("applyThreadDetailEvent", () => {
             summary: "Approval requested",
             payload: { requestId: "approval-turn-2" },
             turnId: TurnId.make("turn-2"),
+            eventSequence: 1,
             createdAt: "2026-04-01T03:00:00.000Z",
           },
           {
@@ -774,6 +775,7 @@ describe("applyThreadDetailEvent", () => {
             summary: "User input requested",
             payload: { requestId: "user-input-turn-2" },
             turnId: TurnId.make("turn-2"),
+            eventSequence: 2,
             createdAt: "2026-04-01T03:00:01.000Z",
           },
         ],

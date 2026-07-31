@@ -34,6 +34,11 @@ const activityOrder = O.combineAll<OrchestrationThreadActivity>([
   O.mapInput(O.String, (a) => a.id),
 ]);
 
+const activityEventOrder = O.combineAll<OrchestrationThreadActivity>([
+  O.mapInput(O.Number, (a) => a.eventSequence ?? Number.MAX_SAFE_INTEGER),
+  O.mapInput(O.String, (a) => a.id),
+]);
+
 /**
  * Apply a single orchestration event to an `OrchestrationThread`, returning
  * the updated thread, a deletion signal, or an "unchanged" marker when the
@@ -541,10 +546,14 @@ function reduceThreadDetailEvent(
 
     // ── Activities ──────────────────────────────────────────────────
     case "thread.activity-appended": {
+      const appendedActivity = {
+        ...event.payload.activity,
+        eventSequence: event.sequence,
+      };
       const activities = pipe(
         thread.activities,
         Arr.filter((activity) => activity.id !== event.payload.activity.id),
-        Arr.append(event.payload.activity),
+        Arr.append(appendedActivity),
         Arr.sort(activityOrder),
       );
 
@@ -583,36 +592,37 @@ function eventChangesLifecycleEvidence(event: OrchestrationEvent): boolean {
 }
 
 function refreshPendingRequestFields(thread: OrchestrationThread): OrchestrationThread {
-  const requestedApprovalIds = new Set<string>();
-  const resolvedApprovalIds = new Set<string>();
-  const requestedUserInputIds = new Set<string>();
-  const resolvedUserInputIds = new Set<string>();
+  const pendingApprovalIds = new Set<string>();
+  const pendingUserInputIds = new Set<string>();
 
-  for (const activity of thread.activities) {
+  for (const activity of pipe(thread.activities, Arr.sort(activityEventOrder))) {
+    if (activity.eventSequence === undefined) {
+      continue;
+    }
     const requestId = extractActivityRequestId(activity);
     if (requestId === null) {
       continue;
     }
     switch (activity.kind) {
       case "approval.requested":
-        requestedApprovalIds.add(requestId);
+        pendingApprovalIds.add(requestId);
         break;
       case "approval.resolved":
-        resolvedApprovalIds.add(requestId);
+        pendingApprovalIds.delete(requestId);
         break;
       case "user-input.requested":
-        requestedUserInputIds.add(requestId);
+        pendingUserInputIds.add(requestId);
         break;
       case "user-input.resolved":
-        resolvedUserInputIds.add(requestId);
+        pendingUserInputIds.delete(requestId);
         break;
     }
   }
 
   return {
     ...thread,
-    hasPendingApprovals: hasUnresolvedRequest(requestedApprovalIds, resolvedApprovalIds),
-    hasPendingUserInput: hasUnresolvedRequest(requestedUserInputIds, resolvedUserInputIds),
+    hasPendingApprovals: pendingApprovalIds.size > 0,
+    hasPendingUserInput: pendingUserInputIds.size > 0,
   };
 }
 
@@ -622,18 +632,6 @@ function extractActivityRequestId(activity: OrchestrationThreadActivity): string
   }
   const requestId = (activity.payload as Record<string, unknown>).requestId;
   return typeof requestId === "string" ? requestId : null;
-}
-
-function hasUnresolvedRequest(
-  requestedIds: ReadonlySet<string>,
-  resolvedIds: ReadonlySet<string>,
-): boolean {
-  for (const requestId of requestedIds) {
-    if (!resolvedIds.has(requestId)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 /**

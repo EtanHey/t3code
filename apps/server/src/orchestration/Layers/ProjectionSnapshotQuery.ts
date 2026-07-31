@@ -1309,6 +1309,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   payload: row.payload,
                   turnId: row.turnId,
                   ...(row.sequence !== null ? { sequence: row.sequence } : {}),
+                  ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
                   createdAt: row.createdAt,
                 });
                 activitiesByThread.set(row.threadId, threadActivities);
@@ -2310,7 +2311,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             createdAt: row.createdAt,
           };
           if (row.sequence !== null) {
-            return Object.assign(activity, { sequence: row.sequence });
+            Object.assign(activity, { sequence: row.sequence });
+          }
+          if (row.eventSequence !== null) {
+            Object.assign(activity, { eventSequence: row.eventSequence });
           }
           return activity;
         }),

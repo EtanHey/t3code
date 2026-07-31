@@ -1273,6 +1273,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           summary: "unsequenced first",
           payload: { source: "unsequenced" },
           turnId: null,
+          eventSequence: 1,
           createdAt: "2026-04-01T00:00:06.000Z",
         },
         {
@@ -1283,6 +1284,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           payload: { source: "sequence-1" },
           turnId: null,
           sequence: 1,
+          eventSequence: 2,
           createdAt: "2026-04-01T00:00:05.000Z",
         },
         {
@@ -1293,6 +1295,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           payload: { source: "sequence-2" },
           turnId: null,
           sequence: 2,
+          eventSequence: 3,
           createdAt: "2026-04-01T00:00:04.000Z",
         },
       ]);

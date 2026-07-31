@@ -1,4 +1,5 @@
 import {
+  ApprovalRequestId,
   CheckpointRef,
   CommandId,
   CorrelationId,
@@ -1853,7 +1854,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       }),
   );
 
-  it.effect("keeps pending approvals open when only provider failure detail changes", () =>
+  it.effect("keeps concurrent approvals open until typed resolution", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
@@ -1913,6 +1914,33 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
 
       yield* appendAndProject({
         type: "thread.activity-appended",
+        eventId: EventId.make("evt-stale-approval-pre-resolved"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-approval"),
+        occurredAt: "2026-02-26T12:30:01.500Z",
+        commandId: CommandId.make("cmd-stale-approval-pre-resolved"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-approval-pre-resolved"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-approval"),
+          activity: {
+            id: EventId.make("activity-stale-approval-pre-resolved"),
+            tone: "approval",
+            kind: "approval.resolved",
+            summary: "Earlier approval resolution",
+            payload: {
+              requestId: "approval-request-stale-1",
+              decision: "accept",
+            },
+            turnId: null,
+            createdAt: "2026-02-26T12:30:01.500Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
         eventId: EventId.make("evt-stale-approval-3"),
         aggregateKind: "thread",
         aggregateId: ThreadId.make("thread-stale-approval"),
@@ -1965,6 +1993,51 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stale-approval-5"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-approval"),
+        occurredAt: "2026-02-26T12:30:04.000Z",
+        commandId: CommandId.make("cmd-stale-approval-5"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-approval-5"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-approval"),
+          activity: {
+            id: EventId.make("activity-stale-approval-requested-2"),
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "Second command approval requested",
+            payload: {
+              requestId: "approval-request-stale-2",
+              requestKind: "command",
+            },
+            turnId: null,
+            createdAt: "2026-02-26T12:30:04.000Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.approval-response-requested",
+        eventId: EventId.make("evt-stale-approval-6"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-approval"),
+        occurredAt: "2026-02-26T12:30:05.000Z",
+        commandId: CommandId.make("cmd-stale-approval-6"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-approval-6"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-approval"),
+          requestId: ApprovalRequestId.make("approval-request-stale-1"),
+          decision: "accept",
+          createdAt: "2026-02-26T12:30:05.000Z",
+        },
+      });
+
       const approvalRows = yield* sql<{
         readonly requestId: string;
         readonly status: string;
@@ -1975,11 +2048,17 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           status,
           resolved_at AS "resolvedAt"
         FROM projection_pending_approvals
-        WHERE request_id = 'approval-request-stale-1'
+        WHERE request_id IN ('approval-request-stale-1', 'approval-request-stale-2')
+        ORDER BY request_id
       `;
       assert.deepEqual(approvalRows, [
         {
           requestId: "approval-request-stale-1",
+          status: "pending",
+          resolvedAt: null,
+        },
+        {
+          requestId: "approval-request-stale-2",
           status: "pending",
           resolvedAt: null,
         },
@@ -1992,7 +2071,57 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         FROM projection_threads
         WHERE thread_id = 'thread-stale-approval'
       `;
-      assert.deepEqual(threadRows, [{ pendingApprovalCount: 1 }]);
+      assert.deepEqual(threadRows, [{ pendingApprovalCount: 2 }]);
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stale-approval-7"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-approval"),
+        occurredAt: "2026-02-26T12:30:06.000Z",
+        commandId: CommandId.make("cmd-stale-approval-7"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-approval-7"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-approval"),
+          activity: {
+            id: EventId.make("activity-stale-approval-resolved"),
+            tone: "approval",
+            kind: "approval.resolved",
+            summary: "First command approval resolved",
+            payload: {
+              requestId: "approval-request-stale-1",
+              decision: "accept",
+            },
+            turnId: null,
+            createdAt: "2026-02-26T12:30:06.000Z",
+          },
+        },
+      });
+
+      const resolvedApprovalRows = yield* sql<{
+        readonly requestId: string;
+        readonly status: string;
+      }>`
+        SELECT request_id AS "requestId", status
+        FROM projection_pending_approvals
+        WHERE request_id IN ('approval-request-stale-1', 'approval-request-stale-2')
+        ORDER BY request_id
+      `;
+      assert.deepEqual(resolvedApprovalRows, [
+        { requestId: "approval-request-stale-1", status: "resolved" },
+        { requestId: "approval-request-stale-2", status: "pending" },
+      ]);
+
+      const resolvedThreadRows = yield* sql<{
+        readonly pendingApprovalCount: number;
+      }>`
+        SELECT pending_approval_count AS "pendingApprovalCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-stale-approval'
+      `;
+      assert.deepEqual(resolvedThreadRows, [{ pendingApprovalCount: 1 }]);
     }),
   );
 

@@ -287,7 +287,7 @@ layer("037_ProjectionThreadActivityEventSequence", (it) => {
       `;
       assert.deepStrictEqual(threadRows, [
         {
-          pendingApprovalCount: 1,
+          pendingApprovalCount: 2,
           pendingUserInputCount: 0,
         },
       ]);
@@ -312,9 +312,9 @@ layer("037_ProjectionThreadActivityEventSequence", (it) => {
           resolvedAt: null,
         },
         {
-          status: "resolved",
-          decision: "accept",
-          resolvedAt: "2026-07-31T00:00:05.000Z",
+          status: "pending",
+          decision: null,
+          resolvedAt: null,
         },
       ]);
     }),

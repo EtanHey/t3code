@@ -62,31 +62,6 @@ export default Effect.gen(function* () {
       WHERE activity.event_sequence IS NOT NULL
         AND activity.kind IN ('approval.requested', 'approval.resolved')
         AND json_extract(activity.payload_json, '$.requestId') IS NOT NULL
-
-      UNION ALL
-
-      SELECT
-        event.stream_id AS thread_id,
-        json_extract(event.payload_json, '$.requestId') AS request_id,
-        'resolved' AS status,
-        CASE
-          WHEN json_extract(event.payload_json, '$.decision') IN (
-            'accept',
-            'acceptForSession',
-            'decline',
-            'cancel'
-          )
-          THEN json_extract(event.payload_json, '$.decision')
-          ELSE NULL
-        END AS decision,
-        COALESCE(
-          json_extract(event.payload_json, '$.createdAt'),
-          event.occurred_at
-        ) AS resolved_at,
-        event.sequence AS event_sequence
-      FROM orchestration_events AS event
-      WHERE event.event_type = 'thread.approval-response-requested'
-        AND json_extract(event.payload_json, '$.requestId') IS NOT NULL
     ),
     latest_structural_approval_states AS (
       SELECT
