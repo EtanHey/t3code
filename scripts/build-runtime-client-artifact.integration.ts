@@ -13,7 +13,7 @@ import { assertPackedMembersClean, assertPatchedBundle } from "./build-runtime-c
 const repoRoot = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const builderPath = NodePath.join(repoRoot, "scripts/build-runtime-client-artifact.ts");
 const tsgoPath = NodePath.join(repoRoot, "node_modules/.bin/tsgo");
-const artifactName = "t3tools-runtime-client-0.0.31-rpc.1.tgz";
+const artifactName = "t3tools-runtime-client-0.0.31-rpc.2.tgz";
 const expectedInventory = [
   "package/LICENSE",
   "package/dist/index.d.mts",
@@ -270,6 +270,8 @@ try {
       "  T3_RPC_EFFECT_VERSION,",
       "  ThreadTurnStartCommand,",
       "  WS_METHODS,",
+      "  applyShellStreamEvent,",
+      "  applyThreadDetailEvent,",
       "  makeRpcSessionFactory,",
       "  makeWsRpcProtocolClient,",
       '} from "@t3tools/runtime-client";',
@@ -292,6 +294,12 @@ try {
       `if (T3_RPC_EFFECT_VERSION !== "${T3_RPC_EFFECT_VERSION}") throw new Error("Effect mismatch");`,
       `if (T3_RPC_COMPATIBILITY.contractFingerprint !== "${T3_RPC_COMPATIBILITY.contractFingerprint}") {`,
       '  throw new Error("compatibility mismatch");',
+      "}",
+      'if (typeof applyThreadDetailEvent !== "function") {',
+      '  throw new Error("thread-detail reducer export missing");',
+      "}",
+      'if (typeof applyShellStreamEvent !== "function") {',
+      '  throw new Error("shell-stream reducer export missing");',
       "}",
       'if (!Effect.isEffect(makeRpcSessionFactory)) throw new Error("session factory is not Effect");',
       'if (!Effect.isEffect(makeWsRpcProtocolClient)) throw new Error("protocol factory is not Effect");',

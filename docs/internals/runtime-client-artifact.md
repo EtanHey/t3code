@@ -3,14 +3,16 @@
 The runtime-client artifact is the distribution boundary for consumers that
 need the reviewed T3 WebSocket RPC client without depending on the T3 Code
 workspace. Its source package stays private. The build script stages a separate
-publishable manifest and emits `@t3tools/runtime-client@0.0.31-rpc.1`.
+publishable manifest and emits `@t3tools/runtime-client@0.0.31-rpc.2`.
 
 The public entry re-exports only:
 
 - the canonical `@t3tools/contracts/runtime-client` schemas, RPC group, method
   names, orchestration commands, and compatibility descriptor;
 - the reviewed WebSocket protocol-client and strict session-factory exports
-  from `@t3tools/client-runtime/runtime-client`.
+  from `@t3tools/client-runtime/runtime-client`;
+- the canonical thread-detail and shell-stream reducers from that same
+  runtime-client boundary.
 
 No schema or Effect RPC framing is copied into this package. The JavaScript
 bundle is compiled from those canonical source modules. Effect is deliberately
@@ -40,7 +42,7 @@ manifest and receipt. They are not publication inputs.
 The command writes three files under
 `packages/runtime-client-artifact/dist/`:
 
-- `t3tools-runtime-client-0.0.31-rpc.1.tgz`;
+- `t3tools-runtime-client-0.0.31-rpc.2.tgz`;
 - a `.tgz.json` receipt containing the source revision, compatibility metadata,
   publishability, inventory, size, SHA-256, and actual Node/npm/tar versions;
 - a `.tgz.sha256` checksum file.
@@ -99,7 +101,7 @@ the receipt names the checked-out SHA and says `publishable: true`, and then
 publish that verified tarball with provenance and the explicit prerelease tag:
 
 ```sh
-npm publish ./t3tools-runtime-client-0.0.31-rpc.1.tgz --provenance --tag rpc
+npm publish ./t3tools-runtime-client-0.0.31-rpc.2.tgz --provenance --tag rpc
 ```
 
 This repository does not create or run that release workflow as part of the

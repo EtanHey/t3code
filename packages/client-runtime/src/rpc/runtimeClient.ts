@@ -3,6 +3,8 @@ export * from "@t3tools/contracts/runtime-client";
 import * as Effect from "effect/Effect";
 
 export { makeWsRpcProtocolClient, type WsRpcProtocolClient } from "./protocol.ts";
+export { applyShellStreamEvent } from "../state/shellReducer.ts";
+export { applyThreadDetailEvent, type ThreadDetailReducerResult } from "../state/threadReducer.ts";
 import {
   make as makeSharedRpcSessionFactory,
   type RpcSessionConnection,
