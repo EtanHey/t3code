@@ -25,13 +25,13 @@ const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
 
-const projectionSnapshotLayer = it.layer(
-  OrchestrationProjectionSnapshotQueryLive.pipe(
-    Layer.provideMerge(RepositoryIdentityResolver.layer),
-    Layer.provideMerge(SqlitePersistenceMemory),
-    Layer.provideMerge(NodeServices.layer),
-  ),
+const projectionSnapshotQueryLive = OrchestrationProjectionSnapshotQueryLive.pipe(
+  Layer.provideMerge(RepositoryIdentityResolver.layer),
+  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(NodeServices.layer),
 );
+
+const projectionSnapshotLayer = it.layer(projectionSnapshotQueryLive);
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
   it.effect("hydrates read model from projection tables and computes snapshot sequence", () =>
@@ -284,6 +284,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          parentThreadId: null,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -399,6 +400,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          parentThreadId: null,
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -2059,7 +2061,9 @@ it.effect(
       const archivedShellSnapshot = yield* snapshotQuery.getArchivedShellSnapshot();
       const shell = yield* snapshotQuery.getThreadShellById(ThreadId.make(childThreadId));
       const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make(childThreadId));
-      const detailSnapshot = yield* snapshotQuery.getThreadDetailSnapshot(ThreadId.make(childThreadId));
+      const detailSnapshot = yield* snapshotQuery.getThreadDetailSnapshot(
+        ThreadId.make(childThreadId),
+      );
 
       assert.equal(
         fullSnapshot.threads.find((thread) => thread.id === childThreadId)?.parentThreadId,
@@ -2094,7 +2098,10 @@ it.effect(
         WHERE thread_id = ${parentThreadId}
       `;
       const afterParentDelete = yield* snapshotQuery.getShellSnapshot();
-      assert.deepStrictEqual(afterParentDelete.threads.map((thread) => thread.id), [childThreadId]);
+      assert.deepStrictEqual(
+        afterParentDelete.threads.map((thread) => thread.id),
+        [childThreadId],
+      );
       assert.equal(afterParentDelete.threads[0]?.parentThreadId, parentThreadId);
 
       yield* sql`
@@ -2104,7 +2111,10 @@ it.effect(
         WHERE thread_id = ${parentThreadId}
       `;
       const afterParentArchive = yield* snapshotQuery.getShellSnapshot();
-      assert.deepStrictEqual(afterParentArchive.threads.map((thread) => thread.id), [childThreadId]);
+      assert.deepStrictEqual(
+        afterParentArchive.threads.map((thread) => thread.id),
+        [childThreadId],
+      );
       assert.equal(afterParentArchive.threads[0]?.parentThreadId, parentThreadId);
-    }),
+    }).pipe(Effect.provide(projectionSnapshotQueryLive)),
 );

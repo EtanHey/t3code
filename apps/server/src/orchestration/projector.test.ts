@@ -39,7 +39,7 @@ function makeEvent(input: {
 }
 
 describe("orchestration projector", () => {
-  it("applies thread.created events", async () => {
+  it("replays the exact parent from thread.created events", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const model = createEmptyReadModel(now);
 
@@ -56,6 +56,7 @@ describe("orchestration projector", () => {
           payload: {
             threadId: "thread-1",
             projectId: "project-1",
+            parentThreadId: "thread-parent",
             title: "demo",
             modelSelection: {
               provider: ProviderDriverKind.make("codex"),
@@ -76,6 +77,7 @@ describe("orchestration projector", () => {
       {
         id: "thread-1",
         projectId: "project-1",
+        parentThreadId: "thread-parent",
         title: "demo",
         modelSelection: {
           instanceId: "codex",

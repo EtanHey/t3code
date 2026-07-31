@@ -193,6 +193,7 @@ const makeDefaultOrchestrationThreadShell = (
   return {
     id: defaultThreadId,
     projectId: defaultProjectId,
+    parentThreadId: null,
     title: "Default Thread",
     modelSelection: defaultModelSelection,
     runtimeMode: "full-access",
@@ -7251,6 +7252,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             bootstrap: {
               createThread: {
                 projectId: defaultProjectId,
+                parentThreadId: null,
                 title: "Bootstrap Thread",
                 modelSelection: defaultModelSelection,
                 runtimeMode: "full-access",
@@ -7372,6 +7374,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             bootstrap: {
               createThread: {
                 projectId: defaultProjectId,
+                parentThreadId: null,
                 title: "Bootstrap Thread",
                 modelSelection: defaultModelSelection,
                 runtimeMode: "full-access",
@@ -7456,6 +7459,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             bootstrap: {
               createThread: {
                 projectId: defaultProjectId,
+                parentThreadId: null,
                 title: "Bootstrap Thread",
                 modelSelection: defaultModelSelection,
                 runtimeMode: "full-access",
