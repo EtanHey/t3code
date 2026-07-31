@@ -12,7 +12,7 @@ import { T3_RPC_COMPATIBILITY, T3_RPC_EFFECT_VERSION } from "@t3tools/contracts/
 import { build } from "vite-plus/pack";
 
 const PACKAGE_NAME = "@t3tools/runtime-client";
-const PACKAGE_VERSION = "0.0.31-rpc.1";
+const PACKAGE_VERSION = "0.0.31-rpc.2";
 const EFFECT_PATCH_SHA256 = "71215759e1ac0a7f65d7b75d816986687ae6c3a6cba02d928d184ca71790d488";
 const EFFECT_PATCH_MARKER = "effect/rpc/RpcClient/RequestHooks";
 const expectedStageInventory = ["LICENSE", "dist/index.d.mts", "dist/index.mjs", "package.json"];

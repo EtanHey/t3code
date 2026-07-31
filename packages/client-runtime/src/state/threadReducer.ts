@@ -2,7 +2,6 @@ import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import * as O from "effect/Order";
 import type {
-  MessageId,
   OrchestrationCheckpointSummary,
   OrchestrationEvent,
   OrchestrationLatestTurn,
@@ -10,8 +9,7 @@ import type {
   OrchestrationSession,
   OrchestrationThread,
   OrchestrationThreadActivity,
-  TurnId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/runtime-client";
 
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
@@ -573,8 +571,8 @@ function checkpointStatusToTurnState(
 
 function rebindCheckpointAssistantMessage(
   checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>,
-  turnId: TurnId,
-  messageId: MessageId,
+  turnId: OrchestrationCheckpointSummary["turnId"],
+  messageId: OrchestrationMessage["id"],
 ): OrchestrationCheckpointSummary[] {
   return Arr.map(checkpoints, (entry) =>
     entry.turnId === turnId ? { ...entry, assistantMessageId: messageId } : entry,

@@ -9,6 +9,7 @@ import { T3_RPC_COMPATIBILITY, T3_RPC_EFFECT_VERSION } from "@t3tools/contracts/
 
 const repoRoot = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const artifactScript = NodePath.join(repoRoot, "scripts/build-runtime-client-artifact.ts");
+const artifactEntryPath = NodePath.join(repoRoot, "packages/runtime-client-artifact/src/index.ts");
 const currentRuntimePackageDir = NodePath.join(repoRoot, "packages/client-runtime");
 const artifactSourcePackagePath = NodePath.join(
   repoRoot,
@@ -122,6 +123,8 @@ describe("runtime-client artifact unit contract", () => {
       "packages/client-runtime/src/rpc/session.ts",
       "packages/client-runtime/src/rpc/protocol.ts",
       "packages/client-runtime/src/connection/model.ts",
+      "packages/client-runtime/src/state/threadReducer.ts",
+      "packages/client-runtime/src/state/shellReducer.ts",
     ].map((relativePath) => NodeFS.readFileSync(NodePath.join(repoRoot, relativePath), "utf8"));
 
     assert.include(artifactEntry, '"@t3tools/contracts/runtime-client"');
@@ -132,6 +135,15 @@ describe("runtime-client artifact unit contract", () => {
       assert.notMatch(source, /from ["']@t3tools\/contracts["']/);
       assert.include(source, '"@t3tools/contracts/runtime-client"');
     }
+  });
+
+  it("exposes the canonical reducers through the artifact source entry", async () => {
+    const artifactEntry = await import(
+      `${NodeURL.pathToFileURL(artifactEntryPath).href}?reducer-exports`
+    );
+
+    assert.isFunction(artifactEntry.applyThreadDetailEvent);
+    assert.isFunction(artifactEntry.applyShellStreamEvent);
   });
 
   it("requires explicit review mode for dirty provenance", async () => {
@@ -179,6 +191,7 @@ describe("runtime-client artifact unit contract", () => {
       sourceRevision: "b".repeat(40),
     });
     assert.equal(manifest?.license, "MIT");
+    assert.equal(manifest?.version, "0.0.31-rpc.2");
     assert.equal(manifest?.dependencies, undefined);
     assert.deepStrictEqual(manifest?.peerDependencies, {
       effect: T3_RPC_EFFECT_VERSION,
