@@ -125,6 +125,9 @@ function derivePendingUserInputCountFromActivities(
   const openRequestIds = new Set<string>();
 
   for (const activity of activities) {
+    if (activity.eventSequence === undefined) {
+      continue;
+    }
     const requestId = extractActivityRequestId(activity.payload);
     if (requestId === null) {
       continue;
@@ -999,6 +1002,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.activity.sequence !== undefined
               ? { sequence: event.payload.activity.sequence }
               : {}),
+            eventSequence: event.sequence,
             createdAt: event.payload.activity.createdAt,
           });
           return;

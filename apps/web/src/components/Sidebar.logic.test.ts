@@ -1126,6 +1126,9 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     worktreePath: null,
     checkpoints: [],
     activities: [],
+    lifecycle: "unknown",
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
     ...overrides,
   };
 }

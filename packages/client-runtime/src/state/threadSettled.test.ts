@@ -64,6 +64,7 @@ function makeShell(input: {
             lastError: null,
             updatedAt: NOW,
           },
+    lifecycle: "unknown",
     latestUserMessageAt: null,
     hasPendingApprovals: input.pending === "approval",
     hasPendingUserInput: input.pending === "user-input",

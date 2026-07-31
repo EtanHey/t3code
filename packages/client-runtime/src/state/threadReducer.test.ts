@@ -44,6 +44,9 @@ const baseThread: OrchestrationThread = {
   activities: [],
   checkpoints: [],
   session: null,
+  lifecycle: "unknown",
+  hasPendingApprovals: false,
+  hasPendingUserInput: false,
 };
 
 describe("applyThreadDetailEvent", () => {

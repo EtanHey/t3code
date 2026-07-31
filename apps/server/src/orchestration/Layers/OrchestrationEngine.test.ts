@@ -155,6 +155,9 @@ describe("OrchestrationEngine", () => {
           activities: [],
           checkpoints: [],
           session: null,
+          lifecycle: "unknown" as const,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
         },
       ],
     };

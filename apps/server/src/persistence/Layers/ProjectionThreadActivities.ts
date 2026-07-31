@@ -20,6 +20,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
     sequence: Schema.NullOr(NonNegativeInt),
+    eventSequence: Schema.NullOr(NonNegativeInt),
   }),
 );
 
@@ -46,6 +47,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
               summary,
               payload_json,
               sequence,
+              event_sequence,
               created_at
             )
             VALUES (
@@ -57,6 +59,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
               ${row.summary},
               ${JSON.stringify(row.payload)},
               ${row.sequence ?? null},
+              ${row.eventSequence ?? null},
               ${row.createdAt}
             )
             ON CONFLICT (activity_id)
@@ -68,6 +71,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
               summary = excluded.summary,
               payload_json = excluded.payload_json,
               sequence = excluded.sequence,
+              event_sequence = excluded.event_sequence,
               created_at = excluded.created_at
           `,
   });
@@ -86,14 +90,13 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
           summary,
           payload_json AS "payload",
           sequence,
+          event_sequence AS "eventSequence",
           created_at AS "createdAt"
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
         ORDER BY
-          CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
-          sequence ASC,
-          created_at ASC,
-          activity_id ASC
+          CASE WHEN event_sequence IS NULL THEN 1 ELSE 0 END ASC,
+          event_sequence ASC
       `,
   });
 
@@ -134,6 +137,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
           summary: row.summary,
           payload: row.payload,
           ...(row.sequence !== null ? { sequence: row.sequence } : {}),
+          ...(row.eventSequence !== null ? { eventSequence: row.eventSequence } : {}),
           createdAt: row.createdAt,
         })),
       ),

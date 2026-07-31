@@ -78,9 +78,13 @@ const BASE_THREAD: OrchestrationThread = {
   activities: [],
   checkpoints: [],
   session: null,
+  lifecycle: "unknown",
+  hasPendingApprovals: false,
+  hasPendingUserInput: false,
 };
 const ACTIVE_THREAD: OrchestrationThread = {
   ...BASE_THREAD,
+  lifecycle: "running",
   latestTurn: {
     turnId: TurnId.make("turn-1"),
     state: "running",

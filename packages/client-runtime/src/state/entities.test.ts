@@ -100,6 +100,7 @@ const THREAD_SHELL = {
   settledOverride: null,
   settledAt: null,
   session: null,
+  lifecycle: "unknown",
   latestUserMessageAt: null,
   hasPendingApprovals: false,
   hasPendingUserInput: false,

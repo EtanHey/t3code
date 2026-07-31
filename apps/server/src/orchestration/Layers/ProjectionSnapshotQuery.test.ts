@@ -368,6 +368,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
+          lifecycle: "awaiting-input",
+          hasPendingApprovals: true,
+          hasPendingUserInput: false,
         },
       ]);
 
@@ -439,6 +442,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
+          lifecycle: "awaiting-input",
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
           hasPendingApprovals: true,
           hasPendingUserInput: false,
@@ -451,6 +455,150 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (threadDetail._tag === "Some") {
         assert.deepEqual(threadDetail.value, snapshot.threads[0]);
       }
+
+      const threadShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-1"));
+      assert.equal(threadShell._tag, "Some");
+      if (threadShell._tag === "Some") {
+        assert.equal(threadShell.value.lifecycle, "awaiting-input");
+        assert.equal(threadShell.value.lifecycle, shellSnapshot.threads[0]?.lifecycle);
+        assert.equal(
+          threadShell.value.hasPendingApprovals,
+          snapshot.threads[0]?.hasPendingApprovals,
+        );
+        assert.equal(
+          threadShell.value.hasPendingUserInput,
+          snapshot.threads[0]?.hasPendingUserInput,
+        );
+      }
+    }),
+  );
+
+  it.effect("surfaces unmatched legacy request ordering as unknown regardless of timestamps", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-legacy-activity-order',
+          'project-legacy-activity-order',
+          'Legacy Activity Order',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          0,
+          0,
+          0,
+          '2026-07-31T00:00:00.000Z',
+          '2026-07-31T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_thread_sessions (
+          thread_id,
+          status,
+          provider_name,
+          provider_session_id,
+          provider_thread_id,
+          runtime_mode,
+          active_turn_id,
+          last_error,
+          updated_at
+        )
+        VALUES (
+          'thread-legacy-activity-order',
+          'ready',
+          'codex',
+          'provider-session-legacy-order',
+          'provider-thread-legacy-order',
+          'full-access',
+          NULL,
+          NULL,
+          '2026-07-31T00:00:00.000Z'
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES
+          (
+            'activity-legacy-requested',
+            'thread-legacy-activity-order',
+            NULL,
+            'info',
+            'user-input.requested',
+            'Requested',
+            '{"requestId":"request-legacy-order"}',
+            NULL,
+            '2026-07-31T00:00:10.000Z'
+          ),
+          (
+            'activity-legacy-resolved',
+            'thread-legacy-activity-order',
+            NULL,
+            'info',
+            'user-input.resolved',
+            'Resolved',
+            '{"requestId":"request-legacy-order"}',
+            NULL,
+            '2026-07-31T00:00:02.000Z'
+          )
+      `;
+
+      const readLifecycle = Effect.gen(function* () {
+        const shell = yield* snapshotQuery.getThreadShellById(
+          ThreadId.make("thread-legacy-activity-order"),
+        );
+        assert.equal(shell._tag, "Some");
+        return shell._tag === "Some" ? shell.value.lifecycle : null;
+      });
+
+      assert.equal(yield* readLifecycle, "unknown");
+
+      yield* sql`
+        UPDATE projection_thread_activities
+        SET created_at = CASE activity_id
+          WHEN 'activity-legacy-requested' THEN '2026-07-31T00:00:01.000Z'
+          ELSE '2026-07-31T00:00:11.000Z'
+        END
+        WHERE thread_id = 'thread-legacy-activity-order'
+      `;
+
+      assert.equal(yield* readLifecycle, "unknown");
     }),
   );
 
@@ -969,7 +1117,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
-  it.effect("keeps thread detail activity ordering consistent with shell snapshot ordering", () =>
+  it.effect("keeps authoritative activity ordering consistent across full read shapes", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
@@ -1051,6 +1199,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           summary,
           payload_json,
           sequence,
+          event_sequence,
           created_at
         )
         VALUES
@@ -1063,6 +1212,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             'unsequenced first',
             '{"source":"unsequenced"}',
             NULL,
+            1,
             '2026-04-01T00:00:06.000Z'
           ),
           (
@@ -1074,6 +1224,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             'sequence two',
             '{"source":"sequence-2"}',
             2,
+            3,
             '2026-04-01T00:00:04.000Z'
           ),
           (
@@ -1085,6 +1236,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             'sequence one',
             '{"source":"sequence-1"}',
             1,
+            2,
             '2026-04-01T00:00:05.000Z'
           )
       `;

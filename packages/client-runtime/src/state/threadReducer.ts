@@ -81,6 +81,9 @@ export function applyThreadDetailEvent(
           activities: [],
           checkpoints: [],
           session: null,
+          lifecycle: "unknown",
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
         },
       };
 

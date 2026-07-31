@@ -50,6 +50,9 @@ function makeThread(input: {
     activities: [],
     checkpoints: [],
     session: null,
+    lifecycle: "unknown",
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
   };
 }
 

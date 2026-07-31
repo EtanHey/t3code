@@ -52,9 +52,14 @@ describe("threadDetailToShell", () => {
       activities: [],
       checkpoints: [],
       session: null,
+      lifecycle: "awaiting-input",
+      hasPendingApprovals: true,
+      hasPendingUserInput: false,
     };
-    expect(threadDetailToShell(EnvironmentId.make("environment-1"), thread).parentThreadId).toBe(
-      parentThreadId,
-    );
+    const shell = threadDetailToShell(EnvironmentId.make("environment-1"), thread);
+    expect(shell.parentThreadId).toBe(parentThreadId);
+    expect(shell.lifecycle).toBe("awaiting-input");
+    expect(shell.hasPendingApprovals).toBe(true);
+    expect(shell.hasPendingUserInput).toBe(false);
   });
 });

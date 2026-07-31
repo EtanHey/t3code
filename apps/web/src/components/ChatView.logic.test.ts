@@ -66,6 +66,9 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     latestTurn: null,
     branch: null,
     worktreePath: null,
+    lifecycle: "unknown",
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
     ...overrides,
   };
 }
@@ -116,6 +119,7 @@ describe("buildLoadingThreadFromShell", () => {
       snoozedUntil: null,
       snoozedAt: null,
       session: null,
+      lifecycle: "unknown",
       latestUserMessageAt: now,
       hasPendingApprovals: false,
       hasPendingUserInput: false,

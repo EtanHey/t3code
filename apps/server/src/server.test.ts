@@ -182,6 +182,9 @@ const makeDefaultOrchestrationReadModel = () => {
         proposedPlans: [],
         checkpoints: [],
         deletedAt: null,
+        lifecycle: "unknown" as const,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
       },
     ],
   };
@@ -208,6 +211,7 @@ const makeDefaultOrchestrationThreadShell = (
     settledOverride: null,
     settledAt: null,
     session: null,
+    lifecycle: "unknown",
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
@@ -5719,6 +5723,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             proposedPlans: [],
             checkpoints: [],
             deletedAt: null,
+            lifecycle: "unknown" as const,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
           },
         ],
       };
@@ -5866,6 +5873,96 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.deepEqual(Option.getOrThrow(firstItem), { kind: "synchronized" });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("keeps lifecycle identical from shell snapshot through synchronized live upsert", () =>
+    Effect.gen(function* () {
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const synchronized = yield* Deferred.make<void>();
+      const thread = makeDefaultOrchestrationThreadShell({
+        lifecycle: "awaiting-input",
+        hasPendingApprovals: true,
+      });
+      const messageEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-shell-lifecycle-upsert"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-sent",
+        payload: {
+          threadId: defaultThreadId,
+          messageId: MessageId.make("message-shell-lifecycle"),
+          role: "assistant",
+          text: "Lifecycle unchanged",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-01-01T00:00:01.000Z",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 1,
+                projects: [],
+                threads: [thread],
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              }),
+            getThreadShellById: () => Effect.succeed(Option.some(thread)),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const itemsFiber = yield* withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+              requestCompletionMarker: true,
+            }).pipe(
+              Stream.tap((item) =>
+                item.kind === "synchronized"
+                  ? Deferred.succeed(synchronized, undefined).pipe(Effect.ignore)
+                  : Effect.void,
+              ),
+              Stream.take(3),
+              Stream.runCollect,
+            ),
+          ).pipe(Effect.forkScoped);
+
+          yield* Deferred.await(synchronized);
+          yield* PubSub.publish(liveEvents, messageEvent);
+          return yield* Fiber.join(itemsFiber);
+        }),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.equal(items[2]?.kind, "thread-upserted");
+      if (items[0]?.kind === "snapshot" && items[2]?.kind === "thread-upserted") {
+        assert.equal(items[0].snapshot.threads[0]?.lifecycle, "awaiting-input");
+        assert.equal(items[2].thread.lifecycle, items[0].snapshot.threads[0]?.lifecycle);
+        assert.equal(
+          items[2].thread.hasPendingApprovals,
+          items[0].snapshot.threads[0]?.hasPendingApprovals,
+        );
+        assert.equal(
+          items[2].thread.hasPendingUserInput,
+          items[0].snapshot.threads[0]?.hasPendingUserInput,
+        );
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
   it.effect("marks a socket thread snapshot as synchronized when requested", () =>

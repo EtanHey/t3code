@@ -94,6 +94,9 @@ export function buildLocalDraftThread(
     checkpoints: [],
     activities: [],
     proposedPlans: [],
+    lifecycle: "unknown",
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
   };
 }
 

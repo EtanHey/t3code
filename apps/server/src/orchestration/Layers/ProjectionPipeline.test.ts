@@ -130,6 +130,30 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
+      yield* eventStore.append({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-4"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-4"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-4"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("activity-bootstrap"),
+            tone: "info",
+            kind: "runtime.note",
+            summary: "Bootstrapped activity",
+            payload: {},
+            turnId: null,
+            createdAt: now,
+          },
+        },
+      });
+
       yield* projectionPipeline.bootstrap;
 
       const projectRows = yield* sql<{
@@ -158,6 +182,25 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.deepEqual(messageRows, [{ messageId: "message-1", text: "hello" }]);
 
+      const activityRows = yield* sql<{
+        readonly activityId: string;
+        readonly providerSequence: number | null;
+        readonly eventSequence: number | null;
+      }>`
+        SELECT
+          activity_id AS "activityId",
+          sequence AS "providerSequence",
+          event_sequence AS "eventSequence"
+        FROM projection_thread_activities
+      `;
+      assert.deepEqual(activityRows, [
+        {
+          activityId: "activity-bootstrap",
+          providerSequence: null,
+          eventSequence: 4,
+        },
+      ]);
+
       const threadRows = yield* sql<{
         readonly threadId: string;
         readonly parentThreadId: string | null;
@@ -181,7 +224,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
       for (const row of stateRows) {
-        assert.equal(row.lastAppliedSequence, 3);
+        assert.equal(row.lastAppliedSequence, 4);
       }
 
       // Settled lifecycle through the DB pipeline: thread.settled writes the
@@ -2089,7 +2132,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
-  it.effect("derives pending user input from event order instead of activity timestamps", () =>
+  it.effect("persists event order for unsequenced user-input activities", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
@@ -2097,7 +2140,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
         eventStore
           .append(event)
-          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+          .pipe(Effect.tap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
 
       yield* appendAndProject({
         type: "project.created",
@@ -2147,7 +2190,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
-      yield* appendAndProject({
+      const requestedEvent = yield* appendAndProject({
         type: "thread.activity-appended",
         eventId: EventId.make("evt-user-input-order-3"),
         aggregateKind: "thread",
@@ -2169,14 +2212,14 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
               questions: [],
             },
             turnId: null,
-            sequence: 1,
-            // Provider timestamps may skew; sequence is the structural order.
+            // Provider timestamps may skew and this legacy-shaped payload has
+            // no provider sequence. The event append order is authoritative.
             createdAt: "2026-02-26T12:40:10.000Z",
           },
         },
       });
 
-      yield* appendAndProject({
+      const resolvedEvent = yield* appendAndProject({
         type: "thread.activity-appended",
         eventId: EventId.make("evt-user-input-order-4"),
         aggregateKind: "thread",
@@ -2197,7 +2240,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
               requestId: "user-input-request-order-1",
             },
             turnId: null,
-            sequence: 2,
             createdAt: "2026-02-26T12:40:02.000Z",
           },
         },
@@ -2205,16 +2247,28 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
 
       const activityRows = yield* sql<{
         readonly kind: string;
-        readonly sequence: number | null;
+        readonly providerSequence: number | null;
+        readonly eventSequence: number | null;
       }>`
-        SELECT kind, sequence
+        SELECT
+          kind,
+          sequence AS "providerSequence",
+          event_sequence AS "eventSequence"
         FROM projection_thread_activities
         WHERE thread_id = 'thread-user-input-order'
-        ORDER BY sequence ASC
+        ORDER BY event_sequence ASC
       `;
       assert.deepEqual(activityRows, [
-        { kind: "user-input.requested", sequence: 1 },
-        { kind: "user-input.resolved", sequence: 2 },
+        {
+          kind: "user-input.requested",
+          providerSequence: null,
+          eventSequence: requestedEvent.sequence,
+        },
+        {
+          kind: "user-input.resolved",
+          providerSequence: null,
+          eventSequence: resolvedEvent.sequence,
+        },
       ]);
 
       const threadRows = yield* sql<{
