@@ -1,0 +1,394 @@
+name: Runtime Client Immutable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Full lowercase commit SHA on main to build
+        required: true
+        type: string
+      version:
+        description: Runtime-client package version expected in the built receipt
+        required: true
+        type: string
+      release_tag:
+        description: Exact runtime-client-v<version> release tag
+        required: true
+        type: string
+      reviewed_sha256:
+        description: SHA-256 from a reviewed dry run; required when publish is enabled
+        required: false
+        type: string
+      publish:
+        description: Publish the reviewed bytes as an immutable GitHub Release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-client-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Build and verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      artifact_name: ${{ steps.verify_assets.outputs.artifact_name }}
+      sha256: ${{ steps.verify_assets.outputs.sha256 }}
+    steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact clean source on main
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_revision must be a lowercase full commit SHA." >&2
+            exit 1
+          fi
+          git rev-parse --verify --quiet "origin/main^{commit}" >/dev/null || {
+            echo "Checkout did not provide an origin/main commit for ancestry verification." >&2
+            exit 1
+          }
+          git cat-file -e "${SOURCE_REVISION}^{commit}" || {
+            echo "Requested source_revision is not available in the full main checkout." >&2
+            exit 1
+          }
+          git merge-base --is-ancestor "$SOURCE_REVISION" origin/main || {
+            echo "source_revision is not an ancestor of origin/main." >&2
+            exit 1
+          }
+          git checkout --detach "$SOURCE_REVISION"
+          actual_revision="$(git rev-parse HEAD)"
+          if [[ "$actual_revision" != "$SOURCE_REVISION" ]]; then
+            echo "Checked-out revision '$actual_revision' does not match '$SOURCE_REVISION'." >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "Release checkout is dirty before verification." >&2
+            git status --short
+            exit 1
+          fi
+
+      - name: Setup pinned repository toolchain
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1.15.0
+        with:
+          node-version: "24.13.1"
+          cache: true
+          run-install: true
+
+      - name: Run runtime-client unit verification
+        run: >-
+          vp test run
+          scripts/build-runtime-client-artifact.test.ts
+          scripts/verify-runtime-client-release.test.ts
+
+      - name: Run runtime-client distribution verification
+        run: node scripts/build-runtime-client-artifact.integration.ts
+
+      - name: Build publishable runtime-client assets
+        env:
+          RELEASE_OUTPUT_DIR: ${{ runner.temp }}/runtime-client-release
+        run: |
+          set -euo pipefail
+          test ! -e "$RELEASE_OUTPUT_DIR"
+          node scripts/build-runtime-client-artifact.ts --output-dir "$RELEASE_OUTPUT_DIR"
+
+      - name: Verify provenance and checksums
+        id: verify_assets
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          RELEASE_OUTPUT_DIR: ${{ runner.temp }}/runtime-client-release
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REVIEWED_SHA256: ${{ inputs.reviewed_sha256 }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          args=(
+            verify
+            --output-dir "$RELEASE_OUTPUT_DIR"
+            --version "$VERSION"
+            --release-tag "$RELEASE_TAG"
+            --source-revision "$SOURCE_REVISION"
+            --github-output "$GITHUB_OUTPUT"
+          )
+          if [[ -n "$REVIEWED_SHA256" ]]; then
+            args+=(--reviewed-sha256 "$REVIEWED_SHA256")
+          fi
+          if [[ "$PUBLISH" == "true" ]]; then
+            args+=(--publish)
+          fi
+          node scripts/verify-runtime-client-release.ts "${args[@]}"
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "Release checkout became dirty during verification." >&2
+            git status --short
+            exit 1
+          fi
+
+      - name: Record dry-run receipt
+        env:
+          ARTIFACT_NAME: ${{ steps.verify_assets.outputs.artifact_name }}
+          PUBLISH: ${{ inputs.publish }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SHA256: ${{ steps.verify_assets.outputs.sha256 }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          {
+            echo "## Runtime-client release verification"
+            echo
+            echo "- Artifact: \`$ARTIFACT_NAME\`"
+            echo "- Source revision: \`$SOURCE_REVISION\`"
+            echo "- Release tag: \`$RELEASE_TAG\`"
+            echo "- SHA-256: \`$SHA256\`"
+            echo "- Publish requested: \`$PUBLISH\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve verified release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-client-release-${{ inputs.version }}
+          path: |
+            ${{ runner.temp }}/runtime-client-release/${{ steps.verify_assets.outputs.artifact_name }}
+            ${{ runner.temp }}/runtime-client-release/${{ steps.verify_assets.outputs.artifact_name }}.json
+            ${{ runner.temp }}/runtime-client-release/${{ steps.verify_assets.outputs.artifact_name }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    name: Publish immutable release
+    if: ${{ inputs.publish }}
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: runtime-client-release
+    env:
+      GH_REPO: ${{ github.repository }}
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-client-release-${{ inputs.version }}
+          path: ${{ runner.temp }}/runtime-client-release
+
+      - name: Require immutable releases and resolve draft retry state
+        id: release_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          immutable="$(gh api "repos/${GH_REPO}/immutable-releases" --jq '.enabled')"
+          if [[ "$immutable" != "true" ]]; then
+            echo "Repository release immutability is not enabled." >&2
+            exit 1
+          fi
+
+          resume_draft=false
+          release_response="${RUNNER_TEMP}/runtime-client-release-response.txt"
+          set +e
+          gh api --include "repos/${GH_REPO}/releases/tags/$RELEASE_TAG" > "$release_response"
+          release_command_status=$?
+          set -e
+          release_http_status="$(awk 'NR == 1 { print $2 }' "$release_response")"
+          case "$release_http_status" in
+            200)
+              if [[ $release_command_status -ne 0 ]]; then
+                cat "$release_response" >&2
+                exit "$release_command_status"
+              fi
+              release_body="$(awk 'found { print } /^\r?$/ { found = 1 }' "$release_response")"
+              IFS=$'\t' read -r is_draft target_commitish tag_name < <(
+                jq -r '[.draft, .target_commitish, .tag_name] | @tsv' <<< "$release_body"
+              )
+              if [[ "$is_draft" != "true" ]]; then
+                echo "Published release '$RELEASE_TAG' already exists." >&2
+                exit 1
+              fi
+              if [[ "$tag_name" != "$RELEASE_TAG" || "$target_commitish" != "$SOURCE_REVISION" ]]; then
+                echo "Existing draft does not target the reviewed release coordinates." >&2
+                exit 1
+              fi
+              resume_draft=true
+              ;;
+            404)
+              ;;
+            *)
+              echo "Release lookup failed with HTTP status '${release_http_status:-missing}'." >&2
+              cat "$release_response" >&2
+              exit 1
+              ;;
+          esac
+
+          tag_response="${RUNNER_TEMP}/runtime-client-tag-response.txt"
+          set +e
+          gh api --include "repos/${GH_REPO}/git/ref/tags/$RELEASE_TAG" > "$tag_response"
+          tag_command_status=$?
+          set -e
+          tag_http_status="$(awk 'NR == 1 { print $2 }' "$tag_response")"
+          case "$tag_http_status" in
+            200)
+              if [[ $tag_command_status -ne 0 ]]; then
+                cat "$tag_response" >&2
+                exit "$tag_command_status"
+              fi
+              tag_body="$(awk 'found { print } /^\r?$/ { found = 1 }' "$tag_response")"
+              tag_state="$(jq -er '.object.sha' <<< "$tag_body")"
+              if [[ "$resume_draft" != "true" ]]; then
+                echo "Tag '$RELEASE_TAG' already exists: $tag_state" >&2
+                exit 1
+              fi
+              if [[ "$tag_state" != "$SOURCE_REVISION" ]]; then
+                echo "Tag '$RELEASE_TAG' collides with a different commit: $tag_state" >&2
+                exit 1
+              fi
+              ;;
+            404)
+              ;;
+            *)
+              echo "Tag lookup failed with HTTP status '${tag_http_status:-missing}'." >&2
+              cat "$tag_response" >&2
+              exit 1
+              ;;
+          esac
+          echo "resume_draft=$resume_draft" >> "$GITHUB_OUTPUT"
+
+      - name: Create or resume matching draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RESUME_DRAFT: ${{ steps.release_state.outputs.resume_draft }}
+          SHA256: ${{ needs.verify.outputs.sha256 }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$RESUME_DRAFT" == "true" ]]; then
+            exit 0
+          fi
+          notes_file="${RUNNER_TEMP}/runtime-client-release-notes.md"
+          {
+            echo "Standalone @t3tools/runtime-client artifact."
+            echo
+            echo "- Version: \`$VERSION\`"
+            echo "- Source revision: \`$SOURCE_REVISION\`"
+            echo "- SHA-256: \`$SHA256\`"
+          } > "$notes_file"
+          release_args=(
+            "$RELEASE_TAG"
+            --target "$SOURCE_REVISION"
+            --title "$RELEASE_TAG"
+            --notes-file "$notes_file"
+            --draft
+            --latest=false
+          )
+          if [[ "$VERSION" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "${release_args[@]}"
+
+      - name: Reset only known assets on a matching draft
+        env:
+          ARTIFACT_NAME: ${{ needs.verify.outputs.artifact_name }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          draft_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          while IFS= read -r asset; do
+            if [[ -z "$asset" ]]; then
+              continue
+            fi
+            case "$asset" in
+              "$ARTIFACT_NAME"|"$ARTIFACT_NAME.json"|"$ARTIFACT_NAME.sha256")
+                gh release delete-asset "$RELEASE_TAG" "$asset" --yes
+                ;;
+              *)
+                echo "Draft contains unexpected asset '$asset'; refusing to modify it." >&2
+                exit 1
+                ;;
+            esac
+          done <<< "$draft_assets"
+
+      - name: Attach all assets to draft
+        env:
+          ARTIFACT_NAME: ${{ needs.verify.outputs.artifact_name }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_OUTPUT_DIR: ${{ runner.temp }}/runtime-client-release
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" \
+            "$RELEASE_OUTPUT_DIR/$ARTIFACT_NAME" \
+            "$RELEASE_OUTPUT_DIR/$ARTIFACT_NAME.json" \
+            "$RELEASE_OUTPUT_DIR/$ARTIFACT_NAME.sha256"
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = "true"
+          test "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')" = "3"
+          for asset in "$ARTIFACT_NAME" "$ARTIFACT_NAME.json" "$ARTIFACT_NAME.sha256"; do
+            gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -Fx "$asset"
+          done
+
+      - name: Re-download and compare the complete draft
+        env:
+          ARTIFACT_NAME: ${{ needs.verify.outputs.artifact_name }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_OUTPUT_DIR: ${{ runner.temp }}/runtime-client-release
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SHA256: ${{ needs.verify.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          draft_output_dir="${RUNNER_TEMP}/runtime-client-draft-assets"
+          mkdir "$draft_output_dir"
+          gh release download "$RELEASE_TAG" \
+            --dir "$draft_output_dir" \
+            --pattern "$ARTIFACT_NAME" \
+            --pattern "$ARTIFACT_NAME.json" \
+            --pattern "$ARTIFACT_NAME.sha256"
+          expected_assets="$(printf '%s\n' "$ARTIFACT_NAME" "$ARTIFACT_NAME.json" "$ARTIFACT_NAME.sha256" | sort)"
+          actual_assets="$(find "$draft_output_dir" -maxdepth 1 -type f -printf '%f\n' | sort)"
+          if [[ "$actual_assets" != "$expected_assets" ]]; then
+            echo "Downloaded draft does not contain exactly the reviewed assets." >&2
+            exit 1
+          fi
+          for asset in "$ARTIFACT_NAME" "$ARTIFACT_NAME.json" "$ARTIFACT_NAME.sha256"; do
+            cmp --silent "$RELEASE_OUTPUT_DIR/$asset" "$draft_output_dir/$asset"
+          done
+          actual_sha256="$(sha256sum "$draft_output_dir/$ARTIFACT_NAME" | awk '{print $1}')"
+          if [[ "$actual_sha256" != "$SHA256" ]]; then
+            echo "Downloaded draft artifact SHA-256 does not match reviewed input." >&2
+            exit 1
+          fi
+
+      - name: Publish draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
+
+      - name: Verify immutable release attestation
+        env:
+          ARTIFACT_NAME: ${{ needs.verify.outputs.artifact_name }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_OUTPUT_DIR: ${{ runner.temp }}/runtime-client-release
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release verify "$RELEASE_TAG"
+          gh release verify-asset "$RELEASE_TAG" "$RELEASE_OUTPUT_DIR/$ARTIFACT_NAME"
+          gh release verify-asset "$RELEASE_TAG" "$RELEASE_OUTPUT_DIR/$ARTIFACT_NAME.json"
+          gh release verify-asset "$RELEASE_TAG" "$RELEASE_OUTPUT_DIR/$ARTIFACT_NAME.sha256"

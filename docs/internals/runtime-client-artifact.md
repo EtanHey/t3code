@@ -91,18 +91,42 @@ typechecks positive and negative exact-optional fixtures, and executes the
 session factory across the consumer's separate Effect instance with a failing
 WebSocket stub.
 
-## Publication contract
+## Immutable GitHub Release contract
 
-Do not publish locally and do not publish a dirty review artifact. Publication
-must run in maintainer-controlled CI from an immutable, clean revision with npm
-trusted publishing configured for OIDC. CI must build without `--allow-dirty`,
-repeat the distribution checks against the already-built tarball, verify that
-the receipt names the checked-out SHA and says `publishable: true`, and then
-publish that verified tarball with provenance and the explicit prerelease tag:
+Do not publish locally, to npm, or to GitHub Packages. Do not release a dirty
+review artifact. The maintainer-only `Runtime Client Immutable Release` workflow
+is the sole release path for this artifact.
 
-```sh
-npm publish ./t3tools-runtime-client-0.0.31-rpc.2.tgz --provenance --tag rpc
-```
+The workflow is version-parameterized and requires the full lowercase source
+commit SHA on `main`, the package version expected in the built receipt, the
+exact `runtime-client-v<version>` tag, and a publish toggle that defaults to
+`false`. Publication also requires the SHA-256 copied from a separately
+reviewed dry run. Publication is protected by the fixed
+`runtime-client-release` GitHub Environment; dry runs are not blocked by it.
 
-This repository does not create or run that release workflow as part of the
-artifact build.
+Run the workflow with publishing disabled first. Its read-only job checks out
+the exact source revision, installs the pinned Node 24.13.1/Pnpm 11.10.0
+toolchain, runs unit and distribution verification, builds without
+`--allow-dirty`, and verifies the receipt provenance, canonical RPC/Effect
+compatibility, canonical packed inventory, publishability, byte count, and both
+checksums. It retains only the `.tgz`, receipt, and `.sha256` as short-lived
+workflow artifacts.
+
+After the dry-run code and SHA-256 have been independently reviewed, rerun the
+same coordinates with that digest and publishing enabled. The minimal
+`contents: write` job runs no checkout or non-official build setup action. It
+downloads the reviewed assets, requires repository release immutability already
+be enabled without changing settings, and refuses any published release or
+non-matching tag collision.
+
+An interrupted matching draft is safe to resume only when its tag and target
+SHA equal the reviewed coordinates. The job rejects unexpected draft assets,
+removes only the known partial assets, and re-uploads the exact three files.
+Before making a draft public, it re-downloads those assets, requires their exact
+inventory, byte-compares the tarball, receipt, and checksum with the reviewed
+inputs, and checks the tarball SHA-256 again. Post-publication it verifies the
+immutable GitHub Release attestation and every local asset.
+
+The workflow does not make an artifact production-ready by itself. The public
+runtime-client export surface, including the canonical reducers, and a new
+package version must be reviewed before cutting each immutable coordinate.
