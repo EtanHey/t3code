@@ -347,6 +347,19 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+export const OrchestrationThreadLifecycle = Schema.Literals([
+  "starting",
+  "running",
+  "ready",
+  "awaiting-input",
+  "completed",
+  "interrupted",
+  "stopped",
+  "error",
+  "unknown",
+]);
+export type OrchestrationThreadLifecycle = typeof OrchestrationThreadLifecycle.Type;
+
 export const ThreadTitleRegeneration = Schema.Struct({
   requestId: CommandId,
   startedAt: IsoDateTime,
@@ -389,6 +402,11 @@ export const OrchestrationThread = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
+  lifecycle: OrchestrationThreadLifecycle.pipe(
+    Schema.withDecodingDefault(Effect.succeed("unknown")),
+  ),
+  hasPendingApprovals: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  hasPendingUserInput: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
@@ -436,6 +454,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   session: Schema.NullOr(OrchestrationSession),
+  lifecycle: OrchestrationThreadLifecycle.pipe(
+    Schema.withDecodingDefault(Effect.succeed("unknown")),
+  ),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
