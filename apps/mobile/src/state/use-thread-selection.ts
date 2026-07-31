@@ -40,7 +40,7 @@ function latestUserMessageAt(thread: OrchestrationThread): OrchestrationThread["
   return null;
 }
 
-function threadDetailToShell(
+export function threadDetailToShell(
   environmentId: EnvironmentId,
   thread: OrchestrationThread,
 ): EnvironmentThreadShell {
@@ -48,6 +48,7 @@ function threadDetailToShell(
     environmentId,
     id: thread.id,
     projectId: thread.projectId,
+    parentThreadId: thread.parentThreadId,
     title: thread.title,
     modelSelection: thread.modelSelection,
     runtimeMode: thread.runtimeMode,

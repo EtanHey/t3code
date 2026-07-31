@@ -10,11 +10,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { Thread, ThreadShell } from "../types";
 import {
+  buildLocalDraftThread,
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   branchMismatchKey,
   buildExpiredTerminalContextToastCopy,
   buildLoadingThreadFromShell,
+  buildRootThreadBootstrapCreateInput,
+  buildRootThreadCreateInput,
   buildThreadTurnInterruptInput,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
@@ -41,6 +44,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     id: threadId,
     environmentId,
     projectId,
+    parentThreadId: null,
     title: "Thread",
     modelSelection: {
       instanceId: ProviderInstanceId.make("codex"),
@@ -87,11 +91,13 @@ const readySession = {
 };
 
 describe("buildLoadingThreadFromShell", () => {
-  it("preserves shell metadata and supplies empty detail collections", () => {
+  it("preserves worker parent identity and supplies empty detail collections", () => {
+    const parentThreadId = ThreadId.make("thread-parent");
     const shell = {
       environmentId,
       id: threadId,
       projectId,
+      parentThreadId,
       title: "Loading thread",
       modelSelection: {
         instanceId: ProviderInstanceId.make("codex"),
@@ -120,6 +126,7 @@ describe("buildLoadingThreadFromShell", () => {
       environmentId,
       id: threadId,
       projectId,
+      parentThreadId,
       title: "Loading thread",
       branch: "main",
       deletedAt: null,
@@ -128,6 +135,70 @@ describe("buildLoadingThreadFromShell", () => {
       activities: [],
       checkpoints: [],
     });
+  });
+});
+
+describe("root thread construction", () => {
+  it("marks a local draft thread as a root", () => {
+    expect(
+      buildLocalDraftThread(
+        threadId,
+        {
+          threadId,
+          environmentId,
+          projectId,
+          logicalProjectKey: "project-1",
+          createdAt: now,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+          startFromOrigin: false,
+        },
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        },
+      ),
+    ).toMatchObject({ parentThreadId: null });
+  });
+
+  it("marks the first-turn bootstrap create payload as a root", () => {
+    expect(
+      buildRootThreadBootstrapCreateInput({
+        projectId,
+        title: "Bootstrap thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    ).toMatchObject({ parentThreadId: null });
+  });
+
+  it("marks a direct create payload as a root", () => {
+    expect(
+      buildRootThreadCreateInput({
+        threadId,
+        projectId,
+        title: "Direct thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    ).toMatchObject({ parentThreadId: null });
   });
 });
 

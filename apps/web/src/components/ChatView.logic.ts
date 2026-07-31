@@ -10,6 +10,7 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import type { CreateThreadInput, StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadShell } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
@@ -74,6 +75,7 @@ export function buildLocalDraftThread(
     id: threadId,
     environmentId: draftThread.environmentId,
     projectId: draftThread.projectId,
+    parentThreadId: null,
     title: "New thread",
     modelSelection: fallbackModelSelection,
     runtimeMode: draftThread.runtimeMode,
@@ -92,6 +94,28 @@ export function buildLocalDraftThread(
     checkpoints: [],
     activities: [],
     proposedPlans: [],
+  };
+}
+
+type BootstrapCreateThreadInput = NonNullable<
+  NonNullable<StartThreadTurnInput["bootstrap"]>["createThread"]
+>;
+
+export function buildRootThreadBootstrapCreateInput(
+  input: Omit<BootstrapCreateThreadInput, "parentThreadId">,
+): BootstrapCreateThreadInput {
+  return {
+    ...input,
+    parentThreadId: null,
+  };
+}
+
+export function buildRootThreadCreateInput(
+  input: Omit<CreateThreadInput, "parentThreadId">,
+): CreateThreadInput {
+  return {
+    ...input,
+    parentThreadId: null,
   };
 }
 

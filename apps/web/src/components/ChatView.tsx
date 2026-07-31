@@ -253,6 +253,8 @@ import {
   buildExpiredTerminalContextToastCopy,
   buildLocalDraftThread,
   buildLoadingThreadFromShell,
+  buildRootThreadBootstrapCreateInput,
+  buildRootThreadCreateInput,
   buildThreadTurnInterruptInput,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
@@ -4796,7 +4798,7 @@ function ChatViewContent(props: ChatViewProps) {
           ? {
               ...(isLocalDraftThread
                 ? {
-                    createThread: {
+                    createThread: buildRootThreadBootstrapCreateInput({
                       projectId: activeProject.id,
                       title,
                       modelSelection: threadCreateModelSelection,
@@ -4805,7 +4807,7 @@ function ChatViewContent(props: ChatViewProps) {
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
                       createdAt: activeThread.createdAt,
-                    },
+                    }),
                   }
                 : {}),
               ...(baseBranchForWorktree
@@ -5298,7 +5300,7 @@ function ChatViewContent(props: ChatViewProps) {
 
     const createResult = await createThread({
       environmentId,
-      input: {
+      input: buildRootThreadCreateInput({
         threadId: nextThreadId,
         projectId: activeProject.id,
         title: nextThreadTitle,
@@ -5308,7 +5310,7 @@ function ChatViewContent(props: ChatViewProps) {
         branch: activeThreadBranch,
         worktreePath: activeThread.worktreePath,
         createdAt,
-      },
+      }),
     });
     let failure: AtomCommandResult<unknown, unknown> | null =
       createResult._tag === "Failure" ? createResult : null;
