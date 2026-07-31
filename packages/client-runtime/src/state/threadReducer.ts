@@ -53,7 +53,7 @@ export function applyThreadDetailEvent(
   }
 
   const withPendingFields =
-    event.type === "thread.activity-appended"
+    event.type === "thread.activity-appended" || event.type === "thread.reverted"
       ? refreshPendingRequestFields(result.thread)
       : result.thread;
   return {

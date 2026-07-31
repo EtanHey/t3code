@@ -1485,6 +1485,31 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.reverted": {
+          const [approvalRows, retainedTurns] = yield* Effect.all([
+            projectionPendingApprovalRepository.listByThreadId({
+              threadId: event.payload.threadId,
+            }),
+            projectionTurnRepository.listByThreadId({
+              threadId: event.payload.threadId,
+            }),
+          ]);
+          const retainedTurnIds = new Set(
+            retainedTurns.flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
+          );
+          yield* Effect.forEach(
+            approvalRows,
+            (approval) =>
+              approval.turnId !== null && !retainedTurnIds.has(approval.turnId)
+                ? projectionPendingApprovalRepository.deleteByRequestId({
+                    requestId: approval.requestId,
+                  })
+                : Effect.void,
+            { concurrency: 1 },
+          ).pipe(Effect.asVoid);
+          return;
+        }
+
         default:
           return;
       }

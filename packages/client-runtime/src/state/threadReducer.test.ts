@@ -750,6 +750,76 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.latestTurn?.turnId).toBe("turn-1");
       }
     });
+
+    it("clears pending request fields when their turn is reverted", () => {
+      const threadWithPendingRequest: OrchestrationThread = {
+        ...baseThread,
+        lifecycle: "awaiting-input",
+        hasPendingApprovals: true,
+        hasPendingUserInput: true,
+        activities: [
+          {
+            id: EventId.make("activity-approval-turn-2"),
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "Approval requested",
+            payload: { requestId: "approval-turn-2" },
+            turnId: TurnId.make("turn-2"),
+            createdAt: "2026-04-01T03:00:00.000Z",
+          },
+          {
+            id: EventId.make("activity-user-input-turn-2"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            payload: { requestId: "user-input-turn-2" },
+            turnId: TurnId.make("turn-2"),
+            createdAt: "2026-04-01T03:00:01.000Z",
+          },
+        ],
+        checkpoints: [
+          {
+            turnId: TurnId.make("turn-1"),
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("ref-1"),
+            status: "ready",
+            files: [],
+            assistantMessageId: MessageId.make("msg-1"),
+            completedAt: "2026-04-01T02:00:00.000Z",
+          },
+          {
+            turnId: TurnId.make("turn-2"),
+            checkpointTurnCount: 2,
+            checkpointRef: CheckpointRef.make("ref-2"),
+            status: "ready",
+            files: [],
+            assistantMessageId: MessageId.make("msg-2"),
+            completedAt: "2026-04-01T03:00:00.000Z",
+          },
+        ],
+      };
+
+      const result = applyThreadDetailEvent(threadWithPendingRequest, {
+        ...baseEventFields,
+        sequence: 15,
+        occurredAt: "2026-04-01T04:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.reverted",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          turnCount: 1,
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.activities).toHaveLength(0);
+        expect(result.thread.hasPendingApprovals).toBe(false);
+        expect(result.thread.hasPendingUserInput).toBe(false);
+        expect(result.thread.lifecycle).toBe("completed");
+      }
+    });
   });
 
   describe("no-op events", () => {

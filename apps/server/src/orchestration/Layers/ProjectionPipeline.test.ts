@@ -2462,7 +2462,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
-  it.effect("does not fallback-retain messages whose turnId is removed by revert", () =>
+  it.effect("prunes messages and pending requests whose turnId is removed by revert", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
@@ -2630,6 +2630,54 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       });
 
       yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-revert-approval-request"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-revert"),
+        occurredAt: "2026-02-26T12:00:03.200Z",
+        commandId: CommandId.make("cmd-revert-approval-request"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-revert-approval-request"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-revert"),
+          activity: {
+            id: EventId.make("activity-revert-approval-request"),
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "Approval requested",
+            payload: { requestId: "approval-revert-turn-2" },
+            turnId: TurnId.make("turn-2"),
+            createdAt: "2026-02-26T12:00:03.200Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-revert-user-input-request"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-revert"),
+        occurredAt: "2026-02-26T12:00:03.300Z",
+        commandId: CommandId.make("cmd-revert-user-input-request"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-revert-user-input-request"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-revert"),
+          activity: {
+            id: EventId.make("activity-revert-user-input-request"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            payload: { requestId: "user-input-revert-turn-2" },
+            turnId: TurnId.make("turn-2"),
+            createdAt: "2026-02-26T12:00:03.300Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
         type: "thread.reverted",
         eventId: EventId.make("evt-revert-8"),
         aggregateKind: "thread",
@@ -2663,6 +2711,37 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           messageId: "assistant-keep",
           turnId: "turn-1",
           role: "assistant",
+        },
+      ]);
+
+      const activityRows = yield* sql<{ readonly activityId: string }>`
+        SELECT activity_id AS "activityId"
+        FROM projection_thread_activities
+        WHERE thread_id = 'thread-revert'
+      `;
+      assert.deepEqual(activityRows, []);
+
+      const approvalRows = yield* sql<{ readonly requestId: string }>`
+        SELECT request_id AS "requestId"
+        FROM projection_pending_approvals
+        WHERE thread_id = 'thread-revert'
+      `;
+      assert.deepEqual(approvalRows, []);
+
+      const threadRows = yield* sql<{
+        readonly pendingApprovalCount: number;
+        readonly pendingUserInputCount: number;
+      }>`
+        SELECT
+          pending_approval_count AS "pendingApprovalCount",
+          pending_user_input_count AS "pendingUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-revert'
+      `;
+      assert.deepEqual(threadRows, [
+        {
+          pendingApprovalCount: 0,
+          pendingUserInputCount: 0,
         },
       ]);
     }),

@@ -101,6 +101,10 @@ describe("orchestration projector", () => {
         activities: [],
         checkpoints: [],
         session: null,
+        lifecycle: "unknown",
+        isLifecycleEvidenceComplete: false,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
       },
     ]);
   });
