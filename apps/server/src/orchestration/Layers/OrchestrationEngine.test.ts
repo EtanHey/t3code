@@ -133,6 +133,7 @@ describe("OrchestrationEngine", () => {
         {
           id: ThreadId.make("thread-bootstrap"),
           projectId: asProjectId("project-bootstrap"),
+          parentThreadId: null,
           title: "Bootstrap Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -263,6 +264,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-1-create"),
         threadId: ThreadId.make("thread-1"),
         projectId: asProjectId("project-1"),
+        parentThreadId: null,
         title: "Thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -323,6 +325,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-archive-create"),
         threadId: ThreadId.make("thread-archive"),
         projectId: asProjectId("project-archive"),
+        parentThreadId: null,
         title: "Archive me",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -416,6 +419,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-replay-create"),
         threadId: ThreadId.make("thread-replay"),
         projectId: asProjectId("project-replay"),
+        parentThreadId: null,
         title: "replay",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -484,6 +488,7 @@ describe("OrchestrationEngine", () => {
           commandId: CommandId.make("cmd-stream-thread-create"),
           threadId: ThreadId.make("thread-stream"),
           projectId: asProjectId("project-stream"),
+          parentThreadId: null,
           title: "domain-stream",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -535,6 +540,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-branch-race-thread-create"),
         threadId: ThreadId.make("thread-branch-race"),
         projectId: asProjectId("project-branch-race"),
+        parentThreadId: null,
         title: "Branch Race Thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -588,6 +594,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-worktree-bootstrap-thread-create"),
         threadId: ThreadId.make("thread-worktree-bootstrap"),
         projectId: asProjectId("project-worktree-bootstrap"),
+        parentThreadId: null,
         title: "Worktree Bootstrap Thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -642,6 +649,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-ack-create"),
         threadId: ThreadId.make("thread-ack"),
         projectId: asProjectId("project-ack"),
+        parentThreadId: null,
         title: "Ack Thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -679,6 +687,7 @@ describe("OrchestrationEngine", () => {
           commandId: CommandId.make("cmd-thread-missing-project"),
           threadId: ThreadId.make("thread-missing-project"),
           projectId: asProjectId("project-missing"),
+          parentThreadId: null,
           title: "Missing Project Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -730,6 +739,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-turn-diff-create"),
         threadId: ThreadId.make("thread-turn-diff"),
         projectId: asProjectId("project-turn-diff"),
+        parentThreadId: null,
         title: "Turn diff thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -851,6 +861,7 @@ describe("OrchestrationEngine", () => {
           commandId: CommandId.make("cmd-flaky-1"),
           threadId: ThreadId.make("thread-flaky-fail"),
           projectId: asProjectId("project-flaky"),
+          parentThreadId: null,
           title: "flaky-fail",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -871,6 +882,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-flaky-2"),
         threadId: ThreadId.make("thread-flaky-ok"),
         projectId: asProjectId("project-flaky"),
+        parentThreadId: null,
         title: "flaky-ok",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -953,6 +965,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-atomic-create"),
         threadId: ThreadId.make("thread-atomic"),
         projectId: asProjectId("project-atomic"),
+        parentThreadId: null,
         title: "atomic",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -1096,6 +1109,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-sync-create"),
         threadId: ThreadId.make("thread-sync"),
         projectId: asProjectId("project-sync"),
+        parentThreadId: null,
         title: "sync-before",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -1184,6 +1198,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-duplicate-1"),
         threadId: ThreadId.make("thread-duplicate"),
         projectId: asProjectId("project-duplicate"),
+        parentThreadId: null,
         title: "duplicate",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -1204,6 +1219,7 @@ describe("OrchestrationEngine", () => {
           commandId: CommandId.make("cmd-thread-duplicate-2"),
           threadId: ThreadId.make("thread-duplicate"),
           projectId: asProjectId("project-duplicate"),
+          parentThreadId: null,
           title: "duplicate",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),

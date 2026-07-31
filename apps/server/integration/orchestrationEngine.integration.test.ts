@@ -141,6 +141,7 @@ const seedProjectAndThread = (harness: OrchestrationIntegrationHarness) =>
       commandId: CommandId.make("cmd-thread-create"),
       threadId: THREAD_ID,
       projectId: PROJECT_ID,
+      parentThreadId: null,
       title: "Integration Thread",
       modelSelection: {
         instanceId,
@@ -291,6 +292,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           commandId: CommandId.make("cmd-thread-create-real-codex"),
           threadId: THREAD_ID,
           projectId: PROJECT_ID,
+          parentThreadId: null,
           title: "Integration Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
