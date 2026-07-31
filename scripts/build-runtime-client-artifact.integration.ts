@@ -8,12 +8,16 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { T3_RPC_COMPATIBILITY, T3_RPC_EFFECT_VERSION } from "@t3tools/contracts/runtime-client";
-import { assertPackedMembersClean, assertPatchedBundle } from "./build-runtime-client-artifact.ts";
+import {
+  assertPackedMembersClean,
+  assertPatchedBundle,
+  makePackedManifest,
+  resolveProvenance,
+} from "./build-runtime-client-artifact.ts";
 
 const repoRoot = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const builderPath = NodePath.join(repoRoot, "scripts/build-runtime-client-artifact.ts");
 const tsgoPath = NodePath.join(repoRoot, "node_modules/.bin/tsgo");
-const artifactName = "t3tools-runtime-client-0.0.31-rpc.2.tgz";
 const expectedInventory = [
   "package/LICENSE",
   "package/dist/index.d.mts",
@@ -118,7 +122,14 @@ try {
   const extractedRoot = NodePath.join(tempRoot, "extracted");
   const consumerRoot = NodePath.join(tempRoot, "consumer");
   const head = run("git", ["rev-parse", "HEAD"], { cwd: repoRoot }).trim();
-  const expectedRevision = `${head}-dirty`;
+  const status = run("git", ["status", "--porcelain=v1", "--untracked-files=normal"], {
+    cwd: repoRoot,
+  }).trim();
+  const expectedProvenance = resolveProvenance(head, status, true);
+  const expectedPublishable = expectedProvenance.publishable;
+  const expectedRevision = expectedProvenance.sourceRevision;
+  const artifactVersion = makePackedManifest(expectedProvenance).version;
+  const artifactName = `t3tools-runtime-client-${artifactVersion}.tgz`;
 
   const firstReceipt = buildInto(firstOutput);
   const secondReceipt = buildInto(secondOutput);
@@ -127,10 +138,16 @@ try {
   const firstBytes = NodeFS.readFileSync(firstArtifact);
   const secondBytes = NodeFS.readFileSync(secondArtifact);
 
-  assert(firstBytes.equals(secondBytes), "Two review builds are not byte-identical.");
+  assert(firstBytes.equals(secondBytes), "Two artifact builds are not byte-identical.");
   assertDeepEqual(firstReceipt, secondReceipt, "deterministic receipts");
-  assert(firstReceipt.publishable === false, "Dirty receipt must be non-publishable.");
-  assert(firstReceipt.sourceRevision === expectedRevision, "Dirty receipt revision is dishonest.");
+  assert(
+    firstReceipt.publishable === expectedPublishable,
+    "Receipt publishability does not match source worktree provenance.",
+  );
+  assert(
+    firstReceipt.sourceRevision === expectedRevision,
+    "Receipt source revision does not match source worktree provenance.",
+  );
   assert(firstReceipt.toolchain.node === process.version, "Receipt Node version is not actual.");
   assert(firstReceipt.toolchain.npm.length > 0, "Receipt npm version is missing.");
   assert(firstReceipt.toolchain.tar.length > 0, "Receipt tar version is missing.");
@@ -161,8 +178,14 @@ try {
     { effect: T3_RPC_EFFECT_VERSION },
     "exact Effect peer dependency",
   );
-  assert(manifest.t3SourceRevision === expectedRevision, "Manifest dirty revision is dishonest.");
-  assert(manifest.t3Publishable === false, "Dirty manifest must be non-publishable.");
+  assert(
+    manifest.t3SourceRevision === expectedRevision,
+    "Manifest source revision does not match source worktree provenance.",
+  );
+  assert(
+    manifest.t3Publishable === expectedPublishable,
+    "Manifest publishability does not match source worktree provenance.",
+  );
   assertDeepEqual(
     manifest.t3RpcCompatibility,
     {
@@ -375,7 +398,7 @@ try {
       bytes: firstReceipt.bytes,
       declarationBytes: Buffer.byteLength(declarations),
       javascriptBytes: Buffer.byteLength(javascript),
-      publishable: false,
+      publishable: expectedPublishable,
       runtimeFailure: JSON.parse(runtimeOutput) as unknown,
       sha256: firstReceipt.sha256,
       sourceRevision: expectedRevision,
