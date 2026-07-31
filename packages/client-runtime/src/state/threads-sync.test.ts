@@ -7,6 +7,7 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationThread,
+  type OrchestrationThreadActivity,
   type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
 } from "@t3tools/contracts";
@@ -319,6 +320,69 @@ const deleted = (): OrchestrationThreadStreamItem => ({
   },
 });
 
+const sessionSet = (
+  status: "ready" | "running",
+  sequence: number,
+): OrchestrationThreadStreamItem => ({
+  kind: "event",
+  event: {
+    eventId: EventId.make(`event-session-${sequence}`),
+    sequence,
+    occurredAt: `2026-04-01T00:0${sequence}:00.000Z`,
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    aggregateKind: "thread",
+    aggregateId: THREAD_ID,
+    type: "thread.session-set",
+    payload: {
+      threadId: THREAD_ID,
+      session: {
+        threadId: THREAD_ID,
+        status,
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: status === "running" ? TurnId.make("turn-live") : null,
+        lastError: null,
+        updatedAt: `2026-04-01T00:0${sequence}:00.000Z`,
+      },
+    },
+  },
+});
+
+const activityAppended = (
+  kind: "approval.requested" | "approval.resolved" | "user-input.requested" | "user-input.resolved",
+  requestId: string,
+  sequence: number,
+): OrchestrationThreadStreamItem => ({
+  kind: "event",
+  event: {
+    eventId: EventId.make(`event-activity-${sequence}`),
+    sequence,
+    occurredAt: `2026-04-01T00:${sequence}:00.000Z`,
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    aggregateKind: "thread",
+    aggregateId: THREAD_ID,
+    type: "thread.activity-appended",
+    payload: {
+      threadId: THREAD_ID,
+      activity: {
+        id: EventId.make(`activity-${sequence}`),
+        tone: kind.startsWith("approval.") ? "approval" : "info",
+        kind,
+        summary: kind,
+        payload: { requestId },
+        turnId: TurnId.make("turn-1"),
+        createdAt: `2026-04-01T00:${sequence}:00.000Z`,
+      } satisfies OrchestrationThreadActivity,
+    },
+  },
+});
+
 describe("EnvironmentThreads", () => {
   it.effect("publishes cached data immediately from a warm cache", () =>
     Effect.gen(function* () {
@@ -349,6 +413,132 @@ describe("EnvironmentThreads", () => {
       // full snapshot over HTTP.
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
       expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+    }),
+  );
+
+  it.effect("rederives lifecycle when a live session starts from a completed snapshot", () =>
+    Effect.gen(function* () {
+      const completedThread: OrchestrationThread = {
+        ...BASE_THREAD,
+        lifecycle: "completed",
+        latestTurn: {
+          turnId: TurnId.make("turn-completed"),
+          state: "completed",
+          requestedAt: "2026-04-01T00:01:00.000Z",
+          startedAt: "2026-04-01T00:01:00.000Z",
+          completedAt: "2026-04-01T00:02:00.000Z",
+          assistantMessageId: null,
+        },
+        session: {
+          threadId: THREAD_ID,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-04-01T00:02:00.000Z",
+        },
+      };
+      const harness = yield* makeHarness({ cached: completedThread });
+
+      yield* Queue.offer(harness.inputs, sessionSet("running", CACHED_SNAPSHOT_SEQUENCE + 1));
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.isSome(value.data) && value.data.value.session?.status === "running",
+      );
+
+      expect(Option.getOrThrow(state.data).lifecycle).toBe("running");
+      expect(Option.getOrThrow(state.data).hasPendingApprovals).toBe(false);
+      expect(Option.getOrThrow(state.data).hasPendingUserInput).toBe(false);
+    }),
+  );
+
+  it.effect("replays typed pending transitions to the same fields as a fresh snapshot", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: ACTIVE_THREAD });
+      const approvalRequested = activityAppended(
+        "approval.requested",
+        "approval-1",
+        CACHED_SNAPSHOT_SEQUENCE + 1,
+      );
+      const approvalResolved = activityAppended(
+        "approval.resolved",
+        "approval-1",
+        CACHED_SNAPSHOT_SEQUENCE + 2,
+      );
+      const userInputRequested = activityAppended(
+        "user-input.requested",
+        "user-input-1",
+        CACHED_SNAPSHOT_SEQUENCE + 3,
+      );
+      const userInputResolved = activityAppended(
+        "user-input.resolved",
+        "user-input-1",
+        CACHED_SNAPSHOT_SEQUENCE + 4,
+      );
+
+      yield* Queue.offer(harness.inputs, approvalRequested);
+      const awaitingApproval = yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.isSome(value.data) && value.data.value.hasPendingApprovals,
+      );
+      expect(Option.getOrThrow(awaitingApproval.data).lifecycle).toBe("awaiting-input");
+      expect(Option.getOrThrow(awaitingApproval.data).hasPendingUserInput).toBe(false);
+
+      yield* Queue.offer(harness.inputs, approvalResolved);
+      const approvalCleared = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          Option.isSome(value.data) &&
+          !value.data.value.hasPendingApprovals &&
+          value.data.value.activities.length >= 2,
+      );
+      expect(Option.getOrThrow(approvalCleared.data).lifecycle).toBe("running");
+
+      yield* Queue.offer(harness.inputs, userInputRequested);
+      const awaitingUserInput = yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.isSome(value.data) && value.data.value.hasPendingUserInput,
+      );
+      expect(Option.getOrThrow(awaitingUserInput.data).lifecycle).toBe("awaiting-input");
+      expect(Option.getOrThrow(awaitingUserInput.data).hasPendingApprovals).toBe(false);
+
+      yield* Queue.offer(harness.inputs, userInputResolved);
+      const replayed = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          Option.isSome(value.data) &&
+          !value.data.value.hasPendingUserInput &&
+          value.data.value.activities.length >= 4,
+      );
+      const replayedThread = Option.getOrThrow(replayed.data);
+      const freshHarness = yield* makeHarness({
+        httpSnapshot: Option.some({
+          snapshotSequence: CACHED_SNAPSHOT_SEQUENCE + 4,
+          thread: {
+            ...ACTIVE_THREAD,
+            activities: replayedThread.activities,
+            lifecycle: "running",
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+          },
+        }),
+      });
+      const fresh = yield* awaitThreadState(freshHarness.observed, (value) =>
+        Option.isSome(value.data),
+      );
+      const freshSnapshotThread = Option.getOrThrow(fresh.data);
+
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+      expect({
+        lifecycle: replayedThread.lifecycle,
+        hasPendingApprovals: replayedThread.hasPendingApprovals,
+        hasPendingUserInput: replayedThread.hasPendingUserInput,
+      }).toEqual({
+        lifecycle: freshSnapshotThread.lifecycle,
+        hasPendingApprovals: freshSnapshotThread.hasPendingApprovals,
+        hasPendingUserInput: freshSnapshotThread.hasPendingUserInput,
+      });
     }),
   );
 
