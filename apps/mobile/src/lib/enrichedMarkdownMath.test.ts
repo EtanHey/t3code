@@ -20,8 +20,20 @@ describe("native Enriched math input", () => {
   });
   it("leaves prices, unmatched delimiters and citations visible", () => {
     expect(enrichedMarkdownWithMath("Price $5-$10, $unfinished, \\[1\\].")).toBe(
-      "Price \\$5-\\$10, \\$unfinished, \\[1\\].",
+      "Price \\$5-\\$10, \\$unfinished, &#91;1&#93;.",
     );
+  });
+  it("shields numeric citations and unfinished bracket math from the native parser", () => {
+    expect(enrichedMarkdownWithMath("Reference \\[1\\] and \\(unfinished")).toBe(
+      "Reference &#91;1&#93; and &#40;unfinished",
+    );
+    expect(enrichedMarkdownWithMath("`\\[1\\]` and \\[x^2\\]")).toBe("`\\[1\\]` and $$x^2$$");
+  });
+  it("keeps prose delimiters from activating native math or reference links", () => {
+    expect(enrichedMarkdownWithMath("Citation \\[1\\].\n\n[1]: https://example.test")).toBe(
+      "Citation &#91;1&#93;.\n\n[1]: https://example.test",
+    );
+    expect(enrichedMarkdownWithMath("Literal \\) closer")).toBe("Literal &#41; closer");
   });
   it("keeps code, escaped dollars and destinations intact", () => {
     const source = "`$x$` \\$5 [site](https://example.com/$path)\n\n```js\nconst x = '$a$';\n```";

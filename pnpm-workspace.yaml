@@ -20,7 +20,7 @@ allowBuilds:
   node-pty: true
   # Ships N-API prebuilds; its install script only rebuilds from source.
   objc-js: false
-  "react-native-enriched-markdown@file:apps/mobile/deps/react-native-enriched-markdown-1.2.0-t3.11.tgz(patch_hash=6287016c0bcf8ac41a6a77c16fdac7d813f325a15b9aa6c2c178174442cbbf55)": true
+  "react-native-enriched-markdown@file:apps/mobile/deps/react-native-enriched-markdown-1.2.0-t3.11-33e33bbc.tgz": true
   sharp: true
   tsc-rs: true
   utf-8-validate: false
@@ -288,7 +288,6 @@ packageExtensions:
       vite-plus: "catalog:"
 
 patchedDependencies:
-  react-native-enriched-markdown@1.2.0-t3.11: patches/react-native-enriched-markdown@1.2.0-t3.11.patch
   alchemy@2.0.0-beta.80: patches/alchemy@2.0.0-beta.80.patch
   expo-glass-effect@58.0.3: patches/expo-glass-effect@58.0.3.patch
   expo-blur@58.0.3: patches/expo-blur@58.0.3.patch

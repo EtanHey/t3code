@@ -27,7 +27,7 @@ function mathOnOneLine(tex: string): string {
 /** MD4C accepts dollar delimiters. Keep its native layout and rendering, while
  * sharing the web parser's delimiter, currency, code, and unfinished-math rules. */
 export function enrichedMarkdownWithMath(source: string): string {
-  if (!mayContainMath(source)) return source;
+  if (!mayContainMath(source) && !source.includes("\\)") && !source.includes("\\]")) return source;
   const tree = parseMarkdownWithMath(source);
   const edits = markdownMathRanges(source, tree).map((range) => ({
     start: range.start,
@@ -43,6 +43,22 @@ export function enrichedMarkdownWithMath(source: string): string {
       const end = node.position?.end.offset;
       if (start === undefined || end === undefined) return;
       for (let index = start; index < end; index++) {
+        if (source[index] === "\\" && "[]()".includes(source[index + 1] ?? "\0")) {
+          let beforeSlashes = 0;
+          for (let before = index - 1; before >= start && source[before] === "\\"; before--)
+            beforeSlashes++;
+          if (beforeSlashes % 2 === 0) {
+            // The shared parser classified this as prose, such as a numeric citation.
+            // Encode the bracket so native TeX parsing cannot reinterpret it as math.
+            edits.push({
+              start: index,
+              end: index + 2,
+              value: `&#${source.charCodeAt(index + 1)};`,
+            });
+            index++;
+          }
+          continue;
+        }
         if (source[index] !== "$") continue;
         let slashes = 0;
         for (let before = index - 1; before >= start && source[before] === "\\"; before--)
