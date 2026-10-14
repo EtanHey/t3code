@@ -97,6 +97,65 @@ const handoff: OrchestrationV2ContextHandoff = {
 };
 
 describe("handoff budget", () => {
+  it.effect(
+    "defers an overflowing handoff intact, then delivers retrieval references exactly once",
+    () =>
+      Effect.gen(function* () {
+        const oversized = message("item:round-trip:oversized", "assistant", "界🧪".repeat(20_000));
+        const omitted = TurnItemId.make("item:round-trip:previously-omitted");
+        let durable: OrchestrationV2ContextHandoff = {
+          ...handoff,
+          history: {
+            ...handoff.history!,
+            messages: [...messages, oversized],
+            omittedItems: 1,
+            omittedItemIds: [omitted],
+          },
+        };
+        const originalHistory = durable.history;
+        let injected: ProviderAdapter.ProviderAdapterV2HistoricalContext | undefined;
+        let calls = 0;
+        const input = {
+          providerThread,
+          alreadyDeliveredItemIds: new Set<string>(),
+          inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
+            Effect.sync(() => {
+              calls++;
+              injected = history;
+              return true;
+            }),
+          persist: (value: OrchestrationV2ContextHandoff) =>
+            Effect.sync(() => {
+              durable = value;
+            }),
+        };
+        for (const budget of [0, 64]) {
+          const result = yield* deliverContextHandoffs({ ...input, handoffs: [durable], budget });
+          yield* result.delivered;
+          assert.equal(result.context, "");
+          assert.equal(calls, 0);
+          assert.equal(durable.status, "ready");
+          assert.propertyVal(durable, "deferred", true);
+          assert.deepEqual(durable.history, originalHistory);
+          assert.isUndefined(durable.delivery);
+        }
+        const delivered = yield* deliverContextHandoffs({
+          ...input,
+          handoffs: [durable],
+          budget: 16_000,
+        });
+        yield* delivered.delivered;
+        assert.equal(calls, 1);
+        assert.deepEqual(injected!.messages, messages);
+        assert.include(injected!.context, "t3_thread_read");
+        assert.include(injected!.context, threadId);
+        assert.deepEqual(durable.delivery?.omittedItemIds, [omitted, oversized.itemId]);
+        assert.notPropertyVal(durable, "deferred", true);
+        assert.deepEqual(decodeHandoff(durable).delivery, durable.delivery);
+        yield* deliverContextHandoffs({ ...input, handoffs: [durable], budget: 16_000 });
+        assert.equal(calls, 1);
+      }),
+  );
   it("keeps old preview handoffs readable and delivery history off the wire", () => {
     const projected = projectContextHandoffForWire({
       ...handoff,

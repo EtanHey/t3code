@@ -392,6 +392,228 @@ const waitForIdle = Effect.fn("ProviderSwitchTest.waitForIdle")(function* (
 });
 
 describe("orchestration v2 provider switching", () => {
+  it.live.each([false, true])(
+    "continues a high-usage Claude -> Codex -> Claude round trip (failed target start: %s)",
+    (failTargetStart) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const cwd = yield* checkpointWorkspace(`claude-round-trip-${failTargetStart}`);
+          const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+          const failStartOnce = yield* Ref.make(false);
+          const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
+            makeTestAdapter({
+              instanceId: CLAUDE_MODEL_SELECTION.instanceId,
+              driver: CLAUDE_DRIVER,
+              capabilities: ClaudeProviderCapabilitiesV2,
+              modelSelection: CLAUDE_MODEL_SELECTION,
+              responseByRunOrdinal: { 1: "Claude's original constraints" },
+              capturedTurns,
+              failStartOnce,
+              getModelContextWindow: () => 1_000_000,
+              tokenUsageByRunOrdinal: { 1: { usedTokens: 840_960, maxTokens: 1_000_000 } },
+            }),
+            makeTestAdapter({
+              instanceId: CODEX_MODEL_SELECTION.instanceId,
+              driver: CODEX_DRIVER,
+              capabilities: CodexProviderCapabilitiesV2,
+              modelSelection: CODEX_MODEL_SELECTION,
+              responseByRunOrdinal: { 2: "Sol completed the delegated work. 日本語 🧪" },
+              capturedTurns,
+              getModelContextWindow: () => 475_000,
+              tokenUsageByRunOrdinal: { 2: { usedTokens: 87_369, maxTokens: 475_000 } },
+            }),
+          ]);
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            const dispatch = Effect.fnUntraced(function* (
+              ordinal: number,
+              text: string,
+              selection = CLAUDE_MODEL_SELECTION,
+            ) {
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make(`round-trip:${ordinal}`),
+                threadId,
+                messageId: MessageId.make(`round-trip:${ordinal}`),
+                createdBy: "user",
+                creationSource: "web",
+                text,
+                attachments: [],
+                modelSelection: selection,
+                dispatchMode: { type: "start_immediately" },
+              });
+              yield* orchestrator.streamStoredEvents.pipe(
+                Stream.filter(
+                  ({ event }) =>
+                    event.type === "run.updated" &&
+                    event.payload.ordinal === ordinal &&
+                    (event.payload.status === "completed" || event.payload.status === "failed"),
+                ),
+                Stream.runHead,
+              );
+              yield* worker.drain();
+              return yield* orchestrator.getThreadProjection(threadId);
+            });
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("round-trip:create"),
+              threadId,
+              projectId,
+              createdBy: "user",
+              creationSource: "web",
+              title: "Claude round trip",
+              modelSelection: CLAUDE_MODEL_SELECTION,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+            });
+            const original = yield* dispatch(1, "Keep the original constraints.");
+            const nativeClaude = {
+              ...original.providerThreads[0]!,
+              contextUsage: { usedTokens: 840_960, maxTokens: 1_000_000 },
+            };
+            yield* (yield* EventSink.EventSinkV2).write({
+              events: [
+                {
+                  id: EventId.make("round-trip:recorded-claude-usage"),
+                  type: "provider-thread.updated",
+                  threadId,
+                  occurredAt: yield* DateTime.now,
+                  payload: nativeClaude,
+                },
+              ],
+            });
+            assert.deepEqual(nativeClaude.contextUsage, {
+              usedTokens: 840_960,
+              maxTokens: 1_000_000,
+            });
+            const switched = yield* dispatch(
+              2,
+              "Complete the delegated work.",
+              CODEX_MODEL_SELECTION,
+            );
+            assert.equal(switched.runs[1]?.status, "completed");
+            assert.include(
+              (yield* Ref.get(capturedTurns)).at(-1)!.text,
+              "Claude's original constraints",
+            );
+            yield* Ref.set(failStartOnce, failTargetStart);
+            const returnText = "Return to Claude.\n  Preserve my words: עברית 🧪\n";
+            yield* dispatch(3, returnText);
+            yield* dispatch(4, "Ordinary retry after returning.");
+            const repeated = yield* dispatch(5, "Another ordinary Claude turn.");
+            // Include failure messages in RED output, proving both the initial
+            // return and later ordinary turns hit the handoff budget wedge.
+            assert.deepEqual(
+              repeated.runs.slice(2).map((run) => {
+                const error = repeated.turnItems.find(
+                  (item) => item.type === "error" && item.runId === run.id,
+                );
+                return {
+                  status: run.status,
+                  error: error?.type === "error" ? error.failure.message : null,
+                };
+              }),
+              [
+                {
+                  status: failTargetStart ? "failed" : "completed",
+                  error: failTargetStart ? "turn start failed after injection" : null,
+                },
+                { status: "completed", error: null },
+                { status: "completed", error: null },
+              ],
+            );
+            const pending = repeated.contextHandoffs.filter(
+              (handoff) => handoff.toProviderThreadId === nativeClaude.id,
+            );
+            assert.lengthOf(pending, failTargetStart ? 2 : 1);
+            for (const handoff of pending) {
+              assert.equal(handoff.status, "ready");
+              assert.propertyVal(handoff, "deferred", true);
+              assert.isUndefined(handoff.delivery);
+            }
+            const codexHandoff = pending.find(
+              (handoff) => handoff.targetRunId === repeated.runs[2]?.id,
+            )!;
+            assert.include(
+              codexHandoff.history!.messages.map((message) => message.text),
+              "Sol completed the delegated work. 日本語 🧪",
+            );
+            const lowBudgetTurns = (yield* Ref.get(capturedTurns)).filter(
+              (turn) => turn.driver === CLAUDE_DRIVER,
+            );
+            assert.deepEqual(
+              lowBudgetTurns.slice(1).map((turn) => turn.text),
+              [
+                ...(failTargetStart ? [] : [returnText]),
+                "Ordinary retry after returning.",
+                "Another ordinary Claude turn.",
+              ],
+            );
+            assert.isTrue(
+              lowBudgetTurns.every(
+                (turn) => turn.nativeThreadId === nativeClaude.nativeThreadRef?.nativeId,
+              ),
+            );
+            // Simulate the persisted telemetry produced by compaction, without
+            // pretending this replay adapter invokes a live /compact command.
+            const target = repeated.providerThreads.find(
+              (thread) => thread.id === nativeClaude.id,
+            )!;
+            yield* (yield* EventSink.EventSinkV2).write({
+              events: [
+                {
+                  id: EventId.make("round-trip:compacted-usage"),
+                  type: "provider-thread.updated",
+                  threadId,
+                  occurredAt: yield* DateTime.now,
+                  payload: {
+                    ...target,
+                    contextUsage: { usedTokens: 14_938, maxTokens: 1_000_000 },
+                  },
+                },
+              ],
+            });
+            const delivered = yield* dispatch(6, "Continue after compaction.");
+            const deliveryText = (yield* Ref.get(capturedTurns)).at(-1)!.text;
+            assert.equal(
+              deliveryText.split("Sol completed the delegated work. 日本語 🧪").length - 1,
+              1,
+            );
+            if (failTargetStart) assert.include(deliveryText, returnText);
+            assert.include(deliveryText, "Continue after compaction.");
+            for (const handoff of pending) {
+              const settled = delivered.contextHandoffs.find(
+                (candidate) => candidate.id === handoff.id,
+              )!;
+              assert.equal(settled.delivery?.status, "inline");
+              assert.notPropertyVal(settled, "deferred", true);
+            }
+            const final = yield* dispatch(7, "Continue once more.");
+            assert.equal(final.runs.at(-1)?.status, "completed");
+            assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Continue once more.");
+            assert.lengthOf(final.providerThreads, 2);
+            assert.equal(final.contextHandoffs.length, repeated.contextHandoffs.length);
+          }).pipe(
+            Effect.provide(
+              ProviderReplayHarness.layerWithRegistry(
+                {
+                  name: `claude-round-trip-${failTargetStart}`,
+                  runtimePolicyOverride: {
+                    cwd,
+                    approvalPolicy: "never",
+                    sandboxPolicy: { type: "readOnly" },
+                  },
+                },
+                layerRegistry,
+              ),
+            ),
+          );
+        }),
+      ),
+  );
   it.live.each([
     "compact-native",
     "compact-fallback",
