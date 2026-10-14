@@ -99,8 +99,9 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         (handoff) =>
           input.persist({
             ...handoff,
-            // Sent (or possibly sent) now, so later turns must not retry it.
-            deferred: undefined,
+            // Keep retries selectable until delivery settles, including after
+            // an ambiguous send forces replacement of the native thread.
+            ...(status === "pending" ? {} : { deferred: undefined }),
             ...(nativeThreadId === undefined
               ? {}
               : {
