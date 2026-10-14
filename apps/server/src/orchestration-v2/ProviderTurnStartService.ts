@@ -243,6 +243,7 @@ export const layer: Layer.Layer<
         (handoff) =>
           handoff.status === "ready" &&
           (handoff.targetRunId === run.id ||
+            (handoff.deferred === true && handoff.toProviderThreadId === run.providerThreadId) ||
             (handoff.toProviderThreadId === run.providerThreadId &&
               projection.runs.some(
                 (source) =>
