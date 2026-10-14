@@ -519,7 +519,9 @@ describe("orchestration v2 provider switching", () => {
               [
                 {
                   status: failTargetStart ? "failed" : "completed",
-                  error: failTargetStart ? "turn start failed after injection" : null,
+                  error: failTargetStart
+                    ? "The provider could not start this turn. Retry the turn; if it keeps failing, check the provider setup and server logs."
+                    : null,
                 },
                 { status: "completed", error: null },
                 { status: "completed", error: null },
@@ -562,8 +564,25 @@ describe("orchestration v2 provider switching", () => {
             const target = repeated.providerThreads.find(
               (thread) => thread.id === nativeClaude.id,
             )!;
+            const latestClaudeTurn = repeated.providerTurns.findLast(
+              (turn) => turn.providerThreadId === nativeClaude.id,
+            )!;
             yield* (yield* EventSink.EventSinkV2).write({
               events: [
+                {
+                  id: EventId.make("round-trip:compacted-turn-usage"),
+                  type: "provider-turn.updated",
+                  threadId,
+                  occurredAt: yield* DateTime.now,
+                  payload: {
+                    ...latestClaudeTurn,
+                    tokenUsage: {
+                      usedTokens: 14_938,
+                      maxTokens: 1_000_000,
+                      updatedAt: DateTime.formatIso(yield* DateTime.now),
+                    },
+                  },
+                },
                 {
                   id: EventId.make("round-trip:compacted-usage"),
                   type: "provider-thread.updated",
