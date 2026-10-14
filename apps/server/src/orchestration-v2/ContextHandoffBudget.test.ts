@@ -98,7 +98,7 @@ const handoff: OrchestrationV2ContextHandoff = {
 
 describe("handoff budget", () => {
   it.effect(
-    "defers an overflowing handoff intact, then delivers retrieval references exactly once",
+    "defers intact history when the budget is too small, then omits oversized items whole and delivers retrieval references once",
     () =>
       Effect.gen(function* () {
         const oversized = message("item:round-trip:oversized", "assistant", "界🧪".repeat(20_000));

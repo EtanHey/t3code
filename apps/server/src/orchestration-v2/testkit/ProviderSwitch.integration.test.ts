@@ -410,7 +410,10 @@ describe("orchestration v2 provider switching", () => {
               capturedTurns,
               failStartOnce,
               getModelContextWindow: () => 1_000_000,
-              tokenUsageByRunOrdinal: { 1: { usedTokens: 840_960, maxTokens: 1_000_000 } },
+              tokenUsageByRunOrdinal: {
+                1: { usedTokens: 840_960, maxTokens: 1_000_000 },
+                6: { usedTokens: 14_938, maxTokens: 1_000_000 },
+              },
             }),
             makeTestAdapter({
               instanceId: CODEX_MODEL_SELECTION.instanceId,
@@ -470,25 +473,7 @@ describe("orchestration v2 provider switching", () => {
               worktreePath: null,
             });
             const original = yield* dispatch(1, "Keep the original constraints.");
-            const nativeClaude = {
-              ...original.providerThreads[0]!,
-              contextUsage: { usedTokens: 840_960, maxTokens: 1_000_000 },
-            };
-            yield* (yield* EventSink.EventSinkV2).write({
-              events: [
-                {
-                  id: EventId.make("round-trip:recorded-claude-usage"),
-                  type: "provider-thread.updated",
-                  threadId,
-                  occurredAt: yield* DateTime.now,
-                  payload: nativeClaude,
-                },
-              ],
-            });
-            assert.deepEqual(nativeClaude.contextUsage, {
-              usedTokens: 840_960,
-              maxTokens: 1_000_000,
-            });
+            const nativeClaude = original.providerThreads[0]!;
             const switched = yield* dispatch(
               2,
               "Complete the delegated work.",
@@ -559,43 +544,16 @@ describe("orchestration v2 provider switching", () => {
                 (turn) => turn.nativeThreadId === nativeClaude.nativeThreadRef?.nativeId,
               ),
             );
-            // Simulate the persisted telemetry produced by compaction, without
-            // pretending this replay adapter invokes a live /compact command.
-            const target = repeated.providerThreads.find(
-              (thread) => thread.id === nativeClaude.id,
-            )!;
-            const latestClaudeTurn = repeated.providerTurns.findLast(
-              (turn) => turn.providerThreadId === nativeClaude.id,
-            )!;
-            yield* (yield* EventSink.EventSinkV2).write({
-              events: [
-                {
-                  id: EventId.make("round-trip:compacted-turn-usage"),
-                  type: "provider-turn.updated",
-                  threadId,
-                  occurredAt: yield* DateTime.now,
-                  payload: {
-                    ...latestClaudeTurn,
-                    tokenUsage: {
-                      usedTokens: 14_938,
-                      maxTokens: 1_000_000,
-                      updatedAt: DateTime.formatIso(yield* DateTime.now),
-                    },
-                  },
-                },
-                {
-                  id: EventId.make("round-trip:compacted-usage"),
-                  type: "provider-thread.updated",
-                  threadId,
-                  occurredAt: yield* DateTime.now,
-                  payload: {
-                    ...target,
-                    contextUsage: { usedTokens: 14_938, maxTokens: 1_000_000 },
-                  },
-                },
-              ],
-            });
-            const delivered = yield* dispatch(6, "Continue after compaction.");
+            const compacted = yield* dispatch(6, "/compact");
+            assert.equal(compacted.runs.at(-1)?.status, "completed");
+            for (const handoff of pending) {
+              const stillDeferred = compacted.contextHandoffs.find(
+                (candidate) => candidate.id === handoff.id,
+              )!;
+              assert.propertyVal(stillDeferred, "deferred", true);
+              assert.isUndefined(stillDeferred.delivery);
+            }
+            const delivered = yield* dispatch(7, "Continue after compaction.");
             const deliveryText = (yield* Ref.get(capturedTurns)).at(-1)!.text;
             assert.equal(
               deliveryText.split("Sol completed the delegated work. 日本語 🧪").length - 1,
@@ -610,7 +568,7 @@ describe("orchestration v2 provider switching", () => {
               assert.equal(settled.delivery?.status, "inline");
               assert.notPropertyVal(settled, "deferred", true);
             }
-            const final = yield* dispatch(7, "Continue once more.");
+            const final = yield* dispatch(8, "Continue once more.");
             assert.equal(final.runs.at(-1)?.status, "completed");
             assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, "Continue once more.");
             assert.lengthOf(final.providerThreads, 2);
