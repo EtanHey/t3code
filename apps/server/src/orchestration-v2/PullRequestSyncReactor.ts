@@ -73,6 +73,17 @@ function snapshotFieldsOf(summary: PullRequestSummary): SnapshotFields {
   };
 }
 
+// Rotating ghe.com avatar tokens should not make otherwise identical snapshots differ.
+function avatarIdentity(avatarUrl: string | null | undefined): string | null {
+  if (avatarUrl === null || avatarUrl === undefined) return null;
+  const url = URL.parse(avatarUrl);
+  if (url === null || (url.hostname !== "ghe.com" && !url.hostname.endsWith(".ghe.com"))) {
+    return avatarUrl;
+  }
+  url.searchParams.delete("token");
+  return url.href;
+}
+
 function snapshotFieldsEqual(left: SnapshotFields, right: SnapshotFields): boolean {
   return (
     left.state === right.state &&
@@ -84,7 +95,7 @@ function snapshotFieldsEqual(left: SnapshotFields, right: SnapshotFields): boole
     (left.closedAt ?? null) === (right.closedAt ?? null) &&
     (left.mergedAt ?? null) === (right.mergedAt ?? null) &&
     (left.author?.login ?? null) === (right.author?.login ?? null) &&
-    (left.author?.avatarUrl ?? null) === (right.author?.avatarUrl ?? null) &&
+    avatarIdentity(left.author?.avatarUrl) === avatarIdentity(right.author?.avatarUrl) &&
     left.additions === right.additions &&
     left.deletions === right.deletions &&
     left.changedFiles === right.changedFiles &&
@@ -114,6 +125,19 @@ function stacksEqual(
         layer.state === other.state
       );
     })
+  );
+}
+
+/** Stack ids are unique only within a repository, e.g. GitHub's fallback to the stack number. */
+function nativeStackKeyOf(link: ThreadPullRequestLink, stack: ThreadPullRequestStack): string {
+  const key = normalizeThreadPullRequestKey(link);
+  return `${key.host}/${key.repository}#stack:${stack.id}`;
+}
+
+function sameLayerNumbers(left: ThreadPullRequestStack, right: ThreadPullRequestStack): boolean {
+  return (
+    left.layers.length === right.layers.length &&
+    left.layers.every((layer, index) => layer.number === right.layers[index]!.number)
   );
 }
 
@@ -228,6 +252,9 @@ export const make = Effect.gen(function* () {
     for (const key of requested.keys()) if (!groups.has(key)) requested.delete(key);
 
     const linkedThisSweep = new Set<string>();
+    // Fresh stack reads by group, so a member flagged by a sibling is compared against what the
+    // host answered this sweep, not the saved layers that sibling is about to replace.
+    const stacksReadThisSweep = new Map<string, ThreadPullRequestStack | null>();
     const persistence = yield* Semaphore.make(1);
 
     const syncEntry = Effect.fn("PullRequestSyncReactor.syncEntry")(function* (
@@ -305,9 +332,9 @@ export const make = Effect.gen(function* () {
       const missingMergedAt = entries.some(
         (entry) => entry.link.snapshot?.state === "merged" && entry.link.snapshot.mergedAt == null,
       );
-      if (refreshRequested || missingMergedAt) {
-        yield* pullRequests.invalidate({ reference: ref });
-      }
+      // A stack retry reads past the cache, or it could get back the layer list it is retrying.
+      const invalidated = refreshRequested || missingMergedAt || retryStacks.has(key);
+      if (invalidated) yield* pullRequests.invalidate({ reference: ref });
       const summary = yield* pullRequests.summary(ref, { recoverTransientFailure: false });
       const fields = snapshotFieldsOf(summary);
       const needsStack =
@@ -322,6 +349,14 @@ export const make = Effect.gen(function* () {
         );
       const knownUnstacked =
         summary.stack === null && entries.every((entry) => entry.link.stack === null);
+      // A sibling can flag this group while its summary read is in flight.
+      if (!invalidated && retryStacks.has(key) && !knownUnstacked) {
+        yield* pullRequests.invalidate({ reference: ref });
+      }
+      // The retry this read answers is consumed before the read, not after it: a sibling may
+      // flag this group again while the read is in flight, and that flag must survive to the
+      // next sweep because the answer below may predate the sibling's layers.
+      if (needsStack) retryStacks.delete(key);
       const fetchedStack = !needsStack
         ? null
         : knownUnstacked
@@ -347,7 +382,30 @@ export const make = Effect.gen(function* () {
           retryStacks.add(key);
           return;
         }
-        retryStacks.delete(key);
+        const fetched = fetchedStack.stack;
+        stacksReadThisSweep.set(key, fetched);
+        // A layer pushed above an older member changes none of that member's own fields, so it
+        // would keep its shorter layer list. Members of this stack whose layer list differs read
+        // their stack once, in this sweep if still pending or the next; agreeing ones read none.
+        // Only groups of the same project: another project reads with its own credential and
+        // may see a different layer list, so flagging across projects would never settle.
+        if (fetched !== null) {
+          const fetchedKey = nativeStackKeyOf(first.link, fetched);
+          for (const [siblingKey, siblingEntries] of groups) {
+            if (siblingKey === key) continue;
+            if (siblingEntries[0]!.thread.projectId !== first.thread.projectId) continue;
+            const readThisSweep = stacksReadThisSweep.get(siblingKey);
+            const stale = siblingEntries.some(({ link }) => {
+              const stack = readThisSweep === undefined ? link.stack : readThisSweep;
+              return (
+                stack !== null &&
+                nativeStackKeyOf(link, stack) === fetchedKey &&
+                !sameLayerNumbers(stack, fetched)
+              );
+            });
+            if (stale) retryStacks.add(siblingKey);
+          }
+        }
       }
       // The host answered, so the cadence clock ticks even if a dispatch below is rejected.
       lastSyncedAt.set(key, nowMs);

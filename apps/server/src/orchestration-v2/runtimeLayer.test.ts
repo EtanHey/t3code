@@ -24,6 +24,7 @@ import {
   PullRequestOperationError,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
@@ -4921,6 +4922,267 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       }),
   );
 
+  it.effect("keeps queued user selections and pauses only the limited provider", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("runtime-layer-queue-provider-limit");
+      const queuedSelection = {
+        instanceId: alternateInstanceId,
+        model: "gpt-5.5",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      };
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        createdBy: "user",
+        creationSource: "web",
+        projectId: ProjectId.make(`${threadId}:project`),
+        title: "Limited queue",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const selections = [modelSelection, modelSelection, queuedSelection];
+      for (const [index, selection] of selections.entries()) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:${index}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:${index}`),
+          text: `Prompt ${index}`,
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          modelSelection: selection,
+          dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+        });
+      }
+      const [active, limited, available] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+      assert.isDefined(active);
+      assert.isDefined(limited);
+      assert.isDefined(available);
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:error`),
+            type: "turn-item.updated",
+            threadId,
+            runId: active.id,
+            nodeId: active.rootNodeId!,
+            providerInstanceId: active.providerInstanceId,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make(`${threadId}:error`),
+              type: "error",
+              threadId,
+              runId: active.id,
+              nodeId: active.rootNodeId!,
+              providerThreadId: active.providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 2,
+              status: "failed",
+              title: "Usage limit",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              failure: {
+                class: "usage_limit",
+                message: "Usage limit reached",
+                code: "usage_limit",
+                retryable: null,
+              },
+            },
+          },
+          {
+            id: EventId.make(`${threadId}:failed`),
+            type: "run.updated",
+            threadId,
+            runId: active.id,
+            providerInstanceId: active.providerInstanceId,
+            occurredAt: now,
+            payload: { ...active, status: "failed", completedAt: now },
+          },
+          {
+            id: EventId.make(`${threadId}:other-session`),
+            type: "provider-session.attached",
+            threadId,
+            providerInstanceId: alternateInstanceId,
+            occurredAt: now,
+            payload: {
+              id: ProviderSessionId.make(`${threadId}:other-session`),
+              driver,
+              providerInstanceId: alternateInstanceId,
+              status: "error",
+              cwd: process.cwd(),
+              model: queuedSelection.model,
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: "Unrelated session error on the other provider",
+            },
+          },
+        ],
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make(`${threadId}:select-other`),
+        threadId,
+        modelSelection: queuedSelection,
+      });
+      yield* orchestrator.resumeQueuedRuns;
+      const held = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(held.runs.find((run) => run.id === limited.id)?.status, "queued");
+      const blocked = yield* orchestrator
+        .dispatch({
+          type: "queue.resume",
+          commandId: CommandId.make(`${threadId}:blocked`),
+          threadId,
+        })
+        .pipe(Effect.flip);
+      assert.equal(blocked._tag, "OrchestratorDispatchError");
+
+      yield* orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make(`${threadId}:select-original`),
+        threadId,
+        modelSelection,
+      });
+      yield* orchestrator.dispatch({
+        type: "queued-run.cancel",
+        commandId: CommandId.make(`${threadId}:cancel-limited`),
+        threadId,
+        runId: limited.id,
+      });
+      yield* orchestrator.resumeQueuedRuns;
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      const started = after.runs.find((run) => run.id === available.id);
+      assert.equal(started?.status, "starting");
+      assert.deepEqual(started?.modelSelection, queuedSelection);
+      assert.deepEqual(after.thread.modelSelection, queuedSelection);
+    }),
+  );
+
+  it.effect.each([
+    ["server", modelSelection],
+    ["provider", modelSelection],
+    ["provider", { ...modelSelection, instanceId: alternateInstanceId }],
+  ] as const)(
+    "delivers a queued monitor update from %s after conversation selection %j",
+    ([creationSource, currentSelection]) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const threadId = ThreadId.make(
+          `runtime-layer-queue-current-conversation-${creationSource}-${currentSelection.instanceId}`,
+        );
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId: ProjectId.make(`${threadId}:project`),
+          createdBy: "user",
+          creationSource: "web",
+          title: "Current conversation",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+        for (const type of ["start_immediately", "queue_after_active"] as const) {
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`${threadId}:${type}`),
+            messageId: MessageId.make(`${threadId}:${type}`),
+            threadId,
+            text: type,
+            attachments: [],
+            createdBy: "agent",
+            creationSource,
+            dispatchMode: { type },
+            ...(type === "queue_after_active"
+              ? {
+                  notification: {
+                    source: { kind: "monitor" as const },
+                    outcome: "updated" as const,
+                    summary: "PR update",
+                  },
+                }
+              : {}),
+          });
+        }
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const [active, queued] = before.runs;
+        assert.isDefined(active);
+        assert.isDefined(queued);
+        const now = yield* DateTime.now;
+        const current = {
+          ...before.providerThreads[0]!,
+          id: ProviderThreadId.make(`${threadId}:current`),
+          updatedAt: now,
+        };
+        yield* orchestrator.dispatch({
+          type: "thread.model-selection.set",
+          commandId: CommandId.make(`${threadId}:select-current`),
+          threadId,
+          modelSelection: currentSelection,
+        });
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make(`${threadId}:completed`),
+              type: "run.updated",
+              threadId,
+              runId: active.id,
+              occurredAt: now,
+              payload: { ...active, status: "completed", completedAt: now },
+            },
+            {
+              id: EventId.make(`${threadId}:conversation`),
+              type: "provider-thread.updated",
+              threadId,
+              occurredAt: now,
+              payload: current,
+            },
+          ],
+        });
+        const expectedThreadId =
+          creationSource === "provider" ? queued.providerThreadId : current.id;
+        yield* orchestrator.resumeQueuedRuns;
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        const delivered = after.runs.find((run) => run.id === queued.id)!;
+        assert.equal(delivered.status, "starting");
+        assert.deepEqual(delivered.modelSelection, modelSelection);
+        assert.equal(delivered.providerInstanceId, modelSelection.instanceId);
+        assert.equal(
+          after.attempts.find((attempt) => attempt.id === delivered.activeAttemptId)
+            ?.providerInstanceId,
+          modelSelection.instanceId,
+        );
+        assert.equal(delivered.providerThreadId, expectedThreadId);
+        assert.equal(after.thread.activeProviderThreadId, expectedThreadId);
+        assert.equal(
+          after.attempts.find((attempt) => attempt.id === delivered.activeAttemptId)
+            ?.providerThreadId,
+          expectedThreadId,
+        );
+        const root = after.nodes.find((node) => node.id === delivered.rootNodeId)!;
+        assert.equal(root.providerThreadId, expectedThreadId);
+        assert.equal(
+          after.checkpointScopes.find((scope) => scope.id === root.checkpointScopeId)
+            ?.providerThreadId,
+          expectedThreadId,
+        );
+      }),
+  );
+
   it.effect("keeps the queue after a user interrupts the active run", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -5547,6 +5809,63 @@ it.layer(layerTest)("snooze queued runs", (it) => {
           const awake = yield* orchestrator.getThreadProjection(threadId);
           assert.isNull(awake.thread.snoozedUntil);
           assert.deepEqual(awake.runs, beforeSnooze.runs);
+        }
+      }),
+  );
+
+  it.effect.each(["notification", "user"] as const)(
+    "a %s message on a snoozed thread keeps the snooze only when automatic",
+    (kind) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = ThreadId.make(`snooze-wake:${kind}`);
+        const snoozedUntil = "2099-07-25T09:00:00.000Z";
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`create:${threadId}`),
+          threadId,
+          projectId: ProjectId.make("snooze-wake-project"),
+          title: "Snoozed long-running thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: "/tmp/snooze-wake",
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.snooze",
+          commandId: CommandId.make(`snooze:${threadId}`),
+          threadId,
+          snoozedUntil,
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`wake:${threadId}`),
+          threadId,
+          messageId: MessageId.make(`wake:${threadId}`),
+          text: "Continue",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: kind === "user" ? "user" : "agent",
+          creationSource: kind === "user" ? "web" : "provider",
+          ...(kind === "notification"
+            ? {
+                notification: {
+                  source: { kind: "background_task" as const },
+                  outcome: "updated" as const,
+                  summary: "Background activity updated",
+                },
+              }
+            : {}),
+        });
+        const thread = (yield* orchestrator.getThreadProjection(threadId)).thread;
+        if (kind === "user") {
+          assert.isNull(thread.snoozedUntil);
+        } else {
+          assert.equal(DateTime.formatIso(thread.snoozedUntil!), snoozedUntil);
         }
       }),
   );
@@ -6198,6 +6517,9 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
     "independent-patches",
     "expired-snooze",
     "wake",
+    "stop",
+    "stop-before-arm",
+    "stop-before-arm-mismatched-recovery",
   ] as const)("guards a scheduled usage-limit continuation against %s", (scenario) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -6354,8 +6676,68 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       ].includes(scenario);
       const autoResume = scenario !== "snooze-only" && scenario !== "wake";
       const arm = limitRecoveryCommand(shell, autoResume, DateTime.toEpochMillis(now), snooze);
-      assert.isNotNull(arm);
-      yield* orchestrator.dispatch(arm!);
+      assert(arm?.type === "thread.metadata.update" && arm.limitRecovery != null);
+      const automaticArm = {
+        commandId: arm.commandId,
+        threadId,
+        limitRecovery: arm.limitRecovery,
+      };
+      const stopBeforeArm =
+        scenario === "stop-before-arm" || scenario === "stop-before-arm-mismatched-recovery";
+      if (stopBeforeArm) {
+        if (scenario === "stop-before-arm-mismatched-recovery") {
+          const current = yield* orchestrator.getThreadProjection(threadId);
+          yield* events.write({
+            events: [
+              {
+                id: EventId.make(`recovery:older-window:${scenario}`),
+                type: "thread.metadata-updated",
+                threadId,
+                occurredAt: now,
+                payload: {
+                  ...current.thread,
+                  limitRecovery: {
+                    runId: run.id,
+                    resetAt: DateTime.formatIso(DateTime.add(now, { minutes: 2 })),
+                    autoResume: true,
+                    snooze: false,
+                  },
+                },
+              },
+            ],
+          });
+        }
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make(`recovery:stop:${scenario}`),
+          threadId,
+        });
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        assert.isUndefined(
+          (yield* projections.getLimitRecoveryCandidates({
+            now,
+            autoResume: true,
+            snooze: false,
+          })).find((row) => row.id === threadId),
+        );
+        const stoppedShell = (yield* orchestrator.getShellSnapshot()).threads.find(
+          (thread) => thread.id === threadId,
+        )!;
+        assert.isNull(limitRecoveryCommand(stoppedShell, true, DateTime.toEpochMillis(now)));
+        yield* orchestrator.autoArmLimitRecovery(automaticArm);
+        assert.deepEqual((yield* orchestrator.getThreadProjection(threadId)).thread.limitRecovery, {
+          runId: run.id,
+          resetAt,
+          autoResume: false,
+          snooze: false,
+          requestId: CommandId.make(`recovery:stop:${scenario}`),
+        });
+      }
+      const armCommand = stopBeforeArm
+        ? { ...arm, commandId: CommandId.make(`recovery:explicit-rearm:${scenario}`) }
+        : arm;
+      if (stopBeforeArm) yield* orchestrator.dispatch(armCommand);
+      else yield* orchestrator.autoArmLimitRecovery(automaticArm);
       let armedShell = (yield* orchestrator.getShellSnapshot()).threads.find(
         (thread) => thread.id === threadId,
       )!;
@@ -6364,7 +6746,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         resetAt,
         autoResume,
         snooze,
-        requestId: arm!.commandId,
+        requestId: armCommand.commandId,
       });
       if (snooze)
         assert.equal(DateTime.toEpochMillis(armedShell.snoozedUntil!), Date.parse(resetAt));
@@ -6568,6 +6950,17 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           commandId: CommandId.make(`recovery:settle:${scenario}`),
           threadId,
         });
+      if (scenario === "stop") {
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make(`recovery:stop:${scenario}`),
+          threadId,
+        });
+        const stoppedShell = (yield* orchestrator.getShellSnapshot()).threads.find(
+          (thread) => thread.id === threadId,
+        )!;
+        assert.deepInclude(stoppedShell.limitRecovery, { runId: run.id, autoResume: false });
+      }
       if (scenario === "replacement") {
         const current = yield* orchestrator.getThreadProjection(threadId);
         const error = current.turnItems.find((item) => item.type === "error")!;
@@ -6626,6 +7019,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         after.runs,
         before.runs.length +
           (scenario === "resume" ||
+          stopBeforeArm ||
           scenario === "queued-resume" ||
           scenario === "snooze-resume" ||
           scenario === "wake-preserve-resume" ||
@@ -6638,6 +7032,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         after.messages,
         before.messages.length +
           (scenario === "resume" ||
+          stopBeforeArm ||
           scenario === "queued-resume" ||
           scenario === "snooze-resume" ||
           scenario === "wake-preserve-resume" ||
@@ -6646,6 +7041,28 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
             ? 1
             : 0),
       );
+      if (scenario === "stop") {
+        assert.deepInclude(after.thread.limitRecovery, { runId: run.id, autoResume: false });
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const sweep = { now: yield* DateTime.now, autoResume: true, snooze: false };
+        assert.isUndefined(
+          (yield* projections.getLimitRecoveryCandidates(sweep)).find((row) => row.id === threadId),
+        );
+        yield* orchestrator.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make("recovery:rearm-after-stop"),
+          threadId,
+          limitRecovery: { runId: run.id, resetAt, autoResume: true },
+        });
+        const rearmed = (yield* projections.getLimitRecoveryCandidates(sweep)).find(
+          (row) => row.id === threadId,
+        )!;
+        assert.isDefined(rearmed);
+        const freshResume = limitRecoveryCommand(rearmed, true, DateTime.toEpochMillis(sweep.now));
+        assert.isNotNull(freshResume);
+        yield* orchestrator.dispatch(freshResume!);
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 2);
+      }
       if (scenario === "queued-resume") {
         const held = after.runs[1]!;
         assert.equal(held.status, "queued");

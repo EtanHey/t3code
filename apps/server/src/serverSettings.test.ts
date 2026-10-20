@@ -1407,6 +1407,29 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect("saves a writing style whose other fields are defaults", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      yield* serverSettings.updateSettings({
+        sourceControlWritingStyle: { mode: "conventional_commits" },
+      });
+      yield* serverSettings.updateSettings({ addProjectBaseDirectory: "~/Development" });
+
+      const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      assert.deepEqual(JSON.parse(raw), {
+        addProjectBaseDirectory: "~/Development",
+        sourceControlWritingStyle: { mode: "conventional_commits" },
+      });
+      assert.deepEqual((yield* serverSettings.getSettings).sourceControlWritingStyle, {
+        mode: "conventional_commits",
+        customInstructions: "",
+        followChangeRequestTemplates: true,
+      });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("keeps the inline value on disk when secret migration fails", () => {
     const cause = new ServerSecretStore.SecretStorePersistError({
       resource: "provider environment secret",
@@ -1590,6 +1613,17 @@ it.layer(NodeServices.layer)("server settings", (it) => {
               enabled: true,
             },
           },
+          easDeviceHosts: [
+            {
+              kind: "eas",
+              id: "eas",
+              label: "EAS Simulator",
+              accessToken: "expo-secret",
+              maxSessionMinutes: 30,
+              idleMinutes: 10,
+              maxConcurrentSessions: 2,
+            },
+          ],
         });
         const values = [
           "config-secret",
@@ -1598,6 +1632,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           "bitbucket-secret",
           "gitcafe-secret",
           "quota-secret",
+          "expo-secret",
         ];
         const client = ServerSettingsModule.redactServerSettingsForClient(saved);
         const disk = yield* fs.readFileString(config.settingsPath);
@@ -1612,6 +1647,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           providerInstances: client.providerInstances,
           sourceControlHosts: client.sourceControlHosts,
           usageLimitSources: client.usageLimitSources,
+          easDeviceHosts: client.easDeviceHosts,
         });
         for (const value of values) assert.include(JSON.stringify(echoed), value);
         const renamed = yield* service.updateProviderInstance({

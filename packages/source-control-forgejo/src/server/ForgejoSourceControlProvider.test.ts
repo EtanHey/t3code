@@ -240,11 +240,17 @@ it.effect.each([
     for (const checks of [summary.checks, detail.checks]) {
       assert.deepStrictEqual(
         checks.map((check) => [check.name, check.status, check.required]),
-        [
-          ["ci/required-build", "success", supported ? true : undefined],
-          ["ci/optional-lint", supported ? "failure" : "success", undefined],
-          [missing, "pending", supported ? true : undefined],
-        ],
+        supported
+          ? [
+              ["ci/optional-lint", "failure", undefined],
+              ["ci/required-build", "success", true],
+              [missing, "pending", true],
+            ]
+          : [
+              ["ci/required-build", "success", undefined],
+              ["ci/optional-lint", "success", undefined],
+              [missing, "pending", undefined],
+            ],
       );
       if (!supported) {
         assert.strictEqual(
@@ -298,8 +304,8 @@ it.effect.each([
       assert.deepStrictEqual(
         checks.map((check) => [check.name, check.status, check.required]),
         [
-          ["ci/required-build", "success", undefined],
           ["ci/optional-lint", "failure", undefined],
+          ["ci/required-build", "success", undefined],
         ],
       );
     }
@@ -549,6 +555,7 @@ it.effect("loads Forgejo pull request references from files and commits views", 
       const result = yield* provider.getChangeRequest({ cwd: "/repo", reference });
       assert.strictEqual(result.number, 42);
       assert.strictEqual(result.title, "Forgejo view reference");
+      assert.strictEqual(result.headSha, "head");
     }
     const invalid = yield* provider
       .getChangeRequest({

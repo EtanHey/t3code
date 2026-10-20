@@ -33,6 +33,7 @@ import {
   type VcsStatusResult,
   type WorktreeSubmodules,
 } from "@t3tools/contracts";
+import { isMissingExecutable } from "@t3tools/source-control-core/server/discovery";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   makeGitVcsDriverCore,
@@ -50,6 +51,7 @@ export interface ExecuteGitInput {
   readonly env?: NodeJS.ProcessEnv;
   readonly allowNonZeroExit?: boolean;
   readonly timeoutMs?: number | null;
+  readonly forceKillAfterMs?: number;
   readonly maxOutputBytes?: number;
   readonly appendTruncationMarker?: boolean;
   /**
@@ -540,6 +542,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
   const path = yield* Path.Path;
   const vcsProcess = yield* VcsProcess.VcsProcess;
   const crypto = yield* Crypto.Crypto;
+  const hostPlatform = yield* HostProcess.Platform;
   const capabilities = {
     kind: "git" as const,
     supportsWorktrees: true,
@@ -560,7 +563,10 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         timeoutMs: 5_000,
         maxOutputBytes: 4_096,
       },
-    ).pipe(Effect.map((result) => result.exitCode === 0 && result.stdout.trim() === "true"));
+    ).pipe(
+      Effect.map((result) => result.exitCode === 0 && result.stdout.trim() === "true"),
+      Effect.catchIf(isMissingExecutable, () => Effect.succeed(false)),
+    );
 
   const execute: VcsDriver.VcsDriver["Service"]["execute"] = (input) =>
     gitCommand(vcsProcess, input.operation, input.cwd, input.args, {
@@ -783,6 +789,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       }),
     );
 
+  // Git reports relative paths from the physical cwd, which can differ from a symlink.
   const resolveGitCommonDir = Effect.fn("GitVcsDriver.resolveGitCommonDir")(function* (
     cwd: string,
   ) {
@@ -792,24 +799,32 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       args: ["rev-parse", "--git-common-dir"],
     });
     const gitCommonDir = result.stdout.trim();
-    return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
+    if (path.isAbsolute(gitCommonDir)) return gitCommonDir;
+    const physicalCwd = yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
+    return path.resolve(physicalCwd, gitCommonDir);
   });
 
   // Git renames loose objects and refs into place without fsync by default, so
   // an unclean restart can leave 0-byte files under refs/t3/** that break every
   // later fetch and push. Checkpoint writes flush before they are published;
   // macOS defaults to writeout-only, which does not reach the disk either.
+  // Set fsync first: Git 2.36 ignores unknown batch without resetting the method.
+  // Git documents batch/fsync equivalence on macOS HFS+/APFS and Windows NTFS/ReFS;
+  // keep per-object fsync on other platforms. Batch still fully flushes refs.
   // On macOS, VcsProcess retries unsupported full flushes with plain fsync.
   const durableWrite = [
     "-c",
     "core.fsync=objects,reference",
     "-c",
     "core.fsyncMethod=fsync",
+    ...(hostPlatform === "darwin" || hostPlatform === "win32"
+      ? ["-c", "core.fsyncMethod=batch"]
+      : []),
   ] as const;
 
   // Checkpoints must handle existing paths beyond Windows MAX_PATH, even when
   // core.longpaths is disabled in the user's Git configuration.
-  const longPaths = (yield* HostProcess.Platform) === "win32" ? ["-c", "core.longpaths=true"] : [];
+  const longPaths = hostPlatform === "win32" ? ["-c", "core.longpaths=true"] : [];
 
   const checkpoints: VcsDriver.VcsCheckpointOps = {
     captureCheckpoint: Effect.fn("GitVcsDriver.checkpoints.captureCheckpoint")(function* (input) {
