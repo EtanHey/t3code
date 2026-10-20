@@ -2,11 +2,10 @@ import "~/index.css";
 
 import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { expect, it } from "vite-plus/test";
 
 import { formatInlineContextReference } from "~/lib/composerContextReferences";
+import { render } from "../../../test/render";
 import { CollapsedComposerPromptPreview } from "./CollapsedComposerPromptPreview";
 
 function quote(text: string, comment?: string): string {
@@ -24,22 +23,6 @@ function quote(text: string, comment?: string): string {
   });
 }
 
-let root: Root;
-let container: HTMLDivElement;
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
-
 it("shows quotes, file mentions, context references and skills as chips", async () => {
   const terminal = formatInlineContextReference({
     kind: "terminal",
@@ -48,17 +31,17 @@ it("shows quotes, file mentions, context references and skills as chips", async 
   });
   const prompt = `${quote("Cache the parsed config.")} vs ${quote("Retry on 503.", "Also on 429?")} in [package.json](package.json) per ${terminal} with $review-pr please`;
 
-  await act(async () =>
-    root.render(
-      <CollapsedComposerPromptPreview
-        prompt={prompt}
-        skills={[
-          { name: "review-pr", displayName: "Review PR", path: "/skills/review-pr", enabled: true },
-        ]}
-        theme="light"
-      />,
-    ),
+  await using screen = await render(
+    <CollapsedComposerPromptPreview
+      prompt={prompt}
+      skills={[
+        { name: "review-pr", displayName: "Review PR", path: "/skills/review-pr", enabled: true },
+      ]}
+      theme="light"
+    />,
+    { router: false },
   );
+  const { container } = screen;
 
   const chips = [...container.querySelectorAll('[data-slot="context-chip"]')];
   expect(chips.map((chip) => chip.textContent)).toEqual([
@@ -77,11 +60,11 @@ it("shows quotes, file mentions, context references and skills as chips", async 
 });
 
 it("leaves unknown skills as the text the user typed", async () => {
-  await act(async () =>
-    root.render(
-      <CollapsedComposerPromptPreview prompt="run $missing now" skills={[]} theme="dark" />,
-    ),
+  await using screen = await render(
+    <CollapsedComposerPromptPreview prompt="run $missing now" skills={[]} theme="dark" />,
+    { router: false },
   );
+  const { container } = screen;
 
   expect(container.querySelector('[data-slot="context-chip"]')).toBeNull();
   expect(container.textContent).toBe("run $missing now");
