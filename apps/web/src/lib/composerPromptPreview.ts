@@ -4,10 +4,10 @@ import { splitPromptIntoComposerSegments } from "~/composer-editor-mentions";
 import { basenameOfPath } from "~/pierre-icons";
 
 /**
- * The draft as the editor's chips read, for surfaces that show it as plain text.
- * Built from the editor's own segment parser so a new chip type can't leak its
- * serialized link here. Skills stay `$name`: their chip label needs the provider's
- * skill list, and the source already reads as text.
+ * The draft as readable text instead of serialized links, for surfaces that show
+ * it as plain text. Built from the editor's own segment parser so a new chip type
+ * can't leak raw markup here. Skills stay `$name`: their chip label needs the
+ * provider's skill list, and the source already reads as text.
  */
 export function composerPromptPreviewText(prompt: string): string {
   return splitPromptIntoComposerSegments(prompt)

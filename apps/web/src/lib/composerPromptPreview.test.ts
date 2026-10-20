@@ -5,6 +5,21 @@ import { describe, expect, it } from "vite-plus/test";
 import { formatInlineContextReference } from "./composerContextReferences";
 import { composerPromptPreviewText } from "./composerPromptPreview";
 
+function quote(text: string, comment?: string): string {
+  return serializeAssistantCitation({
+    version: 1,
+    environmentId: EnvironmentId.make("environment:test"),
+    threadId: ThreadId.make("thread:test"),
+    messageId: MessageId.make("message:assistant"),
+    text,
+    start: 0,
+    end: text.length,
+    prefix: "",
+    suffix: "",
+    ...(comment === undefined ? {} : { comment }),
+  });
+}
+
 describe("composerPromptPreviewText", () => {
   it("shows quoted text and context labels instead of their serialized links", () => {
     const quotedText = "Cache the parsed config per worktree.";
@@ -36,5 +51,20 @@ describe("composerPromptPreviewText", () => {
         'Compare [package.json](package.json) with @"apps/web/src/main.tsx" ',
       ),
     ).toBe("Compare package.json with main.tsx");
+  });
+
+  it("shows a quote's comment after its quoted text", () => {
+    expect(composerPromptPreviewText(quote("Retry on 503.", "Also on 429?"))).toBe(
+      "Retry on 503.\nComment: Also on 429?",
+    );
+  });
+
+  it("shows every quote on a line in order with the typed text", () => {
+    const preview = composerPromptPreviewText(
+      `${quote("First claim.")} vs ${quote("Second claim.")} which holds?`,
+    );
+
+    expect(preview).toBe("First claim. vs Second claim. which holds?");
+    expect(preview).not.toContain("t3-citation://");
   });
 });
