@@ -158,6 +158,7 @@ import {
 import type { ThreadSyncPhase } from "../../threadSync";
 import { ComposerBanner } from "./ComposerBanner";
 import { ComposerSurface } from "./ComposerSurface";
+import { CollapsedComposerPromptPreview } from "./CollapsedComposerPromptPreview";
 import {
   ComposerBannerStack,
   type ComposerBannerStackContent,
@@ -198,7 +199,6 @@ import {
   formatAttachmentUploadProgress,
 } from "../../lib/attachmentUploadState";
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
-import { composerPromptPreviewText } from "../../lib/composerPromptPreview";
 import { getTerminalFocusOwner } from "../../lib/terminalFocus";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../../keybindings";
@@ -2811,9 +2811,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pendingUserInputs.length > 0 ||
     (!isComposerCollapsedMobile && showPlanFollowUpPrompt && activeProposedPlan !== null);
   const showCollapsedMobilePromptRow = isComposerCollapsedMobile && !isComposerApprovalState;
-  const collapsedMobilePromptPreview = showCollapsedMobilePromptRow
-    ? composerPromptPreviewText(prompt)
-    : "";
   const showComposerAttachAction =
     fileStagingLimit !== null &&
     (!activePendingProgress ||
@@ -6605,14 +6602,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   data-chat-composer-transition-prompt="true"
                   className={cn(
                     "min-w-0 flex-1 truncate bg-transparent p-0 text-left text-sm focus:outline-none",
-                    collapsedMobilePromptPreview ? "text-foreground" : "text-placeholder",
+                    prompt.trim() ? "text-foreground" : "text-placeholder",
                   )}
                   onPointerDown={(event) => event.preventDefault()}
                   onClick={expandMobileComposerStable}
                   aria-label="Expand composer"
                 >
-                  {collapsedMobilePromptPreview ||
-                    (showProviderUnavailable ? "Enable a provider in Settings" : "Ask anything...")}
+                  {prompt.trim() ? (
+                    <CollapsedComposerPromptPreview
+                      prompt={prompt}
+                      skills={selectedProviderSkills}
+                      theme={resolvedTheme}
+                    />
+                  ) : showProviderUnavailable ? (
+                    "Enable a provider in Settings"
+                  ) : (
+                    "Ask anything..."
+                  )}
                 </button>
                 {collapsedComposerImagePreviews}
                 <button
