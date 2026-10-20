@@ -93,7 +93,6 @@ export function CollapsedComposerPromptPreview(props: {
           />
         );
       case "skill": {
-        // Same rule as the editor: only skills the provider offers to users become chips.
         const skill = props.skills.find(
           (candidate) => candidate.name === segment.name && isProviderSkillUserInvocable(candidate),
         );

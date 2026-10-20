@@ -72,7 +72,6 @@ it("shows quotes, file mentions, context references and skills as chips", async 
   expect(container.textContent).toBe(
     "Cache the parsed config. vs Also on 429? in package.json per Terminal 1 with Review PR please",
   );
-  expect(container.textContent).not.toMatch(/t3-citation:\/\/|t3-context:\/\/|\]\(/);
   // The row is one tap target that expands the composer, so chips stay inert.
   expect(container.querySelector("button, a, [tabindex]")).toBeNull();
 });
