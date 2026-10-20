@@ -9,6 +9,7 @@ import {
   MessageId,
   type ModelSelection,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2TurnItem,
   type OrchestrationV2ThreadShellSnapshot,
   NodeId,
   PlanId,
@@ -184,6 +185,194 @@ const addRolledBackRecoveryCandidate = Effect.fn("addRolledBackRecoveryCandidate
 
   return threadId;
 });
+
+it.effect.each([
+  ["memory", ProjectionStore.layerMemory],
+  ["SQL", layerTest],
+] as const)("%s shells flag only an active turn blocked solely on T3 thread waits", ([, layer]) =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = yield* addRolledBackRecoveryCandidate("thread-wait");
+    const initial = yield* store.getThreadProjection(threadId);
+    const at = initial.updatedAt;
+    const previousCommand = initial.turnItems.find((item) => item.type === "command_execution")!;
+    const itemBase = {
+      ...previousCommand,
+      providerThreadId: previousCommand.providerThreadId ?? null,
+      providerTurnId: previousCommand.providerTurnId ?? null,
+      nativeItemRef: previousCommand.nativeItemRef ?? null,
+      parentItemId: previousCommand.parentItemId ?? null,
+    };
+    yield* store.apply({
+      id: EventId.make("event:thread-wait:previous-completed"),
+      type: "run.updated",
+      threadId,
+      occurredAt: at,
+      payload: { ...initial.runs[0]!, status: "completed", completedAt: at },
+    });
+    const run = {
+      ...initial.runs[0]!,
+      id: RunId.make("run:thread-wait:active"),
+      ordinal: 2,
+      status: "running" as const,
+      completedAt: null,
+    };
+    yield* store.apply({
+      id: EventId.make("event:thread-wait:active"),
+      type: "run.created",
+      threadId,
+      occurredAt: at,
+      payload: run,
+    });
+    let sequence = 0;
+    const updateItem = (payload: OrchestrationV2TurnItem) =>
+      store.apply({
+        id: EventId.make(`event:thread-wait:item:${sequence++}`),
+        type: "turn-item.updated",
+        threadId,
+        runId: payload.runId ?? undefined,
+        driver,
+        occurredAt: at,
+        payload,
+      });
+    const assertBlocked = Effect.fnUntraced(function* (expected: boolean) {
+      const listed = (yield* store.getShellSnapshot()).threads.find((row) => row.id === threadId);
+      for (const shell of [yield* store.getThreadShell(threadId), listed]) {
+        assert.equal(shell?.activeRunId, run.id);
+        assert.equal(shell?.status, "running");
+        assert.equal(shell?.blockedOnThreadWait ?? false, expected);
+      }
+    });
+    const wait = {
+      ...itemBase,
+      id: TurnItemId.make("item:thread-wait:active"),
+      runId: run.id,
+      type: "dynamic_tool" as const,
+      toolName: "mcp__t3_code__t3_thread_wait",
+      input: { threadId: "child-thread" },
+      status: "running" as const,
+    };
+
+    yield* updateItem({
+      ...wait,
+      id: TurnItemId.make("item:thread-wait:stale"),
+      runId: initial.runs[0]!.id,
+    });
+    yield* assertBlocked(false);
+    const foreign = {
+      ...wait,
+      id: TurnItemId.make("item:thread-wait:foreign"),
+      toolName: "weather.t3_thread_wait",
+    };
+    yield* updateItem(foreign);
+    yield* assertBlocked(false);
+    yield* updateItem({ ...foreign, status: "completed", completedAt: at });
+    yield* updateItem({ ...wait, status: "pending", startedAt: null });
+    yield* assertBlocked(false);
+    yield* updateItem(wait);
+    yield* assertBlocked(true);
+
+    yield* updateItem({
+      ...wait,
+      id: TurnItemId.make("item:thread-wait:plan"),
+      type: "todo_list",
+      planId: PlanId.make("plan:thread-wait"),
+      steps: [{ id: "review", text: "Review the child result", status: "running" }],
+    });
+    yield* assertBlocked(true);
+    yield* updateItem({
+      ...wait,
+      id: TurnItemId.make("item:thread-wait:proposed-plan"),
+      type: "proposed_plan",
+      planId: PlanId.make("plan:thread-wait:proposed"),
+      markdown: "Review the child result",
+      streaming: true,
+    });
+    yield* updateItem({
+      ...wait,
+      id: TurnItemId.make("item:thread-wait:named-message"),
+      nativeItemRef: { driver, nativeId: "named-message", strength: "weak" },
+      type: "assistant_message",
+      messageId: MessageId.make("message:thread-wait:named"),
+      text: "Waiting for the child result",
+      streaming: true,
+    });
+    yield* updateItem({
+      ...wait,
+      id: TurnItemId.make("item:thread-wait:named-thought"),
+      nativeItemRef: { driver, nativeId: "named-thought", strength: "weak" },
+      type: "reasoning",
+      text: "I need the child result",
+      streaming: true,
+    });
+    yield* assertBlocked(true);
+
+    const command = {
+      ...itemBase,
+      id: TurnItemId.make("item:thread-wait:concurrent"),
+      runId: run.id,
+    };
+    yield* updateItem(command);
+    yield* assertBlocked(false);
+    yield* updateItem({ ...wait, status: "waiting" });
+    yield* assertBlocked(false);
+    yield* updateItem({ ...command, status: "completed", completedAt: at });
+    yield* assertBlocked(true);
+    const fileChange = {
+      ...command,
+      id: TurnItemId.make("item:thread-wait:concurrent-edit"),
+      type: "file_change" as const,
+      fileName: "example.ts",
+    };
+    yield* updateItem(fileChange);
+    yield* assertBlocked(false);
+    yield* updateItem({ ...fileChange, status: "completed", completedAt: at });
+    yield* assertBlocked(true);
+    const compaction = {
+      ...command,
+      id: TurnItemId.make("item:thread-wait:compaction"),
+      type: "compaction" as const,
+      driver,
+    };
+    yield* updateItem(compaction);
+    yield* assertBlocked(false);
+    yield* updateItem({ ...compaction, status: "completed", completedAt: at });
+    yield* assertBlocked(true);
+    yield* updateItem({ ...wait, status: "completed", completedAt: at });
+    yield* assertBlocked(false);
+
+    const delegation = {
+      ...wait,
+      id: TurnItemId.make("item:thread-wait:delegation"),
+      toolName: "t3-code-thread_opencode2-adapter_delegate_task",
+      input: { task: "Review", mode: "async" },
+    };
+    yield* updateItem(delegation);
+    yield* assertBlocked(false);
+    yield* updateItem({ ...delegation, status: "completed", completedAt: at });
+    const blockingDelegation = {
+      ...delegation,
+      id: TurnItemId.make("item:thread-wait:blocking-delegation"),
+      input: { task: "Review", mode: "wait" },
+    };
+    yield* updateItem({
+      ...command,
+      id: TurnItemId.make("item:thread-wait:child"),
+      type: "subagent",
+      subagentId: NodeId.make("node:thread-wait:child"),
+      origin: "app_owned",
+      driver,
+      providerInstanceId,
+      childThreadId: ThreadId.make("child-thread"),
+      prompt: "Review",
+      result: null,
+    });
+    yield* updateItem(blockingDelegation);
+    yield* assertBlocked(true);
+    yield* updateItem({ ...blockingDelegation, status: "completed", completedAt: at });
+    yield* assertBlocked(false);
+  }).pipe(Effect.provide(layer)),
+);
 
 it.effect.each([
   ["memory", ProjectionStore.layerMemory],
@@ -1420,6 +1609,8 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const now = yield* DateTime.now;
       const nowIso = DateTime.formatIso(now);
       const threadId = ThreadId.make("thread:notification-turn-pages");
+      const providerInstanceId = ProviderInstanceId.make("claudeAgent");
+      const modelSelection = { instanceId: providerInstanceId, model: "claude-sonnet-4-6" };
       yield* projectionStore.apply({
         id: EventId.make("event:notification-turn-pages:thread"),
         type: "thread.created",
@@ -1449,6 +1640,53 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           deletedAt: null,
         },
       });
+
+      const providerThreadId = ProviderThreadId.make("provider-thread:notification-turn-pages");
+      yield* projectionStore.apply({
+        id: EventId.make("event:notification-turn-pages:provider-thread"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: providerThreadId,
+          driver: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId,
+          providerSessionId: null,
+          appThreadId: threadId,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 412,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      const planId = PlanId.make("plan:notification-turn-pages");
+      const olderPlanId = PlanId.make("plan:notification-turn-pages:older");
+      for (const [id, run] of [
+        [olderPlanId, 1],
+        [planId, 2],
+      ] as const) {
+        yield* projectionStore.apply({
+          id: EventId.make(`event:notification-turn-pages:plan:${run}`),
+          type: "plan.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id,
+            threadId,
+            runId: RunId.make(`run:notification-turn-pages:${run}`),
+            nodeId: NodeId.make(`node:notification-turn-pages:${run}`),
+            kind: "todo_list",
+            status: "active",
+            steps: [{ id: "unfinished", text: "Finish the task", status: "pending" }],
+          },
+        });
+      }
 
       const startedRuns = 412;
       const allIds: string[] = [];
@@ -1504,14 +1742,14 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             run_id, thread_id, ordinal, provider, provider_thread_id, status,
             requested_at, completed_at, payload_json
           ) VALUES (
-            ${runId}, ${threadId}, ${run}, 'codex', NULL, ${status}, ${nowIso}, ${nowIso},
+            ${runId}, ${threadId}, ${run}, 'claudeAgent', ${providerThreadId}, ${status}, ${nowIso}, ${nowIso},
             ${encodeUnknownJsonString({
               id: runId,
               threadId,
               ordinal: run,
               providerInstanceId,
               modelSelection,
-              providerThreadId: null,
+              providerThreadId,
               userMessageId: `message:notification-turn-pages:${run}`,
               rootNodeId: `node:notification-turn-pages:${run}`,
               activeAttemptId: null,
@@ -1574,6 +1812,22 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         snapshotSequence: 0,
       });
       assert.strictEqual(bounded.projection.visibleTurnItems[0]?.sourceItemId, startIds[262]);
+      assert.deepEqual(
+        bounded.projection.plans.map((plan) => plan.id),
+        [planId, olderPlanId],
+      );
+      assert.deepEqual(
+        {
+          oldRunIds: bounded.projection.runs
+            .filter((run) => run.ordinal < 261)
+            .map((run) => run.id),
+          providerThreadIds: bounded.projection.providerThreads.map((thread) => thread.id),
+        },
+        {
+          oldRunIds: [RunId.make("run:notification-turn-pages:2")],
+          providerThreadIds: [providerThreadId],
+        },
+      );
       const loaded = bounded.projection.visibleTurnItems.map((row) => String(row.sourceItemId));
       let cursor = bounded.historyCursor;
       for (let pages = 0; cursor !== null; pages += 1) {
@@ -1595,6 +1849,119 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         cursor = page.nextCursor;
       }
       assert.deepEqual(loaded, allIds);
+
+      const completedPlan = {
+        id: planId,
+        threadId,
+        runId: RunId.make("run:notification-turn-pages:2"),
+        nodeId: NodeId.make("node:notification-turn-pages:2"),
+        kind: "todo_list" as const,
+        status: "completed" as const,
+        explanation: "All tasks complete",
+        steps: [{ id: "unfinished", text: "Finish the task", status: "completed" as const }],
+      };
+      yield* projectionStore.apply({
+        id: EventId.make("event:notification-turn-pages:plan:completed"),
+        type: "plan.updated",
+        threadId,
+        occurredAt: now,
+        payload: completedPlan,
+      });
+      const afterCompletion = yield* projectionStore.getThreadSnapshotWindow(threadId, {
+        rowLimit: 77,
+        userTurnLimit: 10,
+      });
+      const completedBounded = buildBoundedThreadProjection({
+        projection: afterCompletion.projection,
+        snapshotSequence: 0,
+      });
+      assert.deepEqual(
+        {
+          plans: completedBounded.projection.plans,
+          oldRunIds: completedBounded.projection.runs
+            .filter((run) => run.ordinal < 261)
+            .map((run) => run.id),
+          providerThreadIds: completedBounded.projection.providerThreads.map((thread) => thread.id),
+        },
+        {
+          plans: [completedPlan, bounded.projection.plans.find((plan) => plan.id === olderPlanId)],
+          oldRunIds: [completedPlan.runId],
+          providerThreadIds: [providerThreadId],
+        },
+      );
+
+      // Older versions left completed predecessors unsuperseded; IDs do not order replacements.
+      const newerPlan = {
+        ...completedPlan,
+        id: PlanId.make("plan:legacy-newer"),
+        status: "active" as const,
+        explanation: "More work remains",
+        steps: [{ id: "new", text: "Finish the new task", status: "pending" as const }],
+      };
+      yield* projectionStore.apply({
+        id: EventId.make("event:notification-turn-pages:plan:legacy-newer"),
+        type: "plan.updated",
+        threadId,
+        occurredAt: now,
+        payload: newerPlan,
+      });
+      for (const [plan, itemOrdinal] of [
+        [completedPlan, 7],
+        [newerPlan, 8],
+      ] as const) {
+        yield* projectionStore.apply({
+          id: EventId.make(`event:notification-turn-pages:legacy-item:${itemOrdinal}`),
+          type: "turn-item.updated",
+          threadId,
+          runId: plan.runId,
+          nodeId: plan.nodeId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(`turn-item:notification-turn-pages:${itemOrdinal}`),
+            threadId,
+            runId: plan.runId,
+            nodeId: plan.nodeId,
+            providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: itemOrdinal,
+            status: "completed",
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "todo_list",
+            planId: plan.id,
+            steps: plan.steps,
+            explanation: plan.explanation,
+          },
+        });
+      }
+      const legacySnapshot = yield* projectionStore.getThreadSnapshotWindow(threadId, {
+        rowLimit: 77,
+        userTurnLimit: 10,
+      });
+      assert.isTrue(legacySnapshot.projection.turnItems.every((item) => item.ordinal > 8));
+      assert.deepEqual(
+        legacySnapshot.projection.plans.findLast((plan) => plan.runId === newerPlan.runId),
+        newerPlan,
+      );
+      const legacyBounded = buildBoundedThreadProjection({
+        projection: legacySnapshot.projection,
+        snapshotSequence: 0,
+      });
+      assert.deepEqual(
+        {
+          ownerPlans: legacyBounded.projection.plans.filter(
+            (plan) => plan.runId === newerPlan.runId,
+          ),
+          oldRunIds: legacyBounded.projection.runs
+            .filter((run) => run.ordinal < 261)
+            .map((run) => run.id),
+        },
+        { ownerPlans: [newerPlan], oldRunIds: [newerPlan.runId] },
+      );
     }),
   );
 
@@ -1866,6 +2233,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       for (let ordinal = 1; ordinal <= 1_000; ordinal += 1) {
         const id = `turn-item:bounded-sql-history:${ordinal}`;
         const runId = `run:bounded-sql-history:${ordinal}`;
+        const message = ordinal === 1 || ordinal === 1_000;
         yield* sql`
           INSERT INTO orchestration_v2_projection_runs (
             run_id, thread_id, ordinal, provider, provider_thread_id, status,
@@ -1897,7 +2265,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             parent_item_id, ordinal, type, status, updated_at, payload_json
           ) VALUES (
             ${id}, ${threadId}, ${runId}, NULL, NULL, NULL, NULL, ${ordinal},
-            'command_execution', 'completed', ${nowIso},
+            ${message ? "user_message" : "command_execution"}, 'completed', ${nowIso},
             ${encodeUnknownJsonString({
               id,
               threadId,
@@ -1916,11 +2284,86 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
               startedAt: nowIso,
               completedAt: nowIso,
               updatedAt: nowIso,
-              type: "command_execution",
+              ...(message
+                ? {
+                    type: "user_message",
+                    createdBy: "user",
+                    creationSource: "web",
+                    messageId: `message:bounded-sql-history:${ordinal}`,
+                    inputIntent: "turn_start",
+                    text: `Turn ${ordinal}`,
+                    attachments: [],
+                  }
+                : { type: "command_execution" }),
             })}
           )
         `;
       }
+
+      for (const ordinal of [1, 1_000]) {
+        yield* projectionStore.apply({
+          id: EventId.make(`event:bounded-sql-history:message:${ordinal}`),
+          type: "message.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: MessageId.make(`message:bounded-sql-history:${ordinal}`),
+            threadId,
+            runId: RunId.make(`run:bounded-sql-history:${ordinal}`),
+            nodeId: NodeId.make(`node:bounded-sql-history:${ordinal}`),
+            role: "user",
+            text: `Turn ${ordinal}`,
+            attachments: [],
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+      }
+      const scopeId = CheckpointScopeId.make("scope:bounded-sql-history:root");
+      const baselineId = CheckpointId.make("checkpoint:bounded-sql-history:baseline");
+      yield* projectionStore.apply({
+        id: EventId.make("event:bounded-sql-history:scope"),
+        type: "checkpoint-scope.created",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: scopeId,
+          threadId,
+          runId: RunId.make("run:bounded-sql-history:1000"),
+          nodeId: NodeId.make("node:bounded-sql-history:1000"),
+          parentScopeId: null,
+          providerThreadId: null,
+          kind: "root_run",
+          ordinalWithinParent: 0,
+          advancesAppRunCount: true,
+          cwd: "/repo/worktree",
+          createdAt: now,
+        },
+      });
+      // A reused root scope can retain its original baseline on a node outside the window.
+      yield* projectionStore.apply({
+        id: EventId.make("event:bounded-sql-history:baseline"),
+        type: "checkpoint.captured",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: baselineId,
+          threadId,
+          scopeId,
+          runId: null,
+          nodeId: NodeId.make("node:bounded-sql-history:1"),
+          parentCheckpointId: null,
+          ordinalWithinScope: 0,
+          appRunOrdinal: null,
+          ref: CheckpointRef.make("refs/t3/bounded-sql-history/0"),
+          status: "ready",
+          files: [],
+          capturedAt: now,
+        },
+      });
 
       const snapshots = yield* Effect.all(
         Array.from({ length: 4 }, () =>
@@ -1934,6 +2377,18 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         assert.lengthOf(snapshot.projection.visibleTurnItems, 76);
         assert.strictEqual(snapshot.projection.turnItems[0]?.ordinal, 925);
         assert.strictEqual(snapshot.projection.turnItems.at(-1)?.ordinal, 1_000);
+        assert.deepEqual(
+          snapshot.projection.messages.map((message) => message.id),
+          [MessageId.make("message:bounded-sql-history:1000")],
+        );
+        assert.deepEqual(
+          snapshot.projection.checkpointScopes.map((scope) => scope.id),
+          [scopeId],
+        );
+        assert.deepEqual(
+          snapshot.projection.checkpoints.map((checkpoint) => checkpoint.id),
+          [baselineId],
+        );
       }
       const retainedRequestPlan = yield* sql<{ readonly detail: string }>`
         EXPLAIN QUERY PLAN

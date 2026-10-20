@@ -90,6 +90,7 @@ export default defineConfig({
       "**/routeTree.gen.ts",
       "**/*.graphql.ts",
       "packages/source-control-github/schema/**",
+      "apps/server/schema/**",
       "apps/mobile/android/**",
       "apps/mobile/ios/**",
       "apps/mobile/uniwind-types.d.ts",
@@ -117,6 +118,7 @@ export default defineConfig({
       "**/routeTree.gen.ts",
       "**/*.graphql.ts",
       "packages/source-control-github/schema/**",
+      "apps/server/schema/**",
       "apps/mobile/android/**",
       "apps/mobile/ios/**",
       "apps/mobile/uniwind-types.d.ts",
@@ -184,6 +186,12 @@ export default defineConfig({
           "packages/provider-testing/**",
         ],
         rules: { "t3code/prefer-effect-fn": "off" },
+      },
+      {
+        // Warns while the remaining web component tests move to apps/web/test/render.tsx.
+        // Raise to "error" once `vp lint` reports no t3code(require-disposable-render) warnings.
+        files: ["apps/web/**/*.test.tsx"],
+        rules: { "t3code/require-disposable-render": "warn" },
       },
       {
         files: ["apps/**/src/**", "packages/**/src/**"],
