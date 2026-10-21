@@ -165,7 +165,7 @@ describe("citation comment popup position", () => {
     await vi.waitFor(() => expect(popup()?.getBoundingClientRect().width).toBeGreaterThan(0));
     // Typing scrolls ancestors to reveal the caret, which shifts the whole app
     // sideways when the box is off screen.
-    await act(async () => userEvent.keyboard("note"));
+    await userEvent.keyboard("note");
 
     expect(textarea()?.value).toBe("note");
     expect(document.scrollingElement?.scrollLeft).toBe(0);
