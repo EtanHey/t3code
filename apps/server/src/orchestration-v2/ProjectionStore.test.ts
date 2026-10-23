@@ -2808,7 +2808,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         title: null,
         model: null,
         terminalObligation: {
-          missionRevision: { threadId, runId },
+          spawningRunAnchor: { threadId, runId },
           contractTaskId: taskId,
           resultRef: {
             threadId,

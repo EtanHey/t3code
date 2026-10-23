@@ -2218,7 +2218,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         )({
           type: "subagent.updated",
           threadId: command.parentThreadId,
+          ...(task.runId === null ? {} : { runId: task.runId }),
           nodeId: task.id,
+          driver: task.driver,
+          providerInstanceId: task.providerInstanceId,
           occurredAt: yield* DateTime.now,
           payload: task,
         });
@@ -2256,7 +2259,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? {
             terminalObligation: {
               ...(task.terminalObligation ?? {
-                missionRevision: { threadId: task.threadId, runId: task.runId },
+                spawningRunAnchor: { threadId: task.threadId, runId: task.runId },
                 contractTaskId: task.id,
                 resultRef: null,
               }),
@@ -10904,7 +10907,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerThreadId: childRun.providerThreadId,
         status: terminalStatus,
         terminalObligation: {
-          missionRevision: { threadId: parentThreadId, runId: task.runId },
+          spawningRunAnchor: { threadId: parentThreadId, runId: task.runId },
           contractTaskId: task.id,
           resultRef: {
             threadId: childThreadId,
@@ -10913,25 +10916,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             turnItemId: result.turnItemId,
           },
           disposition:
-            parentProjection.thread.archivedAt !== null ||
             parentProjection.thread.deletedAt !== null
               ? {
                   kind: "blocked",
-                  blocker: {
-                    kind: "parent_archived",
-                    releaseCondition: "explicit_resume_and_reconcile",
-                  },
+                  blocker: { kind: "parent_deleted", releaseCondition: "not_resumable" },
                 }
-              : parentRun?.delegatedCompletion?.disposition === "stopped" ||
-                  parentRun?.delegatedCompletion?.disposition === "disposed"
+              : parentProjection.thread.archivedAt !== null
                 ? {
                     kind: "blocked",
                     blocker: {
-                      kind: "parent_stopped",
+                      kind: "parent_archived",
                       releaseCondition: "explicit_resume_and_reconcile",
                     },
                   }
-                : { kind: "pending" },
+                : parentRun?.delegatedCompletion?.disposition === "stopped"
+                  ? {
+                      kind: "blocked",
+                      blocker: {
+                        kind: "parent_stopped",
+                        releaseCondition: "explicit_resume_and_reconcile",
+                      },
+                    }
+                  : { kind: "pending" },
         },
         result: result.text,
         completedAt: now,

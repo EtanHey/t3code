@@ -85,7 +85,7 @@ describe("OrchestratorMcpService", () => {
             model: "gpt-5.6-terra",
             result: "terminal result",
             terminalObligation: {
-              missionRevision: { threadId: parentThreadId, runId: null },
+              spawningRunAnchor: { threadId: parentThreadId, runId: null },
               contractTaskId: taskId,
               resultRef: null,
               disposition: { kind: "pending" },

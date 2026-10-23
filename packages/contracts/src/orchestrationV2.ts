@@ -704,15 +704,19 @@ export const OrchestrationV2TerminalBlocker = Schema.Union([
     releaseCondition: Schema.Literal("enable_provider_and_reconcile"),
   }),
   Schema.Struct({
+    kind: Schema.Literal("parent_deleted"),
+    releaseCondition: Schema.Literal("not_resumable"),
+  }),
+  Schema.Struct({
     kind: Schema.Literals(["parent_stopped", "parent_archived"]),
     releaseCondition: Schema.Literal("explicit_resume_and_reconcile"),
   }),
 ]);
 
-// The spawning run anchors this obligation to its original mission revision.
+// The anchor identifies the parent context that originally spawned this task.
 // Delivery, provider acceptance and result observation cannot discharge it.
 export const OrchestrationV2TerminalObligation = Schema.Struct({
-  missionRevision: Schema.Struct({ threadId: ThreadId, runId: Schema.NullOr(RunId) }),
+  spawningRunAnchor: Schema.Struct({ threadId: ThreadId, runId: Schema.NullOr(RunId) }),
   contractTaskId: NodeId,
   resultRef: Schema.NullOr(
     Schema.Struct({
