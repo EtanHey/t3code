@@ -250,8 +250,60 @@ describe("ProviderContinuationService", () => {
     });
   });
 
+  it.effect("persists the exact disabled-provider blocker before retiring delivery", () =>
+    Effect.gen(function* () {
+      const recorded = yield* Queue.unbounded<unknown>();
+      const cleared = yield* Deferred.make<void>();
+      const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: () => Effect.succeed(delegatedProjection()),
+        dispatch: (command) =>
+          command.type === "message.dispatch"
+            ? Effect.fail(
+                new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
+                  projectId: ProjectId.make("project-disabled"),
+                  instanceId: ProviderInstanceId.make("instance-disabled"),
+                }) as never,
+              )
+            : Queue.offer(recorded, command).pipe(Effect.as({} as never)),
+      });
+      const worker = ProviderContinuationService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        yield* requests.offer({
+          ...request(),
+          delivery: "message_text",
+          clearIfCurrent: () => Deferred.succeed(cleared, undefined).pipe(Effect.asVoid),
+          delegatedCompletion: { parentRunId, generation: 1, messageId: delegatedMessageId },
+        });
+        yield* Deferred.await(cleared);
+        const commands = yield* Queue.takeAll(recorded);
+        assert.lengthOf(commands, 2);
+        for (const command of commands)
+          assert.containSubset(command, {
+            type: "delegated_task.completion-delivery.block",
+            parentRunId,
+            generation: 1,
+            messageId: delegatedMessageId,
+            blocker: {
+              kind: "provider_disabled",
+              projectId: "project-disabled",
+              providerInstanceId: "instance-disabled",
+              releaseCondition: "enable_provider_and_reconcile",
+            },
+          });
+      }).pipe(
+        Effect.provide(Layer.merge(ProviderContinuationRequests.layer, worker)),
+        Effect.scoped,
+      );
+    }),
+  );
+
   it.effect(
-    "a project-disabled instance refuses a delegated-completion wake exactly once, acknowledges it, and never retries",
+    "a project-disabled instance refuses a delegated-completion wake exactly once, blocks it, and never retries",
     () => {
       return Effect.gen(function* () {
         const attempts = yield* Ref.make(0);
@@ -305,15 +357,15 @@ describe("ProviderContinuationService", () => {
           const acknowledgements = (yield* Queue.takeAll(acknowledged)) as ReadonlyArray<{
             type: string;
             taskId: string;
-            observedByRunId: string | null;
+            blocker: { kind: string };
           }>;
           assert.deepEqual(
             acknowledgements.map((command) => command.taskId),
             ["node-provider-continuation-first", "node-provider-continuation-second"],
           );
           for (const command of acknowledgements) {
-            assert.equal(command.type, "delegated_task.completion-delivery.acknowledge");
-            assert.isNull(command.observedByRunId);
+            assert.equal(command.type, "delegated_task.completion-delivery.block");
+            assert.equal(command.blocker.kind, "provider_disabled");
           }
 
           yield* TestClock.adjust("1 hour");

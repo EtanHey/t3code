@@ -497,6 +497,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "delegated_task.request":
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
+    case "delegated_task.completion-delivery.block":
     case "delegated_task.completion-delivery.dispose":
     case "thread.created.record":
       return command.parentThreadId;
@@ -2163,11 +2164,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     "Orchestrator.dispatchDelegatedTaskCompletionDeliveryResolution",
   )(function* (
     command: Extract<
-      OrchestrationV2Command,
+      OrchestrationV2ServerCommand,
       {
         readonly type:
           | "delegated_task.completion-delivery.acknowledge"
-          | "delegated_task.completion-delivery.dispose";
+          | "delegated_task.completion-delivery.dispose"
+          | "delegated_task.completion-delivery.block";
       }
     >,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -2197,10 +2199,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Delegated task ${command.taskId} is not an app-owned task of thread ${command.parentThreadId}.`,
       });
     }
+    const blocking = command.type === "delegated_task.completion-delivery.block";
+    if (blocking) {
+      const cohort = projection.runs.find(
+        (run) => run.id === command.parentRunId,
+      )?.delegatedCompletion;
+      if (
+        !isTerminalDelegatedTaskStatus(task.status) ||
+        task.runId !== command.parentRunId ||
+        cohort?.disposition !== "open" ||
+        cohort.delivery?.generation !== command.generation ||
+        cohort.delivery.messageId !== command.messageId ||
+        !cohort.delivery.taskIds.includes(task.id)
+      ) {
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "subagent.updated",
+          threadId: command.parentThreadId,
+          nodeId: task.id,
+          occurredAt: yield* DateTime.now,
+          payload: task,
+        });
+        return;
+      }
+    }
     const state =
-      command.type === "delegated_task.completion-delivery.acknowledge"
-        ? "acknowledged"
-        : "disposed";
+      command.type === "delegated_task.completion-delivery.dispose" ? "disposed" : "acknowledged";
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     // task_status and t3_thread_read use distinct command IDs, so two
@@ -2208,7 +2234,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // existing task row so the second dispatch is a successful idempotent
     // no-op rather than "already acknowledged/disposed" or empty-events.
     if (
-      task.completionDelivery?.state === state ||
+      (!blocking && task.completionDelivery?.state === state) ||
       (command.type === "delegated_task.completion-delivery.acknowledge" &&
         task.completionDelivery?.state === "disposed")
     ) {
@@ -2226,6 +2252,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const updatedTask: OrchestrationV2Subagent = {
       ...task,
+      ...(blocking
+        ? {
+            terminalObligation: {
+              ...(task.terminalObligation ?? {
+                missionRevision: { threadId: task.threadId, runId: task.runId },
+                contractTaskId: task.id,
+                resultRef: null,
+              }),
+              disposition: { kind: "blocked", blocker: command.blocker },
+            },
+          }
+        : {}),
       completionDelivery: {
         state,
         observedByRunId:
@@ -10856,10 +10894,45 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentTurnItem = parentProjection.turnItems.find(
         (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
       );
+      const resultTransferId = yield* idAllocator.allocate.contextTransfer({
+        sourceThreadId: childThreadId,
+        targetThreadId: parentThreadId,
+        type: "subagent_result",
+      });
       const updatedTask: OrchestrationV2Subagent = {
         ...task,
         providerThreadId: childRun.providerThreadId,
         status: terminalStatus,
+        terminalObligation: {
+          missionRevision: { threadId: parentThreadId, runId: task.runId },
+          contractTaskId: task.id,
+          resultRef: {
+            threadId: childThreadId,
+            runId: childRun.id,
+            transferId: resultTransferId,
+            turnItemId: result.turnItemId,
+          },
+          disposition:
+            parentProjection.thread.archivedAt !== null ||
+            parentProjection.thread.deletedAt !== null
+              ? {
+                  kind: "blocked",
+                  blocker: {
+                    kind: "parent_archived",
+                    releaseCondition: "explicit_resume_and_reconcile",
+                  },
+                }
+              : parentRun?.delegatedCompletion?.disposition === "stopped" ||
+                  parentRun?.delegatedCompletion?.disposition === "disposed"
+                ? {
+                    kind: "blocked",
+                    blocker: {
+                      kind: "parent_stopped",
+                      releaseCondition: "explicit_resume_and_reconcile",
+                    },
+                  }
+                : { kind: "pending" },
+        },
         result: result.text,
         completedAt: now,
         updatedAt: now,
@@ -10870,11 +10943,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task,
         updatedTask,
         now,
-      });
-      const resultTransferId = yield* idAllocator.allocate.contextTransfer({
-        sourceThreadId: childThreadId,
-        targetThreadId: parentThreadId,
-        type: "subagent_result",
       });
       const resultTransfer: OrchestrationV2ContextTransfer = {
         id: resultTransferId,
@@ -11656,6 +11724,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchDelegatedTaskWakePolicy(command, events);
         break;
       case "delegated_task.completion-delivery.acknowledge":
+      case "delegated_task.completion-delivery.block":
       case "delegated_task.completion-delivery.dispose":
         yield* dispatchDelegatedTaskCompletionDeliveryResolution(command, events);
         break;

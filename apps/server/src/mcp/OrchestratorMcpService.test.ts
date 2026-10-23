@@ -84,6 +84,12 @@ describe("OrchestratorMcpService", () => {
             driver: "codex",
             model: "gpt-5.6-terra",
             result: "terminal result",
+            terminalObligation: {
+              missionRevision: { threadId: parentThreadId, runId: null },
+              contractTaskId: taskId,
+              resultRef: null,
+              disposition: { kind: "pending" },
+            },
             completionDelivery: { state: "pending" },
           },
         ],
@@ -187,6 +193,10 @@ describe("OrchestratorMcpService", () => {
         const result = yield* service.taskStatus(scope, taskId);
         assert.equal(result.status, "completed");
         assert.equal(result.summary, "terminal result");
+        assert.deepEqual(
+          result.terminalObligation,
+          parentProjection.subagents[0]?.terminalObligation,
+        );
         assert.equal(result.latestTerminalRunId, childRunId);
         assert.equal(result.latestTerminalStatus, "completed");
         const commandIds = yield* Ref.get(acknowledgementCommandIds);

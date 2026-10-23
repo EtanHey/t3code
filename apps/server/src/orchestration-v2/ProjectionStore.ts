@@ -720,10 +720,15 @@ function preserveCompletionDelivery(
   current: OrchestrationV2Subagent | undefined,
   next: OrchestrationV2Subagent,
 ): OrchestrationV2Subagent {
-  if (next.completionDelivery !== undefined || current?.completionDelivery === undefined) {
-    return next;
-  }
-  return { ...next, completionDelivery: current.completionDelivery };
+  return {
+    ...next,
+    ...(next.completionDelivery === undefined && current?.completionDelivery !== undefined
+      ? { completionDelivery: current.completionDelivery }
+      : {}),
+    ...(next.terminalObligation === undefined && current?.terminalObligation !== undefined
+      ? { terminalObligation: current.terminalObligation }
+      : {}),
+  };
 }
 
 export function emptyProjection(
@@ -2225,7 +2230,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 started_at = excluded.started_at,
                 completed_at = excluded.completed_at,
                 updated_at = excluded.updated_at,
-                payload_json = CASE
+                payload_json = (
+                  SELECT CASE
+                    WHEN json_type(excluded.payload_json, '$.terminalObligation') IS NULL
+                      AND json_type(orchestration_v2_projection_subagents.payload_json, '$.terminalObligation') IS NOT NULL
+                    THEN json_set(delivery_payload, '$.terminalObligation', json_extract(
+                      orchestration_v2_projection_subagents.payload_json, '$.terminalObligation'))
+                    ELSE delivery_payload
+                  END
+                  FROM (SELECT CASE
                   WHEN json_type(excluded.payload_json, '$.completionDelivery') IS NULL
                     AND json_type(orchestration_v2_projection_subagents.payload_json, '$.completionDelivery') IS NOT NULL
                   THEN json_set(
@@ -2237,7 +2250,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     )
                   )
                   ELSE excluded.payload_json
-                END
+                END AS delivery_payload)
+                )
             `;
               break;
             }

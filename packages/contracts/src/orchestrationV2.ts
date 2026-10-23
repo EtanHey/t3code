@@ -696,6 +696,38 @@ export const OrchestrationV2SubagentWorkflow = Schema.Struct({
 });
 export type OrchestrationV2SubagentWorkflow = typeof OrchestrationV2SubagentWorkflow.Type;
 
+export const OrchestrationV2TerminalBlocker = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("provider_disabled"),
+    projectId: ProjectId,
+    providerInstanceId: ProviderInstanceId,
+    releaseCondition: Schema.Literal("enable_provider_and_reconcile"),
+  }),
+  Schema.Struct({
+    kind: Schema.Literals(["parent_stopped", "parent_archived"]),
+    releaseCondition: Schema.Literal("explicit_resume_and_reconcile"),
+  }),
+]);
+
+// The spawning run anchors this obligation to its original mission revision.
+// Delivery, provider acceptance and result observation cannot discharge it.
+export const OrchestrationV2TerminalObligation = Schema.Struct({
+  missionRevision: Schema.Struct({ threadId: ThreadId, runId: Schema.NullOr(RunId) }),
+  contractTaskId: NodeId,
+  resultRef: Schema.NullOr(
+    Schema.Struct({
+      threadId: ThreadId,
+      runId: RunId,
+      transferId: ContextTransferId,
+      turnItemId: Schema.NullOr(TurnItemId),
+    }),
+  ),
+  disposition: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("pending") }),
+    Schema.Struct({ kind: Schema.Literal("blocked"), blocker: OrchestrationV2TerminalBlocker }),
+  ]),
+});
+
 export const OrchestrationV2Subagent = Schema.Struct({
   id: NodeId,
   threadId: ThreadId,
@@ -714,6 +746,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
+  terminalObligation: Schema.optional(OrchestrationV2TerminalObligation),
   status: Schema.Literals([
     "idle",
     "pending",
@@ -3031,6 +3064,16 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
  * send them.
  */
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.completion-delivery.block"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    parentRunId: RunId,
+    generation: PositiveInt,
+    messageId: MessageId,
+    blocker: OrchestrationV2TerminalBlocker,
+  }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request-watch.sync"),
     commandId: CommandId,

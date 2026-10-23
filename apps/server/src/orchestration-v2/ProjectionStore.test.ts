@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  ContextTransferId,
   EnvironmentId,
   EventId,
   CommandId,
@@ -2729,7 +2730,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
-  it.effect("preserves delegated completion ownership across stale run and task updates", () =>
+  it.effect.each([
+    { name: "SQL", layer: layerTest },
+    { name: "memory", layer: ProjectionStore.layerMemory },
+  ])("preserves delegated ownership with $name", ({ layer }) =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const now = yield* DateTime.now;
@@ -2803,6 +2807,17 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         prompt: "Inspect the stop barrier.",
         title: null,
         model: null,
+        terminalObligation: {
+          missionRevision: { threadId, runId },
+          contractTaskId: taskId,
+          resultRef: {
+            threadId,
+            runId,
+            transferId: ContextTransferId.make("terminal-transfer"),
+            turnItemId: null,
+          },
+          disposition: { kind: "pending" as const },
+        },
         completionWake: "always" as const,
         completionDelivery: {
           state: "disposed" as const,
@@ -2845,7 +2860,11 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       });
 
       const { delegatedCompletion: _delegatedCompletion, ...staleRun } = run;
-      const { completionDelivery: _completionDelivery, ...staleTask } = task;
+      const {
+        completionDelivery: _completionDelivery,
+        terminalObligation: _obligation,
+        ...staleTask
+      } = task;
       yield* projectionStore.apply({
         id: EventId.make("event:projection-delegated-completion:stale-run"),
         type: "run.updated",
@@ -2876,7 +2895,8 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const projection = yield* projectionStore.getThreadProjection(threadId);
       assert.deepEqual(projection.runs[0]?.delegatedCompletion, run.delegatedCompletion);
       assert.deepEqual(projection.subagents[0]?.completionDelivery, task.completionDelivery);
-    }),
+      assert.deepEqual(projection.subagents[0]?.terminalObligation, task.terminalObligation);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("only exposes interruptible runs through the shell activeRunId", () =>

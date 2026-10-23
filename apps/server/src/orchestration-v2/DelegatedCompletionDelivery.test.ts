@@ -439,6 +439,101 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
       }),
   );
 
+  it.effect(
+    "blocks only the current terminal cohort and retains its contract through ACK and replay",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("terminal-block-parent");
+        const projectId = ProjectId.make("terminal-block-project");
+        const runId = RunId.make("terminal-block-run");
+        const rootNodeId = NodeId.make("terminal-block-root");
+        yield* seedParentWithTerminalTask({
+          threadId,
+          projectId,
+          runId,
+          rootNodeId,
+          taskId: NodeId.make("terminal-block-seed"),
+          deliveryState: "delivered",
+          now,
+        });
+        const child = yield* seedRestartCancelledChild({
+          parentThreadId: threadId,
+          projectId,
+          parentRunId: runId,
+          rootNodeId,
+          name: "terminal-block-child",
+          completionWake: "always",
+          continuationPending: false,
+          now,
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const original = before.subagents.find((task) => task.id === child.taskId)!;
+        const delivery = before.runs.find((run) => run.id === runId)!.delegatedCompletion!
+          .delivery!;
+        const block = {
+          type: "delegated_task.completion-delivery.block" as const,
+          parentThreadId: threadId,
+          taskId: child.taskId,
+          parentRunId: runId,
+          generation: delivery.generation,
+          messageId: delivery.messageId,
+          blocker: {
+            kind: "provider_disabled" as const,
+            projectId,
+            providerInstanceId: modelSelection.instanceId,
+            releaseCondition: "enable_provider_and_reconcile" as const,
+          },
+        };
+        yield* orchestrator.dispatch({
+          ...block,
+          generation: delivery.generation + 1,
+          commandId: CommandId.make("terminal-block-stale"),
+        });
+        assert.deepEqual(
+          (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+            (task) => task.id === child.taskId,
+          ),
+          original,
+        );
+        yield* orchestrator.dispatch({
+          ...block,
+          commandId: CommandId.make("terminal-block-current"),
+        });
+        const blocked = (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+          (task) => task.id === child.taskId,
+        )!;
+        assert.isDefined(original.terminalObligation);
+        assert.deepEqual(blocked.terminalObligation, {
+          ...original.terminalObligation,
+          disposition: { kind: "blocked", blocker: block.blocker },
+        });
+        assert.equal(blocked.prompt, original.prompt);
+        assert.equal(blocked.result, original.result);
+        yield* orchestrator.dispatch({
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make("terminal-block-read"),
+          parentThreadId: threadId,
+          taskId: child.taskId,
+          observedByRunId: runId,
+        });
+        yield* orchestrator.dispatch({
+          ...block,
+          commandId: CommandId.make("terminal-block-replay"),
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+        const replayed = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          replayed.subagents.find((task) => task.id === child.taskId),
+          blocked,
+        );
+        assert.equal(replayed.contextTransfers.length, before.contextTransfers.length);
+        assert.isNull(replayed.thread.settledAt);
+      }),
+  );
+
   it.effect("acceptance batches pending siblings without acknowledging their results", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -1612,6 +1707,23 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
                 ? "completed"
                 : outcome,
           );
+          assert.containSubset(followup, {
+            terminalObligation: {
+              missionRevision: { threadId: parentThreadId, runId: parentRunId },
+              contractTaskId: followup.id,
+              resultRef: { threadId: child.childThreadId, runId: run.id },
+              disposition:
+                outcome === "stopped"
+                  ? {
+                      kind: "blocked",
+                      blocker: {
+                        kind: "parent_stopped",
+                        releaseCondition: "explicit_resume_and_reconcile",
+                      },
+                    }
+                  : { kind: "pending" },
+            },
+          });
           assert.equal(
             followup.completionDelivery?.state,
             outcome === "stopped" ? "disposed" : "claimed",
@@ -2200,6 +2312,7 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
       const recovered = yield* orchestrator.getThreadProjection(threadId);
       const task = recovered.subagents.find((row) => row.id === child.taskId);
       assert.equal(task?.status, "cancelled");
+      assert.equal(task?.terminalObligation?.disposition.kind, "pending");
       assert.isNotNull(task?.result ?? null);
       assert.isTrue(
         recovered.contextTransfers.some(
@@ -2325,6 +2438,20 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
       assert.isTrue(settled._tag === "Some");
       const recovered = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(recovered.subagents.find((row) => row.id === child.taskId)?.status, "failed");
+      assert.containSubset(
+        recovered.subagents.find((row) => row.id === child.taskId),
+        {
+          terminalObligation: {
+            contractTaskId: child.taskId,
+            resultRef: {
+              threadId: child.childThreadId,
+              runId: activeRun.runId,
+              turnItemId: errorItemId,
+            },
+            disposition: { kind: "pending" },
+          },
+        },
+      );
       const childProjection = yield* orchestrator.getThreadProjection(child.childThreadId);
       assert.deepEqual(
         childProjection.runs.map((run) => [run.status, run.queueHeld ?? false]),
@@ -2619,6 +2746,8 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
           (task) => task.id === blocked.task.id,
         );
         assert.equal(finished?.status, "completed");
+        assert.equal(finished?.terminalObligation?.disposition.kind, "pending");
+        assert.isNotNull(finished?.terminalObligation?.resultRef);
         assert.notEqual(finished?.completionDelivery?.state, "disposed");
       }),
   );

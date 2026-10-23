@@ -36,6 +36,7 @@ import {
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
   OrchestrationV2TurnItemStatus,
+  OrchestrationV2TerminalObligation,
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
@@ -192,6 +193,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
 export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTaskInput.Type;
 
 export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
+  terminalObligation: Schema.optional(OrchestrationV2TerminalObligation),
   taskId: NodeId,
   childThreadId: ThreadId,
   childRunId: Schema.NullOr(RunId),

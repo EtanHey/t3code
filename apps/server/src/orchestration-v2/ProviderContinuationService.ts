@@ -103,6 +103,7 @@ export const layer = Layer.effectDiscard(
           return;
         }
         if (request.delegatedCompletion !== undefined) {
+          const completion = request.delegatedCompletion;
           const retryKey = delegatedCompletionRetryKey(request, request.delegatedCompletion);
           const delivery = currentDelegatedCompletionDelivery(
             projection,
@@ -151,16 +152,24 @@ export const layer = Layer.effectDiscard(
                           ids.allocate
                             .command({
                               fixtureName: "delegated-completion",
-                              commandName: "acknowledge-disabled",
+                              commandName: "block-disabled",
                             })
                             .pipe(
                               Effect.flatMap((ackCommandId) =>
                                 threads.dispatch({
-                                  type: "delegated_task.completion-delivery.acknowledge",
+                                  type: "delegated_task.completion-delivery.block",
                                   commandId: ackCommandId,
                                   parentThreadId: request.threadId,
                                   taskId,
-                                  observedByRunId: null,
+                                  parentRunId: completion.parentRunId,
+                                  generation: delivery.generation,
+                                  messageId: delivery.messageId,
+                                  blocker: {
+                                    kind: "provider_disabled",
+                                    projectId: error.projectId,
+                                    providerInstanceId: error.instanceId,
+                                    releaseCondition: "enable_provider_and_reconcile",
+                                  },
                                 }),
                               ),
                             ),

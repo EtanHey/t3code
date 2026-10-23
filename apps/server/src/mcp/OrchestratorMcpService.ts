@@ -1617,6 +1617,9 @@ const make = Effect.gen(function* () {
         model: task.model,
       };
     const response = {
+      ...(task.terminalObligation === undefined
+        ? {}
+        : { terminalObligation: task.terminalObligation }),
       taskId: task.id,
       childThreadId: task.childThreadId,
       childRunId: childRun?.id ?? null,
