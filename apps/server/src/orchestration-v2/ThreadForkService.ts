@@ -89,9 +89,7 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           input.createdBy === "agent"
             ? normalAgentModelSelection(
                 input.sourceProjection.thread.modelSelection,
-                input.sourceDriver ??
-                  input.sourceProviderThread?.driver ??
-                  input.sourceProjection.thread.providerInstanceId,
+                input.sourceDriver ?? input.sourceProjection.thread.providerInstanceId,
               )
             : input.sourceProjection.thread.modelSelection,
         // PR context follows the conversation; watching remains the source thread's responsibility.

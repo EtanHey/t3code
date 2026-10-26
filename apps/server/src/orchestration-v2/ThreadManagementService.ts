@@ -719,13 +719,12 @@ const make = Effect.gen(function* () {
             modelSelection: yield* normalAgentSelection(command.modelSelection),
           });
         case "message.dispatch": {
-          if (command.creationSource !== "mcp") return yield* orchestrator.dispatch(command);
-          const projection = yield* orchestrator.getThreadRecords(command.threadId, []);
+          if (command.creationSource !== "mcp" || command.modelSelection === undefined) {
+            return yield* orchestrator.dispatch(command);
+          }
           return yield* orchestrator.dispatch({
             ...command,
-            modelSelection: yield* normalAgentSelection(
-              command.modelSelection ?? projection.thread.modelSelection,
-            ),
+            modelSelection: yield* normalAgentSelection(command.modelSelection),
           });
         }
         default:

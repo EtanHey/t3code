@@ -7,6 +7,7 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
   RunId,
@@ -111,13 +112,33 @@ const planFork = (
   sourceRun: OrchestrationV2Run,
   sourceProjection = makeSourceProjection(sourceRun),
   createdBy: "user" | "agent" = "user",
+  previousDriver?: ProviderDriverKind,
 ) =>
   Effect.gen(function* () {
     const service = yield* ThreadForkService.ThreadForkServiceV2;
     return yield* service.plan({
       sourceProjection,
       sourceRun,
-      sourceProviderThread: undefined,
+      sourceProviderThread:
+        previousDriver === undefined
+          ? undefined
+          : {
+              id: ProviderThreadId.make("previous-provider"),
+              driver: previousDriver,
+              providerInstanceId,
+              providerSessionId: null,
+              appThreadId: sourceThreadId,
+              ownerNodeId: null,
+              nativeThreadRef: null,
+              nativeConversationHeadRef: null,
+              status: "idle",
+              firstRunOrdinal: 1,
+              lastRunOrdinal: 1,
+              handoffIds: [],
+              forkedFrom: null,
+              createdAt: sourceCreatedAt,
+              updatedAt: sourceCreatedAt,
+            },
       canonicalSourcePoint: {
         threadId: sourceThreadId,
         runId: sourceRunId,
@@ -154,6 +175,24 @@ it.effect("an agent fork cannot inherit a user's priority grant", () =>
     });
     assert.deepEqual(user.targetThread.modelSelection, elevated);
   }),
+);
+
+it.effect(
+  "an agent fork uses the current provider instead of the source run's previous driver",
+  () =>
+    Effect.gen(function* () {
+      const run = makeSourceRun("completed");
+      const fork = yield* planFork(
+        run,
+        makeSourceProjection(run),
+        "agent",
+        ProviderDriverKind.make("claudeAgent"),
+      );
+      assert.deepEqual(fork.targetThread.modelSelection, {
+        ...modelSelection,
+        options: [{ id: "serviceTier", value: "default" }],
+      });
+    }),
 );
 
 it.effect("keeps a fork awake when its source thread is snoozed", () =>

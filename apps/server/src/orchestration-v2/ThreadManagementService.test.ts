@@ -109,39 +109,49 @@ it.effect("built-in instances with no saved settings still override fast provide
   }),
 );
 
-it.effect("server and provider wakes preserve a human's explicit service selection", () =>
-  Effect.gen(function* () {
-    const elevated = {
-      instanceId: ProviderInstanceId.make("codex"),
-      model: "gpt-6.1-sol",
-      options: [{ id: "serviceTier", value: "priority" }],
-    } satisfies ModelSelection;
-    for (const creationSource of ["server", "provider"] as const) {
-      for (const selection of [undefined, elevated]) {
-        const selections: Array<ModelSelection> = [];
-        yield* Effect.gen(function* () {
-          const service = yield* ThreadManagementService.ThreadManagementService;
-          yield* service.dispatch({
-            type: "message.dispatch",
-            commandId: CommandId.make("command:human-wake"),
-            threadId: ThreadId.make("thread:thread-management:chokepoint"),
-            messageId: MessageId.make("message:human-wake"),
-            text: "The child finished.",
-            attachments: [],
-            dispatchMode: { type: "queue_after_active" },
-            ...(selection === undefined ? {} : { modelSelection: selection }),
-            createdBy: "agent",
-            creationSource,
-          });
-          expect(selections).toEqual(selection === undefined ? [] : [elevated]);
-        }).pipe(
-          Effect.provide(
-            layerDispatchChokepointTest(ServerSettings.layerTest())([], selections, elevated),
-          ),
-        );
+it.effect(
+  "selection-less MCP sends and server/provider wakes preserve a human's service selection",
+  () =>
+    Effect.gen(function* () {
+      const elevated = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6.1-sol",
+        options: [{ id: "serviceTier", value: "priority" }],
+      } satisfies ModelSelection;
+      for (const creationSource of ["server", "provider", "mcp"] as const) {
+        for (const selection of [undefined, elevated]) {
+          const selections: Array<ModelSelection> = [];
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadManagementService.ThreadManagementService;
+            yield* service.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("command:human-wake"),
+              threadId: ThreadId.make("thread:thread-management:chokepoint"),
+              messageId: MessageId.make("message:human-wake"),
+              text: "The child finished.",
+              attachments: [],
+              dispatchMode: { type: "queue_after_active" },
+              ...(selection === undefined ? {} : { modelSelection: selection }),
+              createdBy: "agent",
+              creationSource,
+            });
+            expect(selections).toEqual(
+              selection === undefined
+                ? []
+                : [
+                    creationSource === "mcp"
+                      ? { ...elevated, options: [{ id: "serviceTier", value: "default" }] }
+                      : elevated,
+                  ],
+            );
+          }).pipe(
+            Effect.provide(
+              layerDispatchChokepointTest(ServerSettings.layerTest())([], selections, elevated),
+            ),
+          );
+        }
       }
-    }
-  }),
+    }),
 );
 
 it.effect(
@@ -196,6 +206,7 @@ it.effect(
           messageId: MessageId.make("message:no-priority"),
           text: "Continue.",
           attachments: [],
+          modelSelection: elevated,
           dispatchMode: { type: "queue_after_active" },
         },
       ];
