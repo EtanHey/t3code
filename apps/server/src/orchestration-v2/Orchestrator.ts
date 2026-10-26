@@ -4054,6 +4054,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         sourceProjection,
         sourceRun,
         sourceProviderThread,
+        sourceDriver: (yield* serverSettings.getSettings.pipe(Effect.orDie)).providerInstances[
+          sourceProjection.thread.modelSelection.instanceId
+        ]?.driver,
         sourceTokenUsage: providerTurnForRun(sourceProjection, sourceRun)?.tokenUsage,
         canonicalSourcePoint: contextSourcePointForRun(sourceProjection, sourceRun),
         transferId,

@@ -2,6 +2,9 @@ import { expect, it } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
+  type ModelSelection,
+  NodeId,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2Run,
   type OrchestrationV2ProviderThread,
   ProviderThreadId,
@@ -37,7 +40,8 @@ const layerReceiptsTest = CommandReceiptStore.layer.pipe(
 );
 
 const layerDispatchChokepointTest =
-  (settingsLayer: ReturnType<typeof ServerSettings.layerTest>) => (dispatched: Array<string>) =>
+  (settingsLayer: ReturnType<typeof ServerSettings.layerTest>) =>
+  (dispatched: Array<string>, selections: Array<ModelSelection> = [], inherited?: ModelSelection) =>
     ThreadManagementService.layer.pipe(
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
@@ -48,7 +52,7 @@ const layerDispatchChokepointTest =
                 id: ThreadId.make("thread:thread-management:chokepoint"),
                 projectId: ProjectId.make("project:thread-management:chokepoint"),
                 deletedAt: null,
-                modelSelection: {
+                modelSelection: inherited ?? {
                   instanceId: ProviderInstanceId.make("codex_work"),
                   model: "test",
                 },
@@ -57,6 +61,9 @@ const layerDispatchChokepointTest =
           dispatch: (command) =>
             Effect.sync(() => {
               dispatched.push(command.type);
+              if ("modelSelection" in command && command.modelSelection !== undefined) {
+                selections.push(command.modelSelection);
+              }
               return { sequence: 1, storedEvents: [] } as never;
             }),
         }),
@@ -64,6 +71,240 @@ const layerDispatchChokepointTest =
       Layer.provide(settingsLayer),
       Layer.provideMerge(layerReceiptsTest),
     );
+
+it.effect("built-in instances with no saved settings still override fast provider defaults", () =>
+  Effect.gen(function* () {
+    for (const driver of ["codex", "claudeAgent"] as const) {
+      const selection = { instanceId: ProviderInstanceId.make(driver), model: "custom-model" };
+      const selections: Array<ModelSelection> = [];
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadManagementService.ThreadManagementService;
+        yield* service.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("command:built-in-default"),
+          threadId: ThreadId.make("thread:thread-management:chokepoint"),
+          messageId: MessageId.make("message:built-in-default"),
+          text: "Continue.",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          modelSelection: selection,
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        expect(selections).toEqual([
+          {
+            ...selection,
+            options: [
+              {
+                id: driver === "codex" ? "serviceTier" : "fastMode",
+                value: driver === "codex" ? "default" : false,
+              },
+            ],
+          },
+        ]);
+      }).pipe(
+        Effect.provide(layerDispatchChokepointTest(ServerSettings.layerTest())([], selections)),
+      );
+    }
+  }),
+);
+
+it.effect(
+  "selection-less MCP sends and server/provider wakes preserve a human's service selection",
+  () =>
+    Effect.gen(function* () {
+      const elevated = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6.1-sol",
+        options: [{ id: "serviceTier", value: "priority" }],
+      } satisfies ModelSelection;
+      for (const creationSource of ["server", "provider", "mcp"] as const) {
+        for (const selection of [undefined, elevated]) {
+          const selections: Array<ModelSelection> = [];
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadManagementService.ThreadManagementService;
+            yield* service.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("command:human-wake"),
+              threadId: ThreadId.make("thread:thread-management:chokepoint"),
+              messageId: MessageId.make("message:human-wake"),
+              text: "The child finished.",
+              attachments: [],
+              dispatchMode: { type: "queue_after_active" },
+              ...(selection === undefined ? {} : { modelSelection: selection }),
+              createdBy: "agent",
+              creationSource,
+            });
+            expect(selections).toEqual(
+              selection === undefined
+                ? []
+                : [
+                    creationSource === "mcp"
+                      ? { ...elevated, options: [{ id: "serviceTier", value: "default" }] }
+                      : elevated,
+                  ],
+            );
+          }).pipe(
+            Effect.provide(
+              layerDispatchChokepointTest(ServerSettings.layerTest())([], selections, elevated),
+            ),
+          );
+        }
+      }
+    }),
+);
+
+it.effect(
+  "agent create, configure and continuation cannot request or inherit elevated service",
+  () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:thread-management:chokepoint");
+      const instanceId = ProviderInstanceId.make("codex_work");
+      const elevated = {
+        instanceId,
+        model: "gpt-6.1-sol",
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "priority" },
+        ],
+      } satisfies ModelSelection;
+      const common = {
+        commandId: CommandId.make("command:no-priority"),
+        createdBy: "agent",
+        creationSource: "mcp",
+      } as const;
+      const commands: ReadonlyArray<OrchestrationV2ServerCommand> = [
+        {
+          ...common,
+          type: "delegated_task.request",
+          parentThreadId: threadId,
+          parentRunId: RunId.make("run:no-priority"),
+          parentNodeId: NodeId.make("node:no-priority"),
+          task: "Review without a user request for priority service.",
+          modelSelection: elevated,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        },
+        {
+          ...common,
+          type: "thread.create",
+          threadId,
+          projectId: ProjectId.make("project:thread-management:chokepoint"),
+          title: "No priority",
+          modelSelection: elevated,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        },
+        { ...common, type: "thread.model-selection.set", threadId, modelSelection: elevated },
+        { ...common, type: "provider.switch", threadId, modelSelection: elevated },
+        {
+          ...common,
+          type: "message.dispatch",
+          threadId,
+          messageId: MessageId.make("message:no-priority"),
+          text: "Continue.",
+          attachments: [],
+          modelSelection: elevated,
+          dispatchMode: { type: "queue_after_active" },
+        },
+      ];
+      for (const command of commands) {
+        const selections: Array<ModelSelection> = [];
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadManagementService.ThreadManagementService;
+          yield* service.dispatch(
+            command,
+            command.type === "thread.model-selection.set" || command.type === "provider.switch"
+              ? { createdBy: "agent", creationSource: "mcp" }
+              : undefined,
+          );
+          expect(selections, command.type).toEqual([
+            {
+              ...elevated,
+              options: [elevated.options[0], { id: "serviceTier", value: "default" }],
+            },
+          ]);
+        }).pipe(
+          Effect.provide(
+            layerDispatchChokepointTest(
+              ServerSettings.layerTest({
+                providerInstances: { [instanceId]: { driver: "codex", enabled: true } },
+              }),
+            )([], selections, elevated),
+          ),
+        );
+      }
+    }),
+);
+
+it.effect(
+  "normal service overrides provider defaults, preserves effort, and leaves user opt-in intact",
+  () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("custom-instance");
+      for (const driver of ["codex", "claudeAgent", "cursor"] as const) {
+        for (const createdBy of ["agent", "user"] as const) {
+          for (const explicit of [false, true]) {
+            const selection = {
+              instanceId,
+              model: "custom-model",
+              options: [
+                { id: "effort", value: "max" },
+                ...(explicit
+                  ? [
+                      {
+                        id: driver === "codex" ? "serviceTier" : "fastMode",
+                        value: driver === "codex" ? "priority" : true,
+                      },
+                    ]
+                  : []),
+              ],
+            } satisfies ModelSelection;
+            const selections: Array<ModelSelection> = [];
+            yield* Effect.gen(function* () {
+              const service = yield* ThreadManagementService.ThreadManagementService;
+              yield* service.dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make("command:no-fast-default"),
+                threadId: ThreadId.make("thread:thread-management:chokepoint"),
+                messageId: MessageId.make("message:no-fast-default"),
+                text: "Continue.",
+                attachments: [],
+                dispatchMode: { type: "queue_after_active" },
+                modelSelection: selection,
+                createdBy,
+                creationSource: createdBy === "user" ? "web" : "mcp",
+              });
+              expect(selections).toEqual([
+                createdBy === "user"
+                  ? selection
+                  : {
+                      ...selection,
+                      options: [
+                        selection.options[0],
+                        {
+                          id: driver === "codex" ? "serviceTier" : "fastMode",
+                          value: driver === "codex" ? "default" : false,
+                        },
+                      ],
+                    },
+              ]);
+            }).pipe(
+              Effect.provide(
+                layerDispatchChokepointTest(
+                  ServerSettings.layerTest({
+                    providerInstances: { [instanceId]: { driver, enabled: true } },
+                  }),
+                )([], selections),
+              ),
+            );
+          }
+        }
+      }
+    }),
+);
 
 it.effect(
   "the dispatch chokepoint refuses a continuation message.dispatch on a project-disabled instance before reaching the orchestrator",

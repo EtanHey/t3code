@@ -9,6 +9,7 @@ import {
   OrchestrationV2ProviderTurnTokenUsage,
   OrchestrationV2Run,
   OrchestrationV2ThreadProjection,
+  type ProviderDriverKind,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -16,6 +17,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { normalAgentModelSelection } from "./normalAgentModelSelection.ts";
 
 export interface ThreadForkPlanV2 {
   readonly targetThread: OrchestrationV2AppThread;
@@ -53,6 +55,7 @@ export interface ThreadForkServiceV2Shape {
     readonly sourceProjection: Pick<OrchestrationV2ThreadProjection, "thread">;
     readonly sourceRun: OrchestrationV2Run;
     readonly sourceProviderThread: OrchestrationV2ProviderThread | undefined;
+    readonly sourceDriver?: ProviderDriverKind | undefined;
     readonly sourceTokenUsage?: OrchestrationV2ProviderTurnTokenUsage | undefined;
     readonly canonicalSourcePoint: OrchestrationV2ContextSourcePoint;
     readonly transferId: ContextTransferId;
@@ -82,6 +85,13 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
       }
       const targetThread: OrchestrationV2AppThread = {
         ...input.sourceProjection.thread,
+        modelSelection:
+          input.createdBy === "agent"
+            ? normalAgentModelSelection(
+                input.sourceProjection.thread.modelSelection,
+                input.sourceDriver ?? input.sourceProjection.thread.providerInstanceId,
+              )
+            : input.sourceProjection.thread.modelSelection,
         // PR context follows the conversation; watching remains the source thread's responsibility.
         pullRequests: input.sourceProjection.thread.pullRequests?.map(
           ({ watch: _watch, ...link }) => link,

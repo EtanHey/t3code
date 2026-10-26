@@ -7,6 +7,7 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
   RunId,
@@ -110,13 +111,34 @@ function makeSourceProjection(sourceRun: OrchestrationV2Run): OrchestrationV2Thr
 const planFork = (
   sourceRun: OrchestrationV2Run,
   sourceProjection = makeSourceProjection(sourceRun),
+  createdBy: "user" | "agent" = "user",
+  previousDriver?: ProviderDriverKind,
 ) =>
   Effect.gen(function* () {
     const service = yield* ThreadForkService.ThreadForkServiceV2;
     return yield* service.plan({
       sourceProjection,
       sourceRun,
-      sourceProviderThread: undefined,
+      sourceProviderThread:
+        previousDriver === undefined
+          ? undefined
+          : {
+              id: ProviderThreadId.make("previous-provider"),
+              driver: previousDriver,
+              providerInstanceId,
+              providerSessionId: null,
+              appThreadId: sourceThreadId,
+              ownerNodeId: null,
+              nativeThreadRef: null,
+              nativeConversationHeadRef: null,
+              status: "idle",
+              firstRunOrdinal: 1,
+              lastRunOrdinal: 1,
+              handoffIds: [],
+              forkedFrom: null,
+              createdAt: sourceCreatedAt,
+              updatedAt: sourceCreatedAt,
+            },
       canonicalSourcePoint: {
         threadId: sourceThreadId,
         runId: sourceRunId,
@@ -124,11 +146,54 @@ const planFork = (
       transferId: ContextTransferId.make("context-transfer:fork-snoozed-source"),
       targetThreadId,
       title: "Awake fork",
-      createdBy: "user",
+      createdBy,
       creationSource: "mobile",
       createdAt: forkCreatedAt,
     });
   }).pipe(Effect.provide(ThreadForkService.layer));
+
+it.effect("an agent fork cannot inherit a user's priority grant", () =>
+  Effect.gen(function* () {
+    const run = makeSourceRun("completed");
+    const source = makeSourceProjection(run);
+    const elevated = {
+      ...modelSelection,
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "priority" },
+      ],
+    } satisfies ModelSelection;
+    const projection = { ...source, thread: { ...source.thread, modelSelection: elevated } };
+    const agent = yield* planFork(run, projection, "agent");
+    const user = yield* planFork(run, projection, "user");
+    assert.deepEqual(agent.targetThread.modelSelection, {
+      ...elevated,
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "default" },
+      ],
+    });
+    assert.deepEqual(user.targetThread.modelSelection, elevated);
+  }),
+);
+
+it.effect(
+  "an agent fork uses the current provider instead of the source run's previous driver",
+  () =>
+    Effect.gen(function* () {
+      const run = makeSourceRun("completed");
+      const fork = yield* planFork(
+        run,
+        makeSourceProjection(run),
+        "agent",
+        ProviderDriverKind.make("claudeAgent"),
+      );
+      assert.deepEqual(fork.targetThread.modelSelection, {
+        ...modelSelection,
+        options: [{ id: "serviceTier", value: "default" }],
+      });
+    }),
+);
 
 it.effect("keeps a fork awake when its source thread is snoozed", () =>
   Effect.gen(function* () {
