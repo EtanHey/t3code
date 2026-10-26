@@ -57,6 +57,7 @@ import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimi
 import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { normalAgentModelSelection } from "./normalAgentModelSelection.ts";
 
 export type ThreadManagementSendMode = "auto" | "queue" | "steer" | "restart";
 
@@ -343,6 +344,7 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+    provenance?: ThreadManagementProvenance,
   ) => Effect.Effect<
     Orchestrator.OrchestratorV2DispatchResult,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
@@ -691,11 +693,46 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
-    ensureCommandTranscripts(command).pipe(
-      Effect.andThen(assertDispatchTargetEnabled(command)),
-      Effect.andThen(orchestrator.dispatch(command)),
-    );
+  const normalAgentSelection = Effect.fn("threadManagement.normalAgentSelection")(function* (
+    selection: ModelSelection,
+  ) {
+    const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+    // Built-in instances use their driver id and need no persisted override.
+    const driver = settings.providerInstances[selection.instanceId]?.driver ?? selection.instanceId;
+    return normalAgentModelSelection(selection, driver);
+  });
+
+  const dispatch: ThreadManagementServiceShape["dispatch"] = Effect.fn("threadManagement.dispatch")(
+    function* (command: OrchestrationV2ServerCommand, provenance?: ThreadManagementProvenance) {
+      yield* ensureCommandTranscripts(command);
+      yield* assertDispatchTargetEnabled(command);
+      const actor =
+        provenance?.createdBy ?? ("createdBy" in command ? command.createdBy : undefined);
+      if (actor !== "agent") return yield* orchestrator.dispatch(command);
+      switch (command.type) {
+        case "thread.create":
+        case "delegated_task.request":
+        case "thread.model-selection.set":
+        case "provider.switch":
+          return yield* orchestrator.dispatch({
+            ...command,
+            modelSelection: yield* normalAgentSelection(command.modelSelection),
+          });
+        case "message.dispatch": {
+          if (command.creationSource !== "mcp") return yield* orchestrator.dispatch(command);
+          const projection = yield* orchestrator.getThreadRecords(command.threadId, []);
+          return yield* orchestrator.dispatch({
+            ...command,
+            modelSelection: yield* normalAgentSelection(
+              command.modelSelection ?? projection.thread.modelSelection,
+            ),
+          });
+        }
+        default:
+          return yield* orchestrator.dispatch(command);
+      }
+    },
+  );
 
   const getProjectThread: ThreadManagementServiceShape["getProjectThread"] = (input) =>
     getThreadProjection(input.threadId).pipe(

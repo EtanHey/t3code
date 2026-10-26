@@ -99,7 +99,7 @@ export const OrchestratorMcpTarget = Schema.Struct({
   options: Schema.optional(
     OrchestratorMcpTargetOptions.annotate({
       description:
-        "Options from `orchestrator_capabilities`, such as {effort:'max'}. Given values override inherited. [] or {} clears.",
+        "Options from `orchestrator_capabilities`: Claude {effort:'max',fastMode:false}; Codex {reasoningEffort:'max',serviceTier:'default'}. Model and effort are independent of service tier. Agent dispatch is forced to normal service. Given values override inherited. [] or {} clears.",
     }),
   ),
 });

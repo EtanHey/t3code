@@ -110,6 +110,7 @@ function makeSourceProjection(sourceRun: OrchestrationV2Run): OrchestrationV2Thr
 const planFork = (
   sourceRun: OrchestrationV2Run,
   sourceProjection = makeSourceProjection(sourceRun),
+  createdBy: "user" | "agent" = "user",
 ) =>
   Effect.gen(function* () {
     const service = yield* ThreadForkService.ThreadForkServiceV2;
@@ -124,11 +125,36 @@ const planFork = (
       transferId: ContextTransferId.make("context-transfer:fork-snoozed-source"),
       targetThreadId,
       title: "Awake fork",
-      createdBy: "user",
+      createdBy,
       creationSource: "mobile",
       createdAt: forkCreatedAt,
     });
   }).pipe(Effect.provide(ThreadForkService.layer));
+
+it.effect("an agent fork cannot inherit a user's priority grant", () =>
+  Effect.gen(function* () {
+    const run = makeSourceRun("completed");
+    const source = makeSourceProjection(run);
+    const elevated = {
+      ...modelSelection,
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "priority" },
+      ],
+    } satisfies ModelSelection;
+    const projection = { ...source, thread: { ...source.thread, modelSelection: elevated } };
+    const agent = yield* planFork(run, projection, "agent");
+    const user = yield* planFork(run, projection, "user");
+    assert.deepEqual(agent.targetThread.modelSelection, {
+      ...elevated,
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "default" },
+      ],
+    });
+    assert.deepEqual(user.targetThread.modelSelection, elevated);
+  }),
+);
 
 it.effect("keeps a fork awake when its source thread is snoozed", () =>
   Effect.gen(function* () {
