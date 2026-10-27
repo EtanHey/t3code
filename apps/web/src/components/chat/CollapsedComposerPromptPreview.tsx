@@ -1,6 +1,7 @@
 import { isProviderSkillUserInvocable } from "@t3tools/client-runtime/providerSkills";
 import type { KnownComposerContextKind, ServerProviderSkill } from "@t3tools/contracts";
 import { assistantCitationLabel } from "@t3tools/shared/assistantCitations";
+import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import {
   CircleDashedIcon,
   ImageIcon,
@@ -17,7 +18,7 @@ import { basenameOfPath } from "~/pierre-icons";
 import { ContextChip, ContextChipLabel } from "../ContextChip";
 import { ContextChipShell } from "../contextChipParts";
 import { PierreEntryIcon } from "./PierreEntryIcon";
-import { SkillChip, SkillChipIcon } from "./SkillInlineText";
+import { SkillChipIcon } from "./SkillInlineText";
 
 type Theme = "light" | "dark";
 
@@ -97,7 +98,10 @@ export function CollapsedComposerPromptPreview(props: {
           (candidate) => candidate.name === segment.name && isProviderSkillUserInvocable(candidate),
         );
         return skill ? (
-          <SkillChip key={key} skill={skill} rawText={segment.source} />
+          <ContextChip key={key} kind="skill" data-markdown-copy={segment.source}>
+            <SkillChipIcon />
+            <ContextChipLabel>{formatProviderSkillDisplayName(skill)}</ContextChipLabel>
+          </ContextChip>
         ) : (
           segment.source
         );
