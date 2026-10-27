@@ -29,7 +29,12 @@ it("shows quotes, file mentions, context references and skills as chips", async 
     contextId: "terminal_1",
     label: "Terminal 1",
   });
-  const prompt = `${quote("Cache the parsed config.")} vs ${quote("Retry on 503.", "Also on 429?")} in [package.json](package.json) per ${terminal} with $review-pr please`;
+  const environment = formatInlineContextReference({
+    kind: "environment",
+    contextId: "environment_1",
+    label: "Build host",
+  });
+  const prompt = `${quote("Cache the parsed config.")} vs ${quote("Retry on 503.", "Also on 429?")} in [package.json](package.json) per ${terminal} on ${environment} with $review-pr please`;
 
   await using screen = await render(
     <CollapsedComposerPromptPreview
@@ -49,11 +54,13 @@ it("shows quotes, file mentions, context references and skills as chips", async 
     "Also on 429?",
     "package.json",
     "Terminal 1",
+    "Build host",
     "Review PR",
   ]);
+  expect(chips.every((chip) => chip.getAttribute("data-state") !== "unresolved")).toBe(true);
   expect(chips.every((chip) => chip.querySelector("svg") !== null)).toBe(true);
   expect(container.textContent).toBe(
-    "Cache the parsed config. vs Also on 429? in package.json per Terminal 1 with Review PR please",
+    "Cache the parsed config. vs Also on 429? in package.json per Terminal 1 on Build host with Review PR please",
   );
   // The row is one tap target that expands the composer, so chips stay inert.
   expect(container.querySelector("button, a, [tabindex]")).toBeNull();

@@ -7,6 +7,7 @@ import {
   ImageIcon,
   MessageCircleIcon,
   MessagesSquareIcon,
+  MonitorIcon,
   MousePointerClickIcon,
   QuoteIcon,
   TerminalIcon,
@@ -37,6 +38,7 @@ const CONTEXT_REFERENCE_ICONS: Record<
   mention: (label, theme) => <PierreEntryIcon pathValue={label} kind="file" theme={theme} />,
   skill: () => <SkillChipIcon />,
   thread: () => <MessagesSquareIcon />,
+  environment: () => <MonitorIcon />,
 };
 
 function isKnownContextKind(kind: string): kind is KnownComposerContextKind {
