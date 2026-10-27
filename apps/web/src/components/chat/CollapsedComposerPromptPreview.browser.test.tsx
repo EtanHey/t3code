@@ -44,6 +44,7 @@ it("shows quotes, file mentions, context references and skills as chips", async 
       ]}
       theme="light"
     />,
+    // The inert preview has no router-dependent children.
     { router: false },
   );
   const { container } = screen;
@@ -69,6 +70,7 @@ it("shows quotes, file mentions, context references and skills as chips", async 
 it("leaves unknown skills as the text the user typed", async () => {
   await using screen = await render(
     <CollapsedComposerPromptPreview prompt="run $missing now" skills={[]} theme="dark" />,
+    // The inert preview has no router-dependent children.
     { router: false },
   );
   const { container } = screen;
