@@ -554,7 +554,9 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
 
       const row = yield* ended(parent.threadId, subagentId);
       assert.equal(row?.status, "cancelled");
+      assert.equal(row?.workflowRun?.status, "cancelled");
       assert.equal(row?.workflowRun?.stop, true);
+      assert.equal(JSON.parse(row?.result ?? "{}").status, "cancelled");
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const children = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.filter(
         (task) => task.parentNodeId === subagentId,

@@ -172,6 +172,9 @@ import * as ServerSettings from "../serverSettings.ts";
 const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
 );
+const WorkflowResultJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
+const decodeWorkflowResult = Schema.decodeUnknownOption(WorkflowResultJson);
+const encodeWorkflowResult = Schema.encodeSync(WorkflowResultJson);
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -7953,10 +7956,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: updatedTask,
         });
       }
+      const normalized =
+        next.status === requested.status ? Option.none() : decodeWorkflowResult(command.result);
       yield* emitAppOwnedTaskEnd(command, events, parentProjection, task, now, {
         ...updatedTask,
         status: next.status === "timed_out" ? "failed" : next.status,
-        result: command.result ?? null,
+        result: Option.match(normalized, {
+          onNone: () => command.result ?? null,
+          onSome: (result) => encodeWorkflowResult({ ...result, status: next.status }),
+        }),
         completedAt: now,
       });
     },
