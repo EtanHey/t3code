@@ -2,6 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import { assert, expect, it } from "@effect/vitest";
 import { ComposerContextId, EnvironmentId, ThreadId } from "@t3tools/contracts";
@@ -29,6 +30,7 @@ import {
 } from "./run.ts";
 import { briefRoute, gradeDevice, shellInvocations } from "./device-grading.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
+import { decodeWorkflowSpec } from "../../apps/server/src/mcp/workflowRun.ts";
 
 it("grades Codex shell and subagent calls with the shared rules", () => {
   const calls = [
@@ -102,6 +104,72 @@ const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
   gradeSample(expect, run)
     .filter((check) => !check.pass)
     .map((check) => check.check);
+
+it.effect("passes the staged-loop workflow case only for a real repeat stage", () =>
+  Effect.gen(function* () {
+    const staged = NodeFS.readFileSync(
+      new URL("./cases/orchestration.ndjson", import.meta.url),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((line) => decodeDeviceCase(line))
+      .find((c) => c.id === "staged-loop-uses-workflow-run");
+    assert(staged !== undefined);
+    const agent = (id: string, model: string) => ({ id, task: id, target: { model } });
+    const run = (stages: unknown, failed = false): SampleRun => ({
+      calls: [{ step: 0, tool: "t3_workflow_run", input: { name: "notes", stages }, failed }],
+      text: "",
+      stopReason: "end_turn",
+    });
+    const drafts = ["claude-sonnet-5-5", "gpt-6.1-sol", "muse-wonder-full"];
+    const real = [
+      { id: "draft", agents: drafts.map((model, i) => agent(`d${i}`, model)) },
+      {
+        id: "loop",
+        repeat: {
+          stages: [
+            { id: "revise", agents: drafts.map((model, i) => agent(`r${i}`, model)) },
+            {
+              id: "judge",
+              agents: [
+                {
+                  ...agent("opus", "claude-opus-5-5"),
+                  resultSchema: { type: "object", required: ["verdict"] },
+                },
+              ],
+            },
+          ],
+          judge: "opus",
+          until: { path: "verdict", equals: "accept" },
+          max: 3,
+        },
+      },
+    ];
+    const decodes = (stages: unknown) =>
+      Effect.exit(decodeWorkflowSpec({ name: "notes", stages })).pipe(Effect.map(Exit.isSuccess));
+    const loop = real[1] as { repeat: { stages: Array<{ agents: Array<object> }> } };
+    const noSchema = [
+      real[0],
+      {
+        ...loop,
+        repeat: {
+          ...loop.repeat,
+          stages: [
+            loop.repeat.stages[0],
+            { id: "judge", agents: [agent("opus", "claude-opus-5-5")] },
+          ],
+        },
+      },
+    ];
+    expect([yield* decodes(real), yield* decodes(noSchema)]).toEqual([true, false]);
+    expect(failed(staged.expect, run(real))).toEqual([]);
+    // The mock fails a spec the real decoder rejects, such as a judge without a resultSchema.
+    expect(failed(staged.expect, run(real, true))).not.toEqual([]);
+    const named = [{ id: "repeat", agents: drafts.map((model, i) => agent(`d${i}`, model)) }];
+    expect(failed(staged.expect, run(named))).not.toEqual([]);
+  }),
+);
 
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {

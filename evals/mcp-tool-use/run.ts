@@ -33,6 +33,7 @@ import * as McpSchema from "effect/ai/McpSchema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
+import { decodeWorkflowSpec } from "../../apps/server/src/mcp/workflowRun.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
 import { EnvironmentId, ORCHESTRATOR_MCP_RUNNING_TASK_NEXT, ThreadId } from "@t3tools/contracts";
@@ -141,6 +142,8 @@ const PriorToolCall = Schema.Struct({
 const McpToolUseCall = Schema.Struct({
   tool: Schema.String,
   args: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  /** Only a call the tool accepted counts. */
+  ok: Schema.optional(Schema.Boolean),
 });
 type McpToolUseCall = typeof McpToolUseCall.Type;
 
@@ -973,6 +976,8 @@ const t3Default = (sample: Sample, name: string, input: Readonly<Record<string, 
       };
     case "task_cancel":
       return { taskId: input.taskId, status: "cancel_requested" };
+    case "t3_workflow_run":
+      return { subagentId: "workflow-1", next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT };
     case "link_pull_request": {
       const alreadyLinked = sample.linked.has(pr().url);
       sample.linked.add(pr().url);
@@ -1287,6 +1292,13 @@ const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* 
         : withProductFields(name, mock, testCase.setup.role === "delegated-child"),
     );
   if (isT3Name(call.name)) {
+    if (name === "t3_workflow_run") {
+      const rejected = yield* decodeWorkflowSpec(input).pipe(
+        Effect.as(null),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      );
+      if (rejected !== null) return failed(rejected);
+    }
     // T3 refuses a watch from a delegated child.
     if (name === "watch_pull_request" && testCase.setup.role === "delegated-child") {
       return failed(SUBAGENT_WATCH_ERROR);
@@ -1354,8 +1366,11 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun) =>
   const calls = run.calls.map((call) => ({ ...call, input: withOptionsObject(call.input) }));
   const count = (tool: string) => calls.filter((call) => call.tool === tool).length;
   // `tool` may list alternatives, as in "link_pull_request|watch_pull_request".
-  const found = ({ tool, args = {} }: McpToolUseCall) =>
-    calls.some((call) => tool.split("|").includes(call.tool) && matches(args, call.input));
+  const found = ({ tool, args = {}, ok }: McpToolUseCall) =>
+    calls.some(
+      (call) =>
+        tool.split("|").includes(call.tool) && matches(args, call.input) && !(ok && call.failed),
+    );
   const label = ({ tool, args }: McpToolUseCall) => (args ? `${tool} ${valueText(args)}` : tool);
   for (const call of expect.calls ?? []) add(`calls ${label(call)}`, found(call));
   for (const call of expect.callsMustNot ?? []) add(`callsMustNot ${label(call)}`, !found(call));

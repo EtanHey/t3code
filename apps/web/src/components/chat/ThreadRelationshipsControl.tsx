@@ -7,8 +7,10 @@ import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  canStopWorkflow,
   deriveWorkflowGroups,
   projectedSubagentsToRuntime,
+  workflowRunMembers,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
@@ -71,7 +73,7 @@ import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
-import { ThreadLineageWorkflowRow } from "./ThreadLineageWorkflowRow";
+import { ThreadLineageWorkflowRow, type WorkflowMemberProvider } from "./ThreadLineageWorkflowRow";
 
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -86,6 +88,9 @@ import {
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./threadDetailsPanelStyles";
 
+// Hides a row's trailing text while its hover-revealed Stop button shows.
+const STOP_REVEALED_HIDE_CLASS =
+  "group-hover:opacity-0 group-focus-within:opacity-0 pointer-coarse:opacity-0 [@media(hover:none)]:opacity-0";
 const THREAD_LINEAGE_INITIAL_COUNT = 6;
 const THREAD_LINEAGE_PAGE_COUNT = 12;
 
@@ -417,6 +422,14 @@ export function ThreadRelationshipsPanel(props: {
   const workflowGroupsById = new Map(
     deriveWorkflowGroups(runtimeSubagents).map((group) => [group.workflow.id, group]),
   );
+  // A server-run workflow has no thread of its own; its row lists the tasks it started.
+  const workflowRuns = projected.flatMap((agent) => {
+    const group = workflowGroupsById.get(agent.id);
+    return agent.workflowRun !== undefined && group !== undefined ? [{ agent, group }] : [];
+  });
+  const workflowRunThreadIds = new Set(
+    workflowRunMembers(projected).map((member) => member.childThreadId),
+  );
   const shells: ReadonlyArray<OrchestrationV2ThreadShell> = [
     ...relationshipShells,
     ...(archivedShells ?? []),
@@ -427,7 +440,9 @@ export function ThreadRelationshipsPanel(props: {
   const mergeTargetThreadId = resolveMergeBackTargetThreadId(projection);
   const relationshipRows = orderWebThreadLineageRows({
     graph,
-    rows: immediateThreadRelationships(graph, props.threadId),
+    rows: immediateThreadRelationships(graph, props.threadId).filter(
+      (row) => !workflowRunThreadIds.has(row.threadId),
+    ),
     currentThreadId: props.threadId,
     mergeTargetThreadId,
   }).map((row) => {
@@ -477,6 +492,7 @@ export function ThreadRelationshipsPanel(props: {
   if (
     relationshipRows.length === 0 &&
     runningCount === 0 &&
+    workflowRuns.length === 0 &&
     remoteSubagents.length === 0 &&
     delegatedFrom === undefined
   ) {
@@ -649,13 +665,13 @@ export function ThreadRelationshipsPanel(props: {
                   (agent?.providerInstanceId ?? node?.thread?.providerInstanceId),
               );
               const providerDriver = agent?.driver ?? provider?.driver;
-              const canStopWorkflow =
+              const canStopThisWorkflow =
                 canOperateWorkflow &&
-                workflowGroup?.workflow.status === "running" &&
-                agent?.origin === "provider_native" &&
-                providerDriver === "claudeAgent";
-              const trailingVisibilityClass = (workflowGroup ? canStopWorkflow : canStop)
-                ? "group-hover:opacity-0 group-focus-within:opacity-0 pointer-coarse:opacity-0 [@media(hover:none)]:opacity-0"
+                workflowGroup !== undefined &&
+                agent !== undefined &&
+                canStopWorkflow(agent);
+              const trailingVisibilityClass = (workflowGroup ? canStopThisWorkflow : canStop)
+                ? STOP_REVEALED_HIDE_CLASS
                 : "";
               const project = projects.find((project) => project.id === node?.thread?.projectId);
               const relationshipHint = node?.missing
@@ -702,9 +718,9 @@ export function ThreadRelationshipsPanel(props: {
                   )}
                   {agent &&
                   !failed &&
-                  (deriveSubagentElapsedMs(agent, 0) !== null || canStopWorkflow) ? (
+                  (deriveSubagentElapsedMs(agent, 0) !== null || canStopThisWorkflow) ? (
                     <span
-                      className={`shrink-0 text-2xs font-normal tabular-nums text-muted-foreground ${canStopWorkflow ? "min-w-6 text-end" : ""} ${trailingVisibilityClass}`}
+                      className={`shrink-0 text-2xs font-normal tabular-nums text-muted-foreground ${canStopThisWorkflow ? "min-w-6 text-end" : ""} ${trailingVisibilityClass}`}
                     >
                       <AgentElapsed agent={agent} compact />
                     </span>
@@ -753,10 +769,10 @@ export function ThreadRelationshipsPanel(props: {
                     isThreadAvailable={(memberThreadId) =>
                       graph.nodes.get(memberThreadId as ThreadId)?.missing === false
                     }
-                    onStop={canStopWorkflow ? () => void stopWorkflow(agent.id) : undefined}
+                    onStop={canStopThisWorkflow ? () => void stopWorkflow(agent.id) : undefined}
                     stopping={stoppingId === agent.id}
                     stopDisabled={stoppingId !== null}
-                    header={relationshipLink}
+                    renderHeader={() => relationshipLink}
                   />
                 );
               }
@@ -856,6 +872,78 @@ export function ThreadRelationshipsPanel(props: {
           }
         </ThreadLineageGroup>
       ))}
+      {workflowRuns.length > 0 ? (
+        <ThreadLineageRowList hiddenCount={0} onShowMore={() => {}}>
+          {workflowRuns.map(({ agent, group }) => {
+            const provider = providers?.find(
+              (entry) => entry.instanceId === agent.providerInstanceId,
+            );
+            const title = group.workflow.workflowName ?? group.workflow.title;
+            const canStopRun = canOperateWorkflow && canStopWorkflow(agent);
+            const memberProvider = (
+              member: RuntimeSubagent,
+            ): WorkflowMemberProvider | undefined => {
+              const task =
+                member.childThreadId === null
+                  ? undefined
+                  : subagentsByThreadId.get(member.childThreadId as ThreadId);
+              if (task === undefined) return undefined;
+              const taskProvider = providers?.find(
+                (entry) => entry.instanceId === task.providerInstanceId,
+              );
+              return {
+                providerInstanceId: task.providerInstanceId,
+                provider: taskProvider,
+                driver: task.driver,
+              };
+            };
+            return (
+              <ThreadLineageWorkflowRow
+                key={agent.id}
+                group={group}
+                providerInstanceId={agent.providerInstanceId}
+                provider={provider}
+                providers={providers}
+                driver={agent.driver}
+                memberProvider={memberProvider}
+                onOpenThread={(memberThreadId) => openThread(memberThreadId as ThreadId)}
+                isThreadAvailable={(memberThreadId) =>
+                  graph.nodes.get(memberThreadId as ThreadId)?.missing === false
+                }
+                onStop={canStopRun ? () => void stopWorkflow(agent.id) : undefined}
+                stopping={stoppingId === agent.id}
+                stopDisabled={stoppingId !== null}
+                renderHeader={(toggle, expanded) => (
+                  <ThreadDetailsControl
+                    size="sm"
+                    variant="ghost"
+                    part="primary"
+                    aria-expanded={expanded}
+                    onClick={toggle}
+                  >
+                    <ThreadRelationshipIcon
+                      driver={agent.driver}
+                      provider={provider}
+                      fallbackIcon={BotIcon}
+                      status={agent.status}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
+                        {title}
+                      </span>
+                    </span>
+                    <span
+                      className={`shrink-0 text-2xs font-normal tabular-nums text-muted-foreground ${canStopRun ? `min-w-6 text-end ${STOP_REVEALED_HIDE_CLASS}` : ""}`}
+                    >
+                      <AgentElapsed agent={group.workflow} compact />
+                    </span>
+                  </ThreadDetailsControl>
+                )}
+              />
+            );
+          })}
+        </ThreadLineageRowList>
+      ) : null}
       {remoteSubagents.length > 0 ? (
         <ThreadLineageRowList hiddenCount={0} onShowMore={() => {}}>
           {remoteSubagents.map((agent) => (

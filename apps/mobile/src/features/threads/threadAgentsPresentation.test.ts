@@ -349,4 +349,28 @@ describe("resolveSubagentStopTarget", () => {
       }),
     ).toBeNull();
   });
+
+  it("stops a server-run workflow, which has no thread or native task", () => {
+    const workflow = { name: "Review", phases: [], agents: [] };
+    const workflowRun = {
+      status: "running" as const,
+      cursor: 0,
+      round: 1,
+      phase: 0,
+      deadline: 0,
+      stop: false,
+      exits: [],
+    };
+    const run = { ...stopAgent, childThreadId: null, workflow, workflowRun };
+    expect(resolveSubagentStopTarget(run)).toEqual({
+      kind: "workflow",
+      input: { threadId: run.threadId, subagentId: run.id },
+    });
+    expect(
+      resolveSubagentStopTarget({ ...run, workflowRun: { ...workflowRun, stop: true } }),
+    ).toBeNull();
+    expect(
+      resolveSubagentStopTarget({ ...run, workflowRun: { ...workflowRun, status: "completed" } }),
+    ).toBeNull();
+  });
 });

@@ -46,6 +46,12 @@ function phaseStatusLabel(phase: SubagentWorkflowGroup["phases"][number]) {
   return phase.state === "done" ? "done" : "not started";
 }
 
+export interface WorkflowMemberProvider {
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly provider: ServerProvider | undefined;
+  readonly driver: ProviderDriverKind | undefined;
+}
+
 function WorkflowMemberRow({
   member,
   providerInstanceId,
@@ -54,12 +60,9 @@ function WorkflowMemberRow({
   driver,
   onOpen,
   isThreadAvailable,
-}: {
+}: WorkflowMemberProvider & {
   member: RuntimeSubagent;
-  providerInstanceId: ProviderInstanceId;
-  provider: ServerProvider | undefined;
   providers: ReadonlyArray<ServerProvider> | undefined;
-  driver: ProviderDriverKind | undefined;
   onOpen: (threadId: string) => void;
   isThreadAvailable: (threadId: string) => boolean;
 }) {
@@ -110,11 +113,12 @@ function WorkflowMemberRow({
 
 export function ThreadLineageWorkflowRow({
   group,
-  header,
+  renderHeader,
   providerInstanceId,
   provider,
   providers,
   driver,
+  memberProvider,
   onOpenThread,
   isThreadAvailable,
   onStop,
@@ -122,11 +126,15 @@ export function ThreadLineageWorkflowRow({
   stopDisabled,
 }: {
   readonly group: SubagentWorkflowGroup;
-  readonly header: ReactNode;
+  readonly renderHeader: (toggle: () => void, expanded: boolean) => ReactNode;
   readonly providerInstanceId: ProviderInstanceId;
   readonly provider: ServerProvider | undefined;
   readonly providers: ReadonlyArray<ServerProvider> | undefined;
   readonly driver: ProviderDriverKind | undefined;
+  /** A member's own provider, when members run on other providers than the workflow. */
+  readonly memberProvider?:
+    | ((member: RuntimeSubagent) => WorkflowMemberProvider | undefined)
+    | undefined;
   readonly onOpenThread: (threadId: string) => void;
   readonly isThreadAvailable: (threadId: string) => boolean;
   readonly onStop?: (() => void) | undefined;
@@ -140,7 +148,7 @@ export function ThreadLineageWorkflowRow({
   return (
     <li className="group" data-workflow-expanded={expanded ? "" : undefined}>
       <div className={cn("relative", THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS)}>
-        {header}
+        {renderHeader(() => setExpanded((value) => !value), expanded)}
         {onStop ? (
           <div className="pointer-events-none absolute right-9 top-1/2 -translate-y-1/2 opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100">
             <Tooltip>
@@ -225,6 +233,7 @@ export function ThreadLineageWorkflowRow({
                         provider={provider}
                         providers={providers}
                         driver={driver}
+                        {...memberProvider?.(member)}
                         onOpen={onOpenThread}
                         isThreadAvailable={isThreadAvailable}
                       />
@@ -242,6 +251,7 @@ export function ThreadLineageWorkflowRow({
               provider={provider}
               providers={providers}
               driver={driver}
+              {...memberProvider?.(member)}
               onOpen={onOpenThread}
               isThreadAvailable={isThreadAvailable}
             />

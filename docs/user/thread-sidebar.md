@@ -260,6 +260,16 @@ Subagent threads started by the agent can't take messages; message the parent
 thread instead. When such a subagent needs an approval or an answer, the parent
 thread asks for it.
 
+An agent can also run a workflow: subagents in stages, each on any provider,
+where later stages get earlier results and a stage can repeat until a judge
+accepts. Ask for the stages in plain words, such as "three drafts in parallel,
+then Opus judges, revise until it accepts, at most 3 rounds". The workflow
+appears in **Lineage** (web and desktop) and **Agents** (mobile) with its stages, and each agent opens its own thread. The
+thread that started it wakes once, when it ends, and it keeps running across
+restarts. Stop on the workflow, or on the thread that started it, stops every
+agent in it. Workflows can't run agents on a linked machine yet, and OpenCode
+connected to an external server can't start one.
+
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it
 finishes; the call's own result shows its status.
