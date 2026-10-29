@@ -853,6 +853,24 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
 });
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
+/** Where a server-owned workflow run is; its launches are `workflow.agents`. */
+export const OrchestrationV2WorkflowRunState = Schema.Struct({
+  status: Schema.Literals(["running", "completed", "failed", "cancelled", "timed_out"]),
+  cursor: NonNegativeInt,
+  round: NonNegativeInt,
+  phase: NonNegativeInt,
+  deadline: NonNegativeInt,
+  stop: Schema.Boolean,
+  exits: Schema.Array(
+    Schema.Struct({
+      stage: Schema.String,
+      reason: Schema.Literals(["accepted", "exhausted"]),
+      round: NonNegativeInt,
+    }),
+  ),
+});
+export type OrchestrationV2WorkflowRunState = typeof OrchestrationV2WorkflowRunState.Type;
+
 /** The JSON Schema subset (type, properties, required, items, enum) a delegated task's final JSON must match. */
 export const OrchestrationV2ResultSchema = Schema.Record(Schema.String, Schema.Unknown);
 
@@ -888,6 +906,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   ]),
   progress: Schema.optional(Schema.String),
   workflow: Schema.optional(OrchestrationV2SubagentWorkflow),
+  workflowRun: Schema.optional(OrchestrationV2WorkflowRunState),
   result: Schema.NullOr(Schema.String),
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
@@ -895,6 +914,8 @@ export const OrchestrationV2Subagent = Schema.Struct({
   /** Same as this subagent's previous record on this stream: its snapshot or `subagent.updated`. */
   promptOmitted: DedupedBodyMarker,
   resultOmitted: DedupedBodyMarker,
+  /** With `acceptWorkflowAgentDeltas`: `workflow.agents` holds only the agents that changed. */
+  unchangedAgentsOmitted: DedupedBodyMarker,
 });
 export type OrchestrationV2Subagent = typeof OrchestrationV2Subagent.Type;
 
@@ -2842,6 +2863,24 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
 ]);
 export type OrchestrationV2DomainEventJson = typeof OrchestrationV2DomainEventJson.Type;
 
+const DelegatedTaskRequestFields = {
+  ...OrchestrationV2CreationFields,
+  commandId: CommandId,
+  parentThreadId: ThreadId,
+  parentRunId: RunId,
+  parentNodeId: NodeId,
+  task: TrimmedNonEmptyString,
+  title: Schema.optional(TrimmedNonEmptyString),
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  // Defaults to settled_only; fire-and-forget wakes require always.
+  completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+  resultSchema: Schema.optional(OrchestrationV2ResultSchema),
+  createdAt: Schema.optional(Schema.DateTimeUtc),
+};
+
 export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread.stop"),
@@ -3258,21 +3297,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.request"),
-    ...OrchestrationV2CreationFields,
-    commandId: CommandId,
-    parentThreadId: ThreadId,
-    parentRunId: RunId,
-    parentNodeId: NodeId,
-    task: TrimmedNonEmptyString,
-    title: Schema.optional(TrimmedNonEmptyString),
-    modelSelection: ModelSelection,
-    runtimeMode: RuntimeMode,
-    interactionMode: ProviderInteractionMode,
-    workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
-    // Defaults to settled_only; fire-and-forget wakes require always.
-    completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
-    resultSchema: Schema.optional(OrchestrationV2ResultSchema),
-    createdAt: Schema.optional(Schema.DateTimeUtc),
+    ...DelegatedTaskRequestFields,
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.wake-policy"),
@@ -3410,6 +3435,36 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
+  }),
+  /** Records a server-owned workflow run as an app-owned task on its parent; it always wakes the parent. */
+  Schema.Struct({
+    type: Schema.Literal("workflow_run.record"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    parentRunId: RunId,
+    parentNodeId: NodeId,
+    task: TrimmedNonEmptyString,
+    title: Schema.optional(TrimmedNonEmptyString),
+    driver: ProviderDriverKind,
+    modelSelection: ModelSelection,
+    workflow: OrchestrationV2SubagentWorkflow,
+    workflowRun: OrchestrationV2WorkflowRunState,
+  }),
+  /** `stop` is a fence no later update clears; a terminal `workflowRun.status` ends the task. */
+  Schema.Struct({
+    type: Schema.Literal("workflow_run.update"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    workflow: Schema.optional(OrchestrationV2SubagentWorkflow),
+    workflowRun: Schema.optional(OrchestrationV2WorkflowRunState),
+    stop: Schema.optional(Schema.Literal(true)),
+    result: Schema.optional(Schema.String),
+  }),
+  /** A delegated task under a running workflow run (`parentNodeId`), which may outlive its parent's turn. */
+  Schema.Struct({
+    type: Schema.Literal("workflow_run.delegate"),
+    ...DelegatedTaskRequestFields,
   }),
   Schema.Struct({
     type: Schema.Literal("checkpoint.rollback.fail"),
@@ -3702,6 +3757,8 @@ export const OrchestrationV2SubscribeThreadInput = Schema.Struct({
   acceptCompactTurnItems: Schema.optionalKey(Schema.Boolean),
   /** The client restores `*Omitted` bodies from records it already holds. */
   acceptDedupedBodies: Schema.optionalKey(Schema.Boolean),
+  /** With deduped bodies, a repeated workflow record carries only its changed agents. */
+  acceptWorkflowAgentDeltas: Schema.optionalKey(Schema.Boolean),
   acceptCompactIds: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationV2SubscribeThreadInput = typeof OrchestrationV2SubscribeThreadInput.Type;

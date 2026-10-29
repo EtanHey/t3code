@@ -777,13 +777,23 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
     readonly acceptDeferredWork?: boolean;
     readonly acceptCompactTurnItems?: boolean;
     readonly acceptDedupedBodies?: boolean;
+    readonly acceptWorkflowAgentDeltas?: boolean;
     readonly acceptCompactIds?: boolean;
   }) {
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const dedupeBodies = input.acceptDedupedBodies === true;
     // Replay, snapshot, and live tail share one deduper: it must see every delivered record.
     const withLiveDedupe = <E, R>(stream: Stream.Stream<OrchestrationV2ThreadStreamItem, E, R>) =>
-      dedupeBodies ? Stream.suspend(() => Stream.map(stream, makeLiveBodyDeduper())) : stream;
+      dedupeBodies
+        ? Stream.suspend(() =>
+            Stream.map(
+              stream,
+              makeLiveBodyDeduper({
+                workflowAgentDeltas: input.acceptWorkflowAgentDeltas === true,
+              }),
+            ),
+          )
+        : stream;
     const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
 
     yield* Effect.annotateCurrentSpan({

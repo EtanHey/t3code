@@ -81,7 +81,7 @@ function restartContinuationBlocked(
   );
 }
 
-/** App-owned delegations continue in their own threads and report back. */
+/** App-owned delegations and workflow runs continue on their own and report back. */
 function hasOpenAwaitedWork(
   projection: Pick<ProjectionRuntimeRecoveryState, "runs" | "turnItems">,
   providerThread: ProjectionRuntimeRecoveryState["providerThreads"][number],
@@ -89,7 +89,7 @@ function hasOpenAwaitedWork(
   const openItem = projection.turnItems.some((item) => {
     if (item.status !== "pending" && item.status !== "running" && item.status !== "waiting")
       return false;
-    if (item.type === "subagent" && item.origin === "app_owned" && item.childThreadId !== null)
+    if (item.type === "subagent" && item.origin === "app_owned" && item.remoteChild === undefined)
       return false;
     const work = cancelledTurnItemWork(item);
     return (
