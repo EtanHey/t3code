@@ -16,7 +16,10 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import { forkParked } from "../serverActivation.ts";
 import {
   type McpInvocationScope,
   type McpThreadInvocationScope,
@@ -48,6 +51,12 @@ export class WorkflowRuns extends Context.Service<
       scope: McpInvocationScope,
       subagentId: NodeId,
     ) => Effect.Effect<WorkflowResult, OrchestratorMcpFailure>;
+    /** Continues every running workflow run, as after a restart. */
+    readonly start: () => Effect.Effect<
+      void,
+      never,
+      Scope.Scope | ProjectionStore.ProjectionStoreV2 | ServerEnvironment.ServerEnvironment
+    >;
   }
 >()("t3/mcp/WorkflowRuns") {}
 
@@ -320,7 +329,18 @@ const make = Effect.gen(function* () {
     return workflowResult(found.spec, yield* snapshotOf(found));
   });
 
-  return WorkflowRuns.of({ run, status });
+  const start = () =>
+    forkParked(
+      Effect.gen(function* () {
+        const environmentId = yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId;
+        const open = yield* (yield* ProjectionStore.ProjectionStoreV2).getOpenWorkflowRuns;
+        for (const { parentThreadId, taskId } of open) {
+          yield* follow(environmentId, parentThreadId, taskId).pipe(Effect.forkIn(runners));
+        }
+      }).pipe(Effect.ignoreCause({ log: true })),
+    );
+
+  return WorkflowRuns.of({ run, status, start });
 });
 
 export const layer = Layer.effect(WorkflowRuns, make);

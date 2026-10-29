@@ -1,4 +1,4 @@
-import { OrchestratorMcpFailure } from "@t3tools/contracts";
+import { ORCHESTRATOR_MCP_RUNNING_TASK_NEXT, OrchestratorMcpFailure } from "@t3tools/contracts";
 import { OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
 
@@ -10,6 +10,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
+import * as WorkflowRuns from "../../WorkflowRuns.ts";
 
 const handlers = {
   orchestrator_capabilities: McpToolAccess.reads((input) =>
@@ -38,6 +39,21 @@ const handlers = {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.cancelTask(scope, input);
+    }),
+  ),
+  t3_workflow_run: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const runs = yield* WorkflowRuns.WorkflowRuns;
+      const { subagentId } = yield* runs.run(scope, input);
+      return { subagentId, next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT };
+    }),
+  ),
+  t3_workflow_status: McpToolAccess.actsAsCaller(({ subagentId }) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const runs = yield* WorkflowRuns.WorkflowRuns;
+      return yield* runs.status(scope, subagentId);
     }),
   ),
   t3_workflow_stop: McpToolAccess.writesThreads(
