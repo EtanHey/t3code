@@ -10,9 +10,9 @@ import * as TestClock from "effect/testing/TestClock";
 
 import {
   decodeWorkflowSpec,
+  initialSnapshot,
   launchKey,
   resumeWorkflow,
-  runWorkflow,
   WorkflowSnapshot,
   type WorkflowAgentOutcome,
   type WorkflowAgentStart,
@@ -248,6 +248,13 @@ const failFast = {
 const failFastReply = (start: WorkflowAgentStart): Reply =>
   start.agent.id === "bad" ? { outcome: failed } : { hang: true };
 
+/** Starts a run as WorkflowRuns does: the recorded initial snapshot, then the runner. */
+const runWorkflow = (port: WorkflowPort, input: unknown) =>
+  Effect.gen(function* () {
+    const spec = yield* decodeWorkflowSpec(input);
+    return yield* resumeWorkflow(port, spec, initialSnapshot(spec, yield* Clock.currentTimeMillis));
+  });
+
 const runOnce = (fake: Fake, input: unknown) =>
   Effect.gen(function* () {
     const spec = yield* decodeWorkflowSpec(input);
@@ -359,19 +366,16 @@ const fencedReply = (start: WorkflowAgentStart): Reply =>
 it.effect("preserves stop and deadline launch fences across restart", () =>
   Effect.gen(function* () {
     const spec = yield* decodeWorkflowSpec(fenced);
-    const stop = yield* Deferred.make<void>();
     const stopped = makeFake({
       reply: fencedReply,
-      crash: (snapshot) => (snapshot.stop ? "after" : undefined),
+      crash: (snapshot) =>
+        snapshot.launches.some((l) => l.agent === "quick" && l.outcome !== null)
+          ? "after"
+          : undefined,
     });
-    const fiber = yield* Effect.forkChild(
-      Effect.exit(runWorkflow(stopped.port, fenced, { stop: Deferred.await(stop) })),
-    );
-    yield* TestClock.adjust("1 second");
-    yield* Deferred.succeed(stop, undefined);
-    expect(Exit.isFailure(yield* Fiber.join(fiber))).toBe(true);
-    const fence = stopped.last()!;
-    expect(fence.stop).toBe(true);
+    expect(Exit.isFailure(yield* Effect.exit(runWorkflow(stopped.port, fenced)))).toBe(true);
+    // t3_workflow_stop writes the fence on the row, which the resumed run reads back.
+    const fence = { ...stopped.last()!, stop: true };
 
     // The live child finishes while the runner is down, so a resume past the fence can advance.
     stopped.finish("scan.slow#1", ok("late"));
@@ -449,12 +453,11 @@ it.effect("repeat success requires acceptance or explicit exhausted pass", () =>
   }),
 );
 
-it.effect("a completed child whose JSON failed its resultSchema fails the run", () =>
+it.effect("a child whose JSON failed its resultSchema fails the run", () =>
   Effect.gen(function* () {
     const invalid: WorkflowAgentOutcome = {
-      status: "completed",
-      result: "x",
-      invalidOutput: "$.verdict: required",
+      status: "invalid_output",
+      result: "$.verdict: required",
     };
     const worker = makeFake({
       reply: (start) => ({ outcome: start.agent.id === "a" ? invalid : ok(start.key) }),

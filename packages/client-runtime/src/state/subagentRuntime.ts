@@ -2,6 +2,7 @@ import { groupBy } from "effect/Array";
 import * as DateTime from "effect/DateTime";
 import type {
   OrchestrationV2AppThread,
+  OrchestrationV2ExecutionNode,
   OrchestrationV2Subagent,
   OrchestrationV2SubagentWorkflow,
   OrchestrationV2TurnItem,
@@ -303,6 +304,18 @@ export function workflowRunMembers<
     subagents.filter((subagent) => subagent.workflowRun !== undefined).map(({ id }) => id),
   );
   return subagents.filter((subagent) => runs.has(subagent.parentNodeId));
+}
+
+/** A server-run workflow task's card: its node hangs off the run's node, whose card stands for it. */
+export function isWorkflowRunMemberItem(
+  item: { readonly type: string; readonly nodeId: string | null; readonly origin?: string },
+  nodeById: ReadonlyMap<string, Pick<OrchestrationV2ExecutionNode, "kind" | "parentNodeId">>,
+): boolean {
+  if (item.type !== "subagent" || item.origin !== "app_owned" || item.nodeId === null) {
+    return false;
+  }
+  const parentNodeId = nodeById.get(item.nodeId)?.parentNodeId;
+  return parentNodeId != null && nodeById.get(parentNodeId)?.kind === "subagent";
 }
 
 /** Stop reaches a running server-run workflow, and a Claude workflow whose native task is known. */

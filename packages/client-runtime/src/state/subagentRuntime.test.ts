@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -10,6 +11,7 @@ import * as DateTime from "effect/DateTime";
 
 import {
   deriveWorkflowGroups,
+  isWorkflowRunMemberItem,
   isWorkflowScriptMessage,
   projectedSubagentsToRuntime,
   resolveWorkflowOpening,
@@ -183,6 +185,28 @@ describe("deriveWorkflowGroups over a dynamic workflow", () => {
     expect(groups[0]?.unphasedMembers.map((agent) => agent.title)).toEqual(["alpha:one"]);
     expect(groups[1]?.phases).toEqual([]);
     expect(groups[1]?.unphasedMembers).toEqual([]);
+  });
+});
+
+describe("isWorkflowRunMemberItem", () => {
+  it("picks out the cards of a server-run workflow's tasks, not the run or other agents", () => {
+    const node = (kind: "root_turn" | "subagent", parent: string | null) => ({
+      kind,
+      parentNodeId: parent === null ? null : NodeId.make(parent),
+    });
+    const nodeById = new Map([
+      ["root", node("root_turn", null)],
+      ["run", node("subagent", "root")],
+      ["draft", node("subagent", "run")],
+      ["task", node("subagent", "root")],
+    ]);
+    const card = (nodeId: string, origin = "app_owned") => ({ type: "subagent", nodeId, origin });
+
+    expect(isWorkflowRunMemberItem(card("draft"), nodeById)).toBe(true);
+    expect(isWorkflowRunMemberItem(card("run"), nodeById)).toBe(false);
+    expect(isWorkflowRunMemberItem(card("task"), nodeById)).toBe(false);
+    expect(isWorkflowRunMemberItem(card("draft", "provider_native"), nodeById)).toBe(false);
+    expect(isWorkflowRunMemberItem(card("unknown"), nodeById)).toBe(false);
   });
 });
 

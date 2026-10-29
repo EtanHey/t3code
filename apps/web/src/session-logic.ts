@@ -1,5 +1,6 @@
 import type { ThreadStructure, ThreadStructureRuntime } from "@t3tools/client-runtime/state/shell";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import { isWorkflowRunMemberItem } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   type AssetResource,
   type OrchestrationV2Checkpoint,
@@ -602,7 +603,7 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
   for (const row of input.visibleTurnItems) {
     const { item } = row;
     if (turnItemIsWorkspacePreparation(item) && !item.deferredWork) continue;
-    if (item.type === "checkpoint") continue;
+    if (item.type === "checkpoint" || isWorkflowRunMemberItem(item, nodeById)) continue;
     if (
       item.type === "user_message" &&
       item.inputIntent === "queued_turn" &&
