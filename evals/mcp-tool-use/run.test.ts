@@ -103,6 +103,43 @@ const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
     .filter((check) => !check.pass)
     .map((check) => check.check);
 
+it("passes the staged-loop workflow case only for a real repeat stage", () => {
+  const staged = NodeFS.readFileSync(
+    new URL("./cases/orchestration.ndjson", import.meta.url),
+    "utf8",
+  )
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line))
+    .find((c) => c.id === "staged-loop-uses-workflow-run");
+  assert(staged !== undefined);
+  const agent = (id: string, model: string) => ({ id, task: id, target: { model } });
+  const run = (stages: unknown): SampleRun => ({
+    calls: [{ step: 0, tool: "t3_workflow_run", input: { name: "notes", stages } }],
+    text: "",
+    stopReason: "end_turn",
+  });
+  const drafts = ["claude-sonnet-5-5", "gpt-6.1-sol", "muse-wonder-full"];
+  const real = [
+    { id: "draft", agents: drafts.map((model, i) => agent(`d${i}`, model)) },
+    {
+      id: "loop",
+      repeat: {
+        stages: [
+          { id: "revise", agents: drafts.map((model, i) => agent(`r${i}`, model)) },
+          { id: "judge", agents: [agent("opus", "claude-opus-5-5")] },
+        ],
+        judge: "opus",
+        until: { path: "verdict", equals: "accept" },
+        max: 3,
+      },
+    },
+  ];
+  expect(failed(staged.expect, run(real))).toEqual([]);
+  const named = [{ id: "repeat", agents: drafts.map((model, i) => agent(`d${i}`, model)) }];
+  expect(failed(staged.expect, run(named))).not.toEqual([]);
+});
+
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {
     calls: [{ tool: "delegate_task", args: { task: "~FINDING", "target.options": "~max" } }],

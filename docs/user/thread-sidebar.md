@@ -264,7 +264,7 @@ An agent can also run a workflow: subagents in stages, each on any provider,
 where later stages get earlier results and a stage can repeat until a judge
 accepts. Ask for the stages in plain words, such as "three drafts in parallel,
 then Opus judges, revise until it accepts, at most 3 rounds". The workflow
-appears in **Agents** with its stages, and each agent opens its own thread. The
+appears in **Lineage** (web and desktop) and **Agents** (mobile) with its stages, and each agent opens its own thread. The
 thread that started it wakes once, when it ends, and it keeps running across
 restarts. Stop on the workflow, or on the thread that started it, stops every
 agent in it. Workflows can't run agents on a linked machine yet, and OpenCode
