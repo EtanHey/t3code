@@ -280,14 +280,18 @@ const make = Effect.gen(function* () {
   ) {
     const scope = yield* requireThreadScope(callerScope, "t3_workflow_run");
     const spec = yield* decodeWorkflowSpec(input);
-    const remote = agentStages(spec)
-      .flatMap((stage) => stage.agents)
-      .find(({ target }) => target?.environmentId !== undefined);
-    if (remote !== undefined) {
-      return yield* failure(
-        "invalid_request",
-        `Agent "${remote.id}": workflow agents run here. Omit target.environmentId.`,
-      );
+    for (const agent of agentStages(spec).flatMap((stage) => stage.agents)) {
+      if (agent.target?.environmentId !== undefined) {
+        return yield* failure(
+          "invalid_request",
+          `Agent "${agent.id}": workflow agents run here. Omit target.environmentId.`,
+        );
+      }
+      yield* mcp
+        .checkTarget(scope, agent.target)
+        .pipe(
+          Effect.mapError((error) => failure(error.code, `Agent "${agent.id}": ${error.message}`)),
+        );
     }
     const parent = yield* threads
       .getThreadRecords(scope.thread.threadId, ["runs", "providerThreads"])

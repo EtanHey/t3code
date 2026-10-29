@@ -80,7 +80,23 @@ const provider = (instanceId: ProviderInstanceId, driver: string, model: string)
     status: "ready",
     auth: { status: "authenticated" },
     checkedAt: "2026-10-29T00:00:00.000Z",
-    models: [{ slug: model, name: model, isCustom: false, capabilities: null }],
+    models: [
+      {
+        slug: model,
+        name: model,
+        isCustom: false,
+        capabilities: {
+          optionDescriptors: [
+            {
+              id: "effort",
+              label: "Effort",
+              type: "select",
+              options: [{ id: "low", label: "Low" }],
+            },
+          ],
+        },
+      },
+    ],
     slashCommands: [],
     skills: [],
   }) satisfies ServerProvider;
@@ -663,6 +679,31 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
         })
         .pipe(Effect.flip);
       assert.equal(error.code, "invalid_request");
+      assert.lengthOf((yield* orchestrator.getThreadProjection(parent.threadId)).subagents, 0);
+    }),
+  );
+
+  it.effect("refuses an option a later agent's model does not declare before anything starts", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const runs = yield* workflowRunsIn(yield* Effect.scope);
+      const parent = yield* seedParent("bad-option");
+      const target = {
+        providerInstanceId: claude,
+        model: "claude-sonnet-5-5",
+        options: [{ id: "fastMode", value: true }],
+      };
+      const error = yield* runs
+        .run(parent.scope, {
+          ...spec,
+          stages: [spec.stages[0], { id: "late", agents: [{ id: "x", task: "Go.", target }] }],
+        })
+        .pipe(Effect.flip);
+      assert.equal(error.code, "invalid_request");
+      assert.equal(
+        error.message,
+        'Agent "x": Model claude-sonnet-5-5 on provider claudeAgent rejected options: Unknown option fastMode; supported options: effort.',
+      );
       assert.lengthOf((yield* orchestrator.getThreadProjection(parent.threadId)).subagents, 0);
     }),
   );

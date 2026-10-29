@@ -171,6 +171,36 @@ it.effect("passes the staged-loop workflow case only for a real repeat stage", (
   }),
 );
 
+it("passes the object-stages case only when the first workflow call is accepted", () => {
+  const found = NodeFS.readFileSync(
+    new URL("./cases/orchestration.ndjson", import.meta.url),
+    "utf8",
+  )
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line))
+    .find((c) => c.id === "workflow-run-object-stages-first-try");
+  assert(found !== undefined);
+  const haiku = { id: "a", task: "Draft.", target: { model: "claude-haiku-5-5" } };
+  const objects = [{ id: "draft", agents: [haiku] }];
+  const call = (step: number, stages: unknown, failed: boolean) => ({
+    step,
+    tool: "t3_workflow_run",
+    input: { name: "rain", stages },
+    failed,
+  });
+  const run = (calls: SampleRun["calls"]): SampleRun => ({
+    calls,
+    text: "",
+    stopReason: "end_turn",
+  });
+  expect(failed(found.expect, run([call(0, objects, false)]))).toEqual([]);
+  const strings = objects.map((stage) => JSON.stringify(stage));
+  expect(failed(found.expect, run([call(0, strings, true), call(1, objects, false)]))).not.toEqual(
+    [],
+  );
+});
+
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {
     calls: [{ tool: "delegate_task", args: { task: "~FINDING", "target.options": "~max" } }],
