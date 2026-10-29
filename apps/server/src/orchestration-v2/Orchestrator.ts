@@ -7136,15 +7136,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
-      // A workflow run's children start after its parent's turn has ended, until its stop fence.
+      // A workflow run's children start after its parent's turn has ended, until its stop or deadline fence.
       const underWorkflow = command.type === "workflow_run.delegate";
       const workflowRun = parentProjection.subagents.find(
         (candidate) => candidate.id === command.parentNodeId,
       )?.workflowRun;
+      const nowMillis = DateTime.toEpochMillis(yield* DateTime.now);
       if (
         parentRun === undefined ||
         (underWorkflow
-          ? workflowRun?.status !== "running" || workflowRun.stop
+          ? workflowRun?.status !== "running" ||
+            workflowRun.stop ||
+            nowMillis >= workflowRun.deadline
           : !isBlockingRun(parentRun))
       ) {
         return yield* new OrchestratorDispatchError({

@@ -338,6 +338,24 @@ it.layer(layerTest)("a server-owned workflow run", (it) => {
     }),
   );
 
+  it.effect("refuses a child at or after its persisted deadline", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const run = yield* seedParentWithRun("deadline");
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      yield* orchestrator.dispatch({
+        type: "workflow_run.update",
+        commandId: CommandId.make("command:workflow:deadline:elapsed"),
+        parentThreadId: run.threadId,
+        taskId: run.workflowTaskId,
+        workflowRun: { ...running, deadline: now },
+      });
+      const refused = yield* run.delegate("a").pipe(Effect.flip);
+      assert.equal(refused._tag, "OrchestratorDispatchError");
+      assert.lengthOf((yield* run.read).children, 0);
+    }),
+  );
+
   it.effect("ends without a wake or an error once its parent thread is archived", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
