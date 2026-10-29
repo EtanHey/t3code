@@ -4,6 +4,7 @@ import {
   subagentDetailPreview,
 } from "@t3tools/client-runtime/state/subagent-display";
 import {
+  canStopWorkflow,
   isActiveSubagentStatus,
   type RuntimeSubagent,
   type SubagentWorkflowGroup,
@@ -219,14 +220,12 @@ export function resolveSubagentStopTarget(
     | "runId"
     | "nativeTaskRef"
     | "workflow"
+    | "workflowRun"
   >,
 ) {
   if (!isActiveSubagentStatus(subagent.status)) return null;
   if (subagent.workflow !== undefined) {
-    return subagent.status === "running" &&
-      subagent.origin === "provider_native" &&
-      subagent.driver === "claudeAgent" &&
-      Boolean(subagent.nativeTaskRef?.nativeId)
+    return canStopWorkflow(subagent)
       ? {
           kind: "workflow" as const,
           input: { threadId: subagent.threadId, subagentId: subagent.id },

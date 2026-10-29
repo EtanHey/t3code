@@ -2,7 +2,11 @@ import * as DateTime from "effect/DateTime";
 import type { OrchestrationV2Subagent, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import { copySorted } from "@t3tools/shared/Array";
 
-import { isActiveSubagentStatus, isTerminalSubagentStatus } from "./subagentRuntime.ts";
+import {
+  isActiveSubagentStatus,
+  isTerminalSubagentStatus,
+  workflowRunMembers,
+} from "./subagentRuntime.ts";
 import { resolveActiveThreadRun } from "./threadWorkflows.ts";
 
 type Projection = OrchestrationV2ThreadProjection;
@@ -34,8 +38,10 @@ export function deriveThreadTurnSubagents(
   const rolledBackRunIds = new Set(
     projection.runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
   );
+  const members = new Set(workflowRunMembers(projection.subagents));
   const eligible = projection.subagents.filter(
-    (subagent) => subagent.runId === null || !rolledBackRunIds.has(subagent.runId),
+    (subagent) =>
+      (subagent.runId === null || !rolledBackRunIds.has(subagent.runId)) && !members.has(subagent),
   );
   const [first] = eligible;
   if (first === undefined) return null;

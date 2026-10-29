@@ -295,6 +295,34 @@ export function deriveWorkflowGroups(
   });
 }
 
+/** Tasks a server-run workflow started. Its group lists them, so flat agent lists leave them out. */
+export function workflowRunMembers<
+  Subagent extends Pick<OrchestrationV2Subagent, "id" | "parentNodeId" | "workflowRun">,
+>(subagents: ReadonlyArray<Subagent>): ReadonlyArray<Subagent> {
+  const runs = new Set(
+    subagents.filter((subagent) => subagent.workflowRun !== undefined).map(({ id }) => id),
+  );
+  return subagents.filter((subagent) => runs.has(subagent.parentNodeId));
+}
+
+/** Stop reaches a running server-run workflow, and a Claude workflow whose native task is known. */
+export function canStopWorkflow(
+  subagent: Pick<
+    OrchestrationV2Subagent,
+    "status" | "origin" | "driver" | "nativeTaskRef" | "workflowRun"
+  >,
+): boolean {
+  if (subagent.status !== "running") return false;
+  if (subagent.workflowRun !== undefined) {
+    return subagent.workflowRun.status === "running" && !subagent.workflowRun.stop;
+  }
+  return (
+    subagent.origin === "provider_native" &&
+    subagent.driver === "claudeAgent" &&
+    Boolean(subagent.nativeTaskRef?.nativeId)
+  );
+}
+
 // Workflow scripts open with their `meta` export, after any leading comments.
 const WORKFLOW_SCRIPT_START = /^\s*(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*export\s+const\s+meta\b/;
 

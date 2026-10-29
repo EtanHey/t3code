@@ -323,4 +323,33 @@ describe("deriveThreadTurnSubagents", () => {
       accessibilityLabel: "1 agent done",
     });
   });
+
+  it("lists a server-run workflow once, without the tasks it started", () => {
+    const workflowRun = {
+      status: "running" as const,
+      cursor: 0,
+      round: 1,
+      phase: 0,
+      deadline: 0,
+      stop: false,
+      exits: [],
+    };
+    const turn = deriveThreadTurnSubagents({
+      runs: [finishedRun],
+      subagents: [
+        subagent({
+          id: "workflow",
+          childThreadId: null,
+          workflow: { phases: [{ index: 0, title: "draft" }], agents: [] },
+          workflowRun,
+        }),
+        subagent({ id: "draft-a", parentNodeId: NodeId.make("workflow") }),
+        subagent({ id: "draft-b", parentNodeId: NodeId.make("workflow") }),
+        subagent({ id: "review" }),
+      ],
+    });
+
+    expect(turn?.subagents.map((entry) => entry.id)).toEqual(["review", "workflow"]);
+    expect(resolveSubagentPillSegment(turn)?.label).toBe("2/2");
+  });
 });
