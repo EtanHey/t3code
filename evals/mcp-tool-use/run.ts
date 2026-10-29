@@ -973,6 +973,8 @@ const t3Default = (sample: Sample, name: string, input: Readonly<Record<string, 
       };
     case "task_cancel":
       return { taskId: input.taskId, status: "cancel_requested" };
+    case "t3_workflow_run":
+      return { subagentId: "workflow-1", next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT };
     case "link_pull_request": {
       const alreadyLinked = sample.linked.has(pr().url);
       sample.linked.add(pr().url);
