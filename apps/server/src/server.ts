@@ -68,6 +68,7 @@ import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceR
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import * as WorkflowRuns from "./mcp/WorkflowRuns.ts";
 import * as PeerForwarding from "./peer/PeerForwarding.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
@@ -744,6 +745,12 @@ const layerMakeRoutes = Layer.mergeAll(
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
+  ),
+  // Continues server-owned workflow runs after a restart, in the instance /mcp starts them on.
+  Layer.effectDiscard(WorkflowRuns.WorkflowRuns.pipe(Effect.flatMap((runs) => runs.start()))).pipe(
+    Layer.provide(McpHttpServer.layerWorkflowRuns),
+    Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
+    Layer.provide(ProjectionStoreV2.layer),
   ),
 ).pipe(
   Layer.provide(

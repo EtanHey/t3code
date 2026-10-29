@@ -20,6 +20,7 @@ import { dedupeSubagentBodies } from "@t3tools/shared/orchestrationV2DedupedBodi
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -27,6 +28,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -149,6 +151,11 @@ const layerTest = OrchestratorMcpService.layer.pipe(
       Offers,
       Ref.make<ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>>([]),
     ),
+  ),
+  Layer.provideMerge(
+    Layer.mock(ServerEnvironment.ServerEnvironment)({
+      getEnvironmentId: Effect.succeed(environmentId),
+    }),
   ),
   Layer.provideMerge(NodeServices.layer),
 );
@@ -462,6 +469,40 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
         payload: dedupeSubagentBodies(latest!.payload, previous!.payload),
       });
       assert.isAtMost(Buffer.byteLength(wire), 2048);
+    }),
+  );
+
+  it.effect("resumes after a restart without relaunching a child and still wakes once", () =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const parent = yield* seedParent("restart");
+      const before = yield* Scope.make();
+      const { subagentId } = yield* (yield* workflowRunsIn(before)).run(parent.scope, spec);
+      const drafts = yield* childrenOf(parent.threadId, subagentId, 2);
+      yield* Scope.close(before, Exit.void);
+      // Both children finish while the server is down.
+      for (const child of drafts) yield* settleChild(child, `Draft by ${child.driver}.`);
+      assert.deepEqual(
+        (yield* projections.getOpenWorkflowRuns).filter(
+          ({ parentThreadId }) => parentThreadId === parent.threadId,
+        ),
+        [{ parentThreadId: parent.threadId, taskId: subagentId }],
+      );
+
+      yield* (yield* workflowRunsIn(yield* Effect.scope)).start();
+      const children = yield* childrenOf(parent.threadId, subagentId, 3);
+      assert.lengthOf(children, 3);
+      const judge = children.find((child) => !drafts.some((draft) => draft.id === child.id))!;
+      yield* settleChild(judge, '```json\n{"ok":true}\n```');
+      const row = yield* ended(parent.threadId, subagentId);
+      assert.equal(row?.status, "completed");
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const all = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents;
+      assert.lengthOf(
+        all.filter((task) => task.parentNodeId === subagentId),
+        3,
+      );
+      assert.lengthOf(yield* wakes(parent.threadId), 1);
     }),
   );
 
