@@ -142,6 +142,8 @@ const PriorToolCall = Schema.Struct({
 const McpToolUseCall = Schema.Struct({
   tool: Schema.String,
   args: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  /** Only a call the tool accepted counts. */
+  ok: Schema.optional(Schema.Boolean),
 });
 type McpToolUseCall = typeof McpToolUseCall.Type;
 
@@ -1364,8 +1366,11 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun) =>
   const calls = run.calls.map((call) => ({ ...call, input: withOptionsObject(call.input) }));
   const count = (tool: string) => calls.filter((call) => call.tool === tool).length;
   // `tool` may list alternatives, as in "link_pull_request|watch_pull_request".
-  const found = ({ tool, args = {} }: McpToolUseCall) =>
-    calls.some((call) => tool.split("|").includes(call.tool) && matches(args, call.input));
+  const found = ({ tool, args = {}, ok }: McpToolUseCall) =>
+    calls.some(
+      (call) =>
+        tool.split("|").includes(call.tool) && matches(args, call.input) && !(ok && call.failed),
+    );
   const label = ({ tool, args }: McpToolUseCall) => (args ? `${tool} ${valueText(args)}` : tool);
   for (const call of expect.calls ?? []) add(`calls ${label(call)}`, found(call));
   for (const call of expect.callsMustNot ?? []) add(`callsMustNot ${label(call)}`, !found(call));
