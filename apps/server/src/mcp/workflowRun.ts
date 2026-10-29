@@ -27,18 +27,19 @@ export type WorkflowAgent = typeof WorkflowAgent.Type;
 const AgentStage = Schema.Struct({ id: WorkflowId, agents: Schema.NonEmptyArray(WorkflowAgent) });
 type AgentStage = typeof AgentStage.Type;
 
+export const WorkflowRepeat = Schema.Struct({
+  stages: Schema.NonEmptyArray(AgentStage),
+  judge: WorkflowId,
+  until: Schema.Struct({
+    path: TrimmedNonEmptyString,
+    equals: Schema.Union([Schema.String, Schema.Number, Schema.Boolean, Schema.Null]),
+  }),
+  max: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })),
+  onExhausted: Schema.optional(Schema.Literals(["fail", "pass"])),
+});
 const RepeatStage = Schema.Struct({
   id: WorkflowId,
-  repeat: Schema.Struct({
-    stages: Schema.NonEmptyArray(AgentStage),
-    judge: WorkflowId,
-    until: Schema.Struct({
-      path: TrimmedNonEmptyString,
-      equals: Schema.Union([Schema.String, Schema.Number, Schema.Boolean, Schema.Null]),
-    }),
-    max: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })),
-    onExhausted: Schema.optional(Schema.Literals(["fail", "pass"])),
-  }),
+  repeat: WorkflowRepeat,
 });
 type RepeatStage = typeof RepeatStage.Type;
 

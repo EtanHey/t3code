@@ -36,6 +36,7 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as WorkflowRuns from "./WorkflowRuns.ts";
+import { decodeWorkflowSpec } from "./workflowRun.ts";
 import * as ThreadMetadataMcpService from "./ThreadMetadataMcpService.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
@@ -494,6 +495,94 @@ it("advertises workflow stages as objects that need an id", () => {
   expect(schema.properties.stages.items?.type).toBe("object");
   expect(schema.properties.stages.items?.required).toEqual(["id"]);
 });
+
+const repeatSpec = {
+  name: "review-loop",
+  stages: [
+    {
+      id: "loop",
+      repeat: {
+        stages: [
+          {
+            id: "review",
+            agents: [
+              {
+                id: "judge",
+                task: "Judge.",
+                resultSchema: {
+                  type: "object",
+                  properties: { verdict: { type: "string" } },
+                  required: ["verdict"],
+                },
+              },
+            ],
+          },
+        ],
+        judge: "judge",
+        until: { path: "verdict", equals: "accept" },
+        max: 3,
+      },
+    },
+  ],
+};
+
+it("advertises the repeat shape with a string judge and required stages, until and max", () => {
+  const schema = advertisedJsonSchema(OrchestratorToolkit.tools.t3_workflow_run);
+  expect(schema).toMatchObject({
+    properties: {
+      stages: {
+        items: {
+          properties: {
+            repeat: {
+              type: "object",
+              required: ["stages", "judge", "until", "max"],
+              properties: {
+                stages: { type: "array", items: { type: "object", required: ["id", "agents"] } },
+                judge: { type: "string" },
+                until: { type: "object", required: ["path", "equals"] },
+                max: { type: "integer", minimum: 1 },
+                onExhausted: { enum: ["fail", "pass"] },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+});
+
+it.effect.each(["judge", "stages", "until", "max"])(
+  "rejects malformed repeat %s by naming the expected shape before the run starts",
+  (field) => {
+    const calls: Array<unknown> = [];
+    return Effect.gen(function* () {
+      const { repeat } = repeatSpec.stages[0]!;
+      const malformed: Record<string, unknown> = Object.fromEntries(
+        Object.entries(repeat).filter(([key]) => key !== field),
+      );
+      if (field === "judge") malformed.judge = { id: "private-input" };
+      const rejected = yield* callTool("t3_workflow_run", {
+        ...repeatSpec,
+        stages: [{ id: "loop", repeat: malformed }],
+      }).pipe(Effect.flip);
+      expect(String(rejected)).toContain(
+        'repeat is {stages:[{id, agents:[…]}], judge:"agent-id", until:{path, equals}, max:1..10, onExhausted?:"fail"|"pass"}',
+      );
+      expect(String(rejected)).not.toContain("private-input");
+      expect(calls).toEqual([]);
+    }).pipe(Effect.provide(layerRecordingTools(calls)));
+  },
+);
+
+const decodeWorkflowParameters = Schema.decodeUnknownEffect(
+  OrchestratorToolkit.tools.t3_workflow_run.parametersSchema,
+);
+it.effect("keeps a valid repeat spec unchanged through tool and runner decoding", () =>
+  Effect.gen(function* () {
+    const input = yield* decodeWorkflowParameters(repeatSpec);
+    expect(yield* decodeWorkflowSpec(input)).toEqual(repeatSpec);
+  }),
+);
 
 it("keeps cross-tool routing out of the delegate_task description", () => {
   const description = OrchestratorToolkit.tools.delegate_task.description ?? "";

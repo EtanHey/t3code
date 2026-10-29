@@ -41,7 +41,9 @@ import {
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SchemaIssue from "effect/SchemaIssue";
 import * as Struct from "effect/Struct";
 
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -52,6 +54,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
 import * as WorkflowRuns from "../../WorkflowRuns.ts";
+import { WorkflowRepeat } from "../../workflowRun.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -128,15 +131,34 @@ const TaskCancelTool = Tool.make("task_cancel", {
 const workflowDependencies = [...dependencies, WorkflowRuns.WorkflowRuns];
 
 // Stages advertise only their outline to keep the tool list small; the service decodes the full spec.
+const WorkflowAgentStage = Schema.Struct({
+  id: Schema.String,
+  agents: Schema.Array(Schema.Unknown),
+});
+const WorkflowRepeatInput = Schema.Struct({
+  ...WorkflowRepeat.fields,
+  stages: Schema.Array(WorkflowAgentStage),
+  judge: Schema.String,
+  until: Schema.Struct({ path: Schema.String, equals: Schema.Unknown }),
+}).pipe(
+  Schema.catchDecoding(() =>
+    Effect.fail(
+      new SchemaIssue.InvalidValue({
+        message:
+          'repeat is {stages:[{id, agents:[…]}], judge:"agent-id", until:{path, equals}, max:1..10, onExhausted?:"fail"|"pass"}',
+      }),
+    ),
+  ),
+);
 const WorkflowStage = Schema.Struct({
   id: Schema.String,
   agents: Schema.optional(Schema.Array(Schema.Unknown)),
-  repeat: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  repeat: Schema.optional(WorkflowRepeatInput),
 }).annotate({ message: "stages[] entries are objects: {id, agents:[…]} or {id, repeat:{…}}" });
 
 const WorkflowRunTool = Tool.make("t3_workflow_run", {
   description:
-    "Run agents in stages; returns at once and wakes you when done. Stages run in order: `{id, agents:[{id, task, target?, role?, isolation?, resultSchema?}]}` in parallel, or `{id, repeat:{stages, judge, until:{path, equals}, max, onExhausted?}}`. `{{stage}}`, `{{stage.agent}}`, `{{feedback}}` in a task insert results.",
+    "Ordered stages; parallel agent objects {id,task,target?,resultSchema?}. Wakes on completion. Judge: last-stage agent id. Tasks insert {{stage.agent}}, {{feedback}}.",
   parameters: Schema.Struct({
     name: TrimmedNonEmptyString,
     stages: Schema.Array(WorkflowStage),
@@ -155,7 +177,7 @@ const WorkflowRunTool = Tool.make("t3_workflow_run", {
   .annotate(Tool.OpenWorld, true);
 
 const WorkflowStatusTool = Tool.make("t3_workflow_status", {
-  description: "Read a `t3_workflow_run` and each agent's result.",
+  description: "Results.",
   parameters: Schema.Struct({ subagentId: NodeId }),
   success: Schema.Unknown,
   failure: OrchestratorMcpFailure,

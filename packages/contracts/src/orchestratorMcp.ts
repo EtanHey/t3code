@@ -196,8 +196,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
   resultSchema: Schema.optional(
     OrchestrationV2ResultSchema.annotate({
-      description:
-        "JSON Schema: type, properties, required, items, enum. The child ends with matching JSON, returned as `structuredResult`, or `invalidOutput` says why not.",
+      description: "JSON Schema subset.",
     }).check(
       Schema.makeFilter((schema) =>
         JSON.stringify(schema).length <= 8_000 ? true : "resultSchema is over 8,000 characters.",
