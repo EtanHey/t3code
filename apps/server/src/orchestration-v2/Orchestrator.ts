@@ -7918,12 +7918,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       // An ended run keeps its record; late writes from a runner or a Stop change nothing.
       if (current.status !== "running") return;
-      const next = command.workflowRun ?? current;
+      const requested = command.workflowRun ?? current;
+      const stop = current.stop || requested.stop || command.stop === true;
+      // A stopped run's runner may see only cancelled children and report a failure.
+      const next = {
+        ...requested,
+        stop,
+        status:
+          stop && requested.status !== "running" && requested.status !== "completed"
+            ? ("cancelled" as const)
+            : requested.status,
+      };
       const now = yield* DateTime.now;
       const updatedTask: OrchestrationV2Subagent = {
         ...task,
         workflow: command.workflow ?? task.workflow,
-        workflowRun: { ...next, stop: current.stop || next.stop || command.stop === true },
+        workflowRun: next,
         updatedAt: now,
       };
       if (next.status === "running") {

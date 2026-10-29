@@ -218,7 +218,7 @@ const valueOf = (outcome: WorkflowAgentOutcome) =>
 
 const asText = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 
-const agentStages = (spec: WorkflowSpec) =>
+export const agentStages = (spec: WorkflowSpec) =>
   spec.stages.flatMap((stage) => ("agents" in stage ? [stage] : stage.repeat.stages));
 
 function renderTask(spec: WorkflowSpec, state: WorkflowSnapshot, template: string): string {
@@ -438,22 +438,18 @@ export const runWorkflow = Effect.fn("WorkflowRun.run")(function* (
   options: WorkflowRunOptions = {},
 ) {
   const spec = yield* decodeWorkflowSpec(input);
-  const now = yield* Clock.currentTimeMillis;
-  return yield* drive(
-    port,
-    spec,
-    {
-      status: "running",
-      cursor: 0,
-      round: 1,
-      phase: 0,
-      deadline: now + (spec.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-      stop: false,
-      launches: [],
-      exits: [],
-    },
-    options,
-  );
+  return yield* drive(port, spec, initialSnapshot(spec, yield* Clock.currentTimeMillis), options);
+});
+
+export const initialSnapshot = (spec: WorkflowSpec, now: number): WorkflowSnapshot => ({
+  status: "running",
+  cursor: 0,
+  round: 1,
+  phase: 0,
+  deadline: now + (spec.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  stop: false,
+  launches: [],
+  exits: [],
 });
 
 /** Continues from the last persisted snapshot: re-awaits live tasks, never relaunches one. */
@@ -466,7 +462,7 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
   return yield* drive(port, spec, snapshot, options);
 });
 
-function workflowResult(spec: WorkflowSpec, state: WorkflowSnapshot): WorkflowResult {
+export function workflowResult(spec: WorkflowSpec, state: WorkflowSnapshot): WorkflowResult {
   const agents = (stage: AgentStage, round: number): StageResult => ({
     id: stage.id,
     agents: stage.agents.map((agent): AgentResult => {
