@@ -12,15 +12,15 @@ export function resultSchemaInstruction(schema: ResultSchema): string {
 
 /** The last fenced JSON block in a reply, or the whole reply when it is bare JSON. */
 export function extractJson(text: string): Option.Option<unknown> {
+  // An unclosed final fence must not fall back to an earlier, superseded block.
+  if ((text.match(/```/g) ?? []).length % 2 === 1) return Option.none();
   const fences = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)];
-  for (const candidate of [...fences.map((fence) => fence[1] ?? "").toReversed(), text]) {
-    try {
-      return Option.some(JSON.parse(candidate.trim()));
-    } catch {
-      continue;
-    }
+  const candidate = fences.length === 0 ? text : (fences.at(-1)?.[1] ?? "");
+  try {
+    return Option.some(JSON.parse(candidate.trim()));
+  } catch {
+    return Option.none();
   }
-  return Option.none();
 }
 
 const typeOf = (value: unknown) =>
@@ -35,6 +35,17 @@ const typeOf = (value: unknown) =>
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const sameJson = (a: unknown, b: unknown): boolean =>
+  Array.isArray(a)
+    ? Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((item, index) => sameJson(item, b[index]))
+    : isRecord(a)
+      ? isRecord(b) &&
+        Object.keys(a).length === Object.keys(b).length &&
+        Object.entries(a).every(([key, item]) => Object.hasOwn(b, key) && sameJson(item, b[key]))
+      : a === b;
+
 /** The first place `value` breaks `schema`, or null. Other keywords are ignored. */
 export function validateJson(schema: unknown, value: unknown, path = "$"): string | null {
   if (!isRecord(schema)) return null;
@@ -47,7 +58,7 @@ export function validateJson(schema: unknown, value: unknown, path = "$"): strin
   ) {
     return `${path}: expected ${types.join(" or ")}, got ${actual}`;
   }
-  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
+  if (Array.isArray(schema.enum) && !schema.enum.some((member) => sameJson(member, value))) {
     return `${path}: not one of ${JSON.stringify(schema.enum)}`;
   }
   if (isRecord(value)) {

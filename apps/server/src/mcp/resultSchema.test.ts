@@ -12,6 +12,20 @@ it("reads the last fenced JSON block, or bare JSON", () => {
   expect(extractJson("no json here")).toEqual(Option.none());
 });
 
+it("never falls back to an earlier block when the final one is broken", () => {
+  const accepted = '```json\n{"verdict":"accept"}\n```';
+  expect(extractJson(`${accepted} then \`\`\`json\n{"verdict":\n\`\`\``)).toEqual(Option.none());
+  expect(extractJson(`${accepted} then \`\`\`json\n{"verdict":"revise"}`)).toEqual(Option.none());
+});
+
+it("matches enum members that are objects or arrays by value", () => {
+  const schema = { enum: [{ verdict: "accept", tags: ["a"] }, [1, 2]] };
+  expect(validateJson(schema, { tags: ["a"], verdict: "accept" })).toBeNull();
+  expect(validateJson(schema, [1, 2])).toBeNull();
+  expect(validateJson(schema, { verdict: "accept", tags: ["b"] })).not.toBeNull();
+  expect(validateJson(schema, [1, 2, 3])).not.toBeNull();
+});
+
 it("validates nested types, required keys, enums, and integers as numbers", () => {
   const schema = {
     type: "object",
