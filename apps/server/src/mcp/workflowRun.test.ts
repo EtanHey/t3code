@@ -28,6 +28,7 @@ type CrashMode = "after" | "instead";
 interface FakeOptions {
   readonly reply: (start: WorkflowAgentStart) => Reply;
   readonly crash?: (snapshot: WorkflowSnapshot, call: number) => CrashMode | undefined;
+  readonly onStart?: (start: WorkflowAgentStart) => Effect.Effect<void>;
 }
 
 interface FakeTask {
@@ -100,6 +101,7 @@ const makeFake = (options: FakeOptions) => {
     start: (start) =>
       Effect.gen(function* () {
         startCalls.push(start.key);
+        if (options.onStart !== undefined) yield* options.onStart(start);
         const intent = persisted.find(({ snapshot }) =>
           snapshot.launches.some((launch) => recordKey(launch) === start.key),
         );
@@ -337,43 +339,66 @@ it.effect("resumes without launching a run round agent twice", () =>
   }),
 );
 
+/** One live child, one instant sibling, then a stage a broken fence would launch. */
+const fenced = {
+  name: "fenced",
+  stages: [
+    {
+      id: "scan",
+      agents: [
+        { id: "slow", task: "Hang." },
+        { id: "quick", task: "Answer." },
+      ],
+    },
+    { id: "after", agents: [{ id: "next", task: "Behind the fence." }] },
+  ],
+};
+const fencedReply = (start: WorkflowAgentStart): Reply =>
+  start.agent.id === "slow" ? { hang: true } : { outcome: ok(start.key) };
+
 it.effect("preserves stop and deadline launch fences across restart", () =>
   Effect.gen(function* () {
+    const spec = yield* decodeWorkflowSpec(fenced);
     const stop = yield* Deferred.make<void>();
     const stopped = makeFake({
-      reply: () => ({ hang: true }),
+      reply: fencedReply,
       crash: (snapshot) => (snapshot.stop ? "after" : undefined),
     });
-    const spec = yield* decodeWorkflowSpec(failFast);
     const fiber = yield* Effect.forkChild(
-      Effect.exit(runWorkflow(stopped.port, failFast, { stop: Deferred.await(stop) })),
+      Effect.exit(runWorkflow(stopped.port, fenced, { stop: Deferred.await(stop) })),
     );
     yield* TestClock.adjust("1 second");
     yield* Deferred.succeed(stop, undefined);
     expect(Exit.isFailure(yield* Fiber.join(fiber))).toBe(true);
-    const fence = stopped.last();
-    expect(fence?.stop).toBe(true);
-    const afterStop = yield* resumeWorkflow(stopped.port, spec, fence!);
+    const fence = stopped.last()!;
+    expect(fence.stop).toBe(true);
 
+    // The live child finishes while the runner is down, so a resume past the fence can advance.
+    stopped.finish("scan.slow#1", ok("late"));
+    const afterStop = yield* resumeWorkflow(stopped.port, spec, fence);
+
+    expect(stopped.startCalls).toEqual(["scan.slow#1", "scan.quick#1"]);
     expect(afterStop.status).toBe("cancelled");
-    expect(stopped.created).toEqual(["scan.slow#1", "scan.bad#1"]);
-    expect(stopped.cancelCalls.toSorted()).toEqual(["scan.bad#1", "scan.slow#1"]);
     expect(stopped.violations).toEqual([]);
 
+    const timed = { ...fenced, timeoutMs: 5_000 };
+    const timedSpec = yield* decodeWorkflowSpec(timed);
     const late = makeFake({
-      reply: () => ({ hang: true }),
-      crash: (snapshot) => (snapshot.status === "timed_out" ? "instead" : undefined),
+      reply: fencedReply,
+      // The deadline passes mid-stage, and the runner crashes before deciding the sibling.
+      onStart: (start) =>
+        start.key === "scan.slow#1" ? TestClock.adjust("5 seconds") : Effect.void,
+      crash: (snapshot) => (snapshot.launches.some((l) => l.taskId !== null) ? "after" : undefined),
     });
-    const timed = yield* Effect.forkChild(
-      Effect.exit(runWorkflow(late.port, { ...failFast, timeoutMs: 5_000 })),
-    );
-    yield* TestClock.adjust("5 seconds");
-    expect(Exit.isFailure(yield* Fiber.join(timed))).toBe(true);
-    const timedSpec = yield* decodeWorkflowSpec({ ...failFast, timeoutMs: 5_000 });
-    const afterDeadline = yield* resumeWorkflow(late.port, timedSpec, late.last()!);
+    expect(Exit.isFailure(yield* Effect.exit(runWorkflow(late.port, timed)))).toBe(true);
+    const partial = late.last()!;
+    expect(partial.launches.map(recordKey)).toEqual(["scan.slow#1"]);
 
+    late.finish("scan.slow#1", ok("late"));
+    const afterDeadline = yield* resumeWorkflow(late.port, timedSpec, partial);
+
+    expect(late.startCalls).toEqual(["scan.slow#1"]);
     expect(afterDeadline.status).toBe("timed_out");
-    expect(late.created).toEqual(["scan.slow#1", "scan.bad#1"]);
     expect(late.unsettled()).toEqual([]);
     expect(late.violations).toEqual([]);
   }),
