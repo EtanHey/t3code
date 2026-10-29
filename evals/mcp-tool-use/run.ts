@@ -33,6 +33,7 @@ import * as McpSchema from "effect/ai/McpSchema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
+import { decodeWorkflowSpec } from "../../apps/server/src/mcp/workflowRun.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
 import { EnvironmentId, ORCHESTRATOR_MCP_RUNNING_TASK_NEXT, ThreadId } from "@t3tools/contracts";
@@ -1289,6 +1290,13 @@ const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* 
         : withProductFields(name, mock, testCase.setup.role === "delegated-child"),
     );
   if (isT3Name(call.name)) {
+    if (name === "t3_workflow_run") {
+      const rejected = yield* decodeWorkflowSpec(input).pipe(
+        Effect.as(null),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      );
+      if (rejected !== null) return failed(rejected);
+    }
     // T3 refuses a watch from a delegated child.
     if (name === "watch_pull_request" && testCase.setup.role === "delegated-child") {
       return failed(SUBAGENT_WATCH_ERROR);
