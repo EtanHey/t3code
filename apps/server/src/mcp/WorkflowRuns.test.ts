@@ -583,6 +583,50 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
     }),
   );
 
+  it.effect("cancels the live children of a run that ended just before a restart", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const parent = yield* seedParent("ended-restart");
+      const before = yield* Scope.make();
+      const { subagentId } = yield* (yield* workflowRunsIn(before)).run(parent.scope, spec);
+      yield* parent.endTurn;
+      const drafts = yield* childrenOf(parent.threadId, subagentId, 2);
+      yield* Scope.close(before, Exit.void);
+      // The runner's terminal write lands; the server stops before it cancels the children.
+      const result = '{"name":"review","status":"failed","stages":[]}';
+      const row = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+        (task) => task.id === subagentId,
+      )!;
+      yield* orchestrator.dispatch({
+        type: "workflow_run.update",
+        commandId: CommandId.make("command:ended-restart:terminal"),
+        parentThreadId: parent.threadId,
+        taskId: subagentId,
+        workflowRun: { ...row.workflowRun!, status: "failed" },
+        result,
+      });
+      assert.lengthOf(yield* wakes(parent.threadId), 1);
+
+      yield* (yield* workflowRunsIn(yield* Effect.scope)).start();
+      const stopped = new Set<NodeId>();
+      yield* (yield* parentEvents(parent.threadId)).pipe(
+        Stream.takeUntil(({ payload }) => {
+          if (drafts.some((draft) => draft.id === payload.id) && payload.status !== "running") {
+            stopped.add(payload.id);
+          }
+          return stopped.size === drafts.length;
+        }),
+        Stream.runDrain,
+      );
+      const ended = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+        (task) => task.id === subagentId,
+      );
+      assert.equal(ended?.status, "failed");
+      assert.equal(ended?.result, result);
+      assert.lengthOf(yield* wakes(parent.threadId), 1);
+    }),
+  );
+
   it.effect("stops mid-run: running children stop, no later stage starts, it ends cancelled", () =>
     Effect.gen(function* () {
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;

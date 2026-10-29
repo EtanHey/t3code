@@ -501,6 +501,7 @@ export interface ProjectionStoreV2Shape {
     ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
     ProjectionStoreV2Error
   >;
+  /** Running workflow runs, and ended ones that still have live children. */
   readonly getOpenWorkflowRuns: Effect.Effect<
     ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
     ProjectionStoreV2Error
@@ -6228,10 +6229,20 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       readonly thread_id: string;
       readonly subagent_id: string;
     }>`
-      SELECT thread_id, subagent_id FROM orchestration_v2_projection_subagents
+      SELECT thread_id, subagent_id FROM orchestration_v2_projection_subagents AS run
       WHERE origin = 'app_owned'
         AND child_thread_id IS NULL
-        AND json_extract(payload_json, '$.workflowRun.status') = 'running'
+        AND (
+          json_extract(payload_json, '$.workflowRun.status') = 'running'
+          OR (
+            json_extract(payload_json, '$.workflowRun.status') IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_subagents AS child
+              WHERE child.parent_node_id = run.subagent_id
+                AND child.status IN ('pending', 'running', 'waiting')
+            )
+          )
+        )
     `.pipe(
       Effect.map((rows) =>
         rows.map((row) => ({

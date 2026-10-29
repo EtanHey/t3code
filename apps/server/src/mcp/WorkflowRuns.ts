@@ -1,5 +1,6 @@
 import {
   CommandId,
+  isOrchestrationV2WorkActive,
   type EnvironmentId,
   NodeId,
   type OrchestrationV2SubagentWorkflow,
@@ -148,6 +149,9 @@ const make = Effect.gen(function* () {
       Effect.mapError(() => failure("orchestration_error", "The workflow spec is unreadable.")),
       Effect.flatMap(decodeWorkflowSpec),
     );
+    const live = subagents.flatMap((child) =>
+      child.parentNodeId === row.id && isOrchestrationV2WorkActive(child.status) ? [child.id] : [],
+    );
     const childThreads = new Map(
       subagents.flatMap((child): Array<[string, ThreadId]> =>
         child.parentNodeId === row.id && child.childThreadId !== null
@@ -168,7 +172,7 @@ const make = Effect.gen(function* () {
       capabilities: new Set(["orchestration"]),
       issuedAt: 0,
     };
-    return { row, spec, childThreads, scope };
+    return { row, spec, childThreads, live, scope };
   });
 
   /** Rebuilds the runner's snapshot; finished launches read their outcome from their child task. */
@@ -207,7 +211,15 @@ const make = Effect.gen(function* () {
     taskId: NodeId,
   ) {
     const run = yield* readRun(environmentId, threadId, taskId);
-    if (run.row.workflowRun?.status !== "running" || run.row.runId === null) return;
+    // A restart can cut off an ended run's cancels; its recorded end and wake stay as they are.
+    if (run.row.workflowRun?.status !== "running") {
+      return yield* Effect.forEach(
+        run.live,
+        (child) => Effect.ignore(mcp.cancelTask(run.scope, { taskId: child })),
+        { discard: true },
+      );
+    }
+    if (run.row.runId === null) return;
     const { row, spec, childThreads, scope } = run;
     const owner = { taskId: row.id, runId: row.runId! };
     const port: WorkflowPort = {
