@@ -1409,7 +1409,12 @@ const make = Effect.gen(function* () {
         candidate.origin === "app_owned" &&
         candidate.threadId === scope.thread.threadId,
     );
-    if (task === undefined || (task.childThreadId === null && task.remoteChild === undefined)) {
+    if (
+      task === undefined ||
+      (task.childThreadId === null &&
+        task.remoteChild === undefined &&
+        task.workflowRun === undefined)
+    ) {
       return yield* failure(
         "task_not_found",
         `Delegated task ${taskId} does not belong to thread ${scope.thread.threadId}.`,
@@ -2386,8 +2391,20 @@ const make = Effect.gen(function* () {
       const current = yield* readTask(scope, input.taskId);
       const childThreadId = current.childThreadId;
       if (childThreadId === null) {
-        // The task runs in a linked environment: its thread there is stopped through the link.
         const { subagents } = yield* loadProjection(scope.thread.threadId);
+        if (subagents.some((task) => task.id === input.taskId && task.workflowRun !== undefined)) {
+          yield* threadManagement
+            .stopWorkflow({ threadId: scope.thread.threadId, subagentId: input.taskId })
+            .pipe(
+              Effect.catchIf(
+                (error) => error.reason === "not-running",
+                () => Effect.void,
+              ),
+              Effect.mapError((error) => failure("orchestration_error", error.message)),
+            );
+          return { taskId: input.taskId, status: "cancel_requested" as const };
+        }
+        // The task runs in a linked environment: its thread there is stopped through the link.
         const remoteTask = subagents.find(
           (task) =>
             task.id === input.taskId &&

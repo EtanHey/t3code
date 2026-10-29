@@ -11,7 +11,9 @@ import type {
 import {
   type ChatAttachment,
   CommandId,
+  isOrchestrationV2WorkActive,
   MessageId,
+  type NodeId,
   OrchestrationV2StopWorkflowError,
   type OrchestrationV2StopWorkflowInput,
   type ModelSelection,
@@ -112,6 +114,9 @@ function existingThreadIdsForCommand(
     case "delegated_task.remote.request":
     case "delegated_task.remote.complete":
     case "delegated_task.remote.stop":
+    case "workflow_run.record":
+    case "workflow_run.update":
+    case "workflow_run.delegate":
       return [command.parentThreadId];
     case "thread.created.record":
       return command.parentThreadId === command.targetThreadId
@@ -692,6 +697,7 @@ const make = Effect.gen(function* () {
           ),
         );
       case "delegated_task.request":
+      case "workflow_run.delegate":
         return orchestrator.getThreadRecords(command.parentThreadId, []).pipe(
           Effect.flatMap((parent) =>
             assertProviderInstanceEnabled({
@@ -1067,8 +1073,8 @@ const make = Effect.gen(function* () {
     return { type: "interrupt_requested", run: interruptibleRun, dispatch } as const;
   });
 
-  const stopWorkflow: ThreadManagementServiceShape["stopWorkflow"] = Effect.fn(
-    "ThreadManagementService.stopWorkflow",
+  const stopProviderWorkflow: ThreadManagementServiceShape["stopWorkflow"] = Effect.fn(
+    "ThreadManagementService.stopProviderWorkflow",
   )(
     function* (input) {
       const records = yield* orchestrator
@@ -1153,6 +1159,62 @@ const make = Effect.gen(function* () {
     (effect, input) => effect.pipe((effect) => threadDispatch.withLock(input.threadId, effect)),
   );
 
+  /** Writes a workflow run's stop fence, then stops its running children and their tasks. */
+  const stopWorkflowRun = Effect.fn("ThreadManagementService.stopWorkflowRun")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly taskId: NodeId;
+    readonly commandId: CommandId;
+    readonly reason?: string | undefined;
+  }) {
+    yield* dispatch({
+      type: "workflow_run.update",
+      commandId: CommandId.make(`${input.commandId}:stop:${input.taskId}`),
+      parentThreadId: input.threadId,
+      taskId: input.taskId,
+      stop: true,
+    });
+    const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
+    for (const child of subagents) {
+      if (child.parentNodeId !== input.taskId || child.childThreadId === null) continue;
+      if (!isOrchestrationV2WorkActive(child.status)) continue;
+      const threadId = child.childThreadId;
+      yield* dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
+        threadId,
+        stopDelegatedTasks: false,
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
+      }).pipe(Effect.andThen(stopDelegatedTasks({ ...input, threadId })));
+    }
+  });
+
+  const stopWorkflow: ThreadManagementServiceShape["stopWorkflow"] = Effect.fn(
+    "ThreadManagementService.stopWorkflow",
+  )(function* (input) {
+    const records = yield* orchestrator
+      .getThreadRecords(input.threadId, ["subagents"])
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestrationV2StopWorkflowError({ ...input, reason: "unavailable", cause }),
+        ),
+      );
+    const run = records.subagents.find((task) => task.id === input.subagentId)?.workflowRun;
+    if (run === undefined) return yield* stopProviderWorkflow(input);
+    if (run.status !== "running" || records.thread.deletedAt !== null) {
+      return yield* new OrchestrationV2StopWorkflowError({ ...input, reason: "not-running" });
+    }
+    yield* stopWorkflowRun({
+      threadId: input.threadId,
+      taskId: input.subagentId,
+      commandId: CommandId.make(`command:workflow-stop:${input.subagentId}`),
+    }).pipe(
+      Effect.mapError(
+        (cause) => new OrchestrationV2StopWorkflowError({ ...input, reason: "stop-failed", cause }),
+      ),
+    );
+  });
+
   const awaitBackgroundTasks: ThreadManagementServiceShape["awaitBackgroundTasks"] = Effect.fn(
     "ThreadManagementService.awaitBackgroundTasks",
   )(function* (input) {
@@ -1212,6 +1274,12 @@ const make = Effect.gen(function* () {
     const stoppedChildThreadIds = new Set<ThreadId>();
     for (const task of subagents) {
       if (task.origin !== "app_owned") continue;
+      if (task.workflowRun?.status === "running") {
+        yield* stopWorkflowRun({ ...input, taskId: task.id }).pipe(
+          Effect.catch((error) => Effect.sync(() => failures.push(error))),
+        );
+        continue;
+      }
       if (task.childThreadId === null) {
         // A task in a linked environment ends here; its follower then stops it there.
         // One with its result keeps it, but its thread there may run follow-up work.
