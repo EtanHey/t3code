@@ -12,6 +12,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   dedupeSubagentBodies,
+  dedupeWorkflowAgents,
   dedupeTurnItemBodies,
 } from "@t3tools/shared/orchestrationV2DedupedBodies";
 import {
@@ -274,19 +275,22 @@ function remember<K, V>(memory: Map<K, V>, key: K, value: V): void {
  * subagent record) ships blank and marked. The other order, or a forgotten record, only costs
  * bytes: the repeat ships whole.
  */
-export function makeLiveBodyDeduper(): (
-  item: OrchestrationV2ThreadStreamItem,
-) => OrchestrationV2ThreadStreamItem {
+export function makeLiveBodyDeduper(
+  options: { readonly workflowAgentDeltas?: boolean } = {},
+): (item: OrchestrationV2ThreadStreamItem) => OrchestrationV2ThreadStreamItem {
   const messageText = new Map<MessageId, string>();
   const checkpointFiles = new Map<CheckpointId, OrchestrationV2Checkpoint["files"]>();
-  const subagents = new Map<NodeId, Pick<OrchestrationV2Subagent, "prompt" | "result">>();
+  const subagents = new Map<
+    NodeId,
+    Pick<OrchestrationV2Subagent, "prompt" | "result" | "workflow">
+  >();
   const source = {
     messageText: (id: MessageId) => messageText.get(id),
     checkpointFiles: (id: CheckpointId) => checkpointFiles.get(id),
     subagent: (id: NodeId) => subagents.get(id),
   };
-  const rememberSubagent = ({ id, prompt, result }: OrchestrationV2Subagent) =>
-    remember(subagents, id, { prompt, result });
+  const rememberSubagent = ({ id, prompt, result, workflow }: OrchestrationV2Subagent) =>
+    remember(subagents, id, { prompt, result, workflow });
   return (item) => {
     if (item.kind === "snapshot") {
       // The client now holds exactly these records; their bodies are never blanked.
@@ -307,7 +311,10 @@ export function makeLiveBodyDeduper(): (
         remember(checkpointFiles, event.payload.id, event.payload.files);
         return item;
       case "subagent.updated": {
-        const payload = dedupeSubagentBodies(event.payload, subagents.get(event.payload.id));
+        const previous = subagents.get(event.payload.id);
+        const bodies = dedupeSubagentBodies(event.payload, previous);
+        const payload =
+          options.workflowAgentDeltas === true ? dedupeWorkflowAgents(bodies, previous) : bodies;
         rememberSubagent(event.payload);
         return payload === event.payload ? item : { ...item, event: { ...event, payload } };
       }

@@ -914,6 +914,8 @@ export const OrchestrationV2Subagent = Schema.Struct({
   /** Same as this subagent's previous record on this stream: its snapshot or `subagent.updated`. */
   promptOmitted: DedupedBodyMarker,
   resultOmitted: DedupedBodyMarker,
+  /** With `acceptWorkflowAgentDeltas`: `workflow.agents` holds only the agents that changed. */
+  unchangedAgentsOmitted: DedupedBodyMarker,
 });
 export type OrchestrationV2Subagent = typeof OrchestrationV2Subagent.Type;
 
@@ -3755,6 +3757,8 @@ export const OrchestrationV2SubscribeThreadInput = Schema.Struct({
   acceptCompactTurnItems: Schema.optionalKey(Schema.Boolean),
   /** The client restores `*Omitted` bodies from records it already holds. */
   acceptDedupedBodies: Schema.optionalKey(Schema.Boolean),
+  /** With deduped bodies, a repeated workflow record carries only its changed agents. */
+  acceptWorkflowAgentDeltas: Schema.optionalKey(Schema.Boolean),
   acceptCompactIds: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationV2SubscribeThreadInput = typeof OrchestrationV2SubscribeThreadInput.Type;

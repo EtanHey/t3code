@@ -17,6 +17,7 @@ import {
 } from "./orchestrationV2BoundedSnapshot.ts";
 import {
   dedupeSnapshotBodies,
+  dedupeWorkflowAgents,
   restoreSnapshotBodies,
   restoreSubagentBodies,
 } from "./orchestrationV2DedupedBodies.ts";
@@ -192,5 +193,26 @@ describe("deduped snapshot bodies", () => {
       result: "done",
       promptOmitted: true,
     });
+  });
+
+  it("sends a repeated workflow record's changed agents only and restores the full list", () => {
+    const agent = (index: number, state: "running" | "completed") => ({
+      index,
+      label: `agent-${index}`,
+      state,
+    });
+    const record = (agents: ReadonlyArray<ReturnType<typeof agent>>) => ({
+      prompt: "spec",
+      result: null,
+      workflow: { phases: [], agents },
+    });
+    const before = record([agent(0, "running"), agent(1, "running")]);
+    const after = record([agent(0, "running"), agent(1, "completed"), agent(2, "running")]);
+
+    const sent = dedupeWorkflowAgents(after, before);
+    expect(sent.workflow.agents).toEqual([agent(1, "completed"), agent(2, "running")]);
+    expect(sent).toHaveProperty("unchangedAgentsOmitted", true);
+    expect(restoreSubagentBodies(sent, before)).toEqual(after);
+    expect(dedupeWorkflowAgents(before, after)).toBe(before);
   });
 });

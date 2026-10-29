@@ -1,5 +1,6 @@
 import {
   OrchestrationV2CheckpointFileSummary,
+  OrchestrationV2WorkflowAgent,
   type CheckpointId,
   type MessageId,
   type NodeId,
@@ -22,15 +23,42 @@ export interface DedupedBodySource {
   readonly subagent: (id: NodeId) => WithSubagentBodies | undefined;
 }
 
-type SubagentBodies = Pick<OrchestrationV2Subagent, "prompt" | "result">;
+type SubagentBodies = Pick<OrchestrationV2Subagent, "prompt" | "result"> &
+  Partial<Pick<OrchestrationV2Subagent, "workflow">>;
 type WithSubagentBodies = SubagentBodies & {
   readonly promptOmitted?: true;
   readonly resultOmitted?: true;
+  readonly unchangedAgentsOmitted?: true;
 };
 
 const sameCheckpointFiles = Schema.toEquivalence(
   Schema.Array(OrchestrationV2CheckpointFileSummary),
 );
+const sameWorkflowAgent = Schema.toEquivalence(OrchestrationV2WorkflowAgent);
+
+/**
+ * For clients that also accept workflow agent deltas: a repeated `subagent.updated` keeps only
+ * the agents that differ from `previous`. Only agents stored at their own `index`, never fewer
+ * than before, are thinned, so the restore is exact.
+ */
+export function dedupeWorkflowAgents<T extends WithSubagentBodies>(
+  value: T,
+  previous: SubagentBodies | undefined,
+): T {
+  const agents = value.workflow?.agents;
+  const before = previous?.workflow?.agents;
+  if (agents === undefined || before === undefined || agents.length < before.length) return value;
+  if (!agents.every((agent, index) => agent.index === index)) return value;
+  const changed = agents.filter(
+    (agent, index) => before[index] === undefined || !sameWorkflowAgent(agent, before[index]),
+  );
+  if (changed.length === agents.length) return value;
+  return {
+    ...value,
+    workflow: { ...value.workflow!, agents: changed },
+    unchangedAgentsOmitted: true as const,
+  };
+}
 
 /** For subagent items and for a repeated `subagent.updated`, whose `previous` was sent earlier. */
 export function dedupeSubagentBodies<T extends WithSubagentBodies>(
@@ -58,13 +86,23 @@ export function restoreSubagentBodies<T extends WithSubagentBodies>(
   if (previous === undefined) return value;
   const prompt = value.promptOmitted === true && previous.promptOmitted !== true;
   const result = value.resultOmitted === true && previous.resultOmitted !== true;
-  if (!prompt && !result) return value;
-  const { promptOmitted, resultOmitted, ...rest } = value;
-  // Dropping both optional markers from `T` and keeping the unrestored one leaves a `T`.
+  const before = previous.unchangedAgentsOmitted === true ? undefined : previous.workflow?.agents;
+  const workflow = value.unchangedAgentsOmitted === true ? value.workflow : undefined;
+  const agents = workflow !== undefined && before !== undefined;
+  if (!prompt && !result && !agents) return value;
+  const { promptOmitted, resultOmitted, unchangedAgentsOmitted, ...rest } = value;
+  const merged = [...(before ?? [])];
+  for (const agent of workflow?.agents ?? []) merged[agent.index] = agent;
+  // Dropping the optional markers from `T` and keeping the unrestored ones leaves a `T`.
   return {
     ...rest,
     ...(prompt ? { prompt: previous.prompt } : promptOmitted === true ? { promptOmitted } : {}),
     ...(result ? { result: previous.result } : resultOmitted === true ? { resultOmitted } : {}),
+    ...(agents
+      ? { workflow: { ...workflow, agents: merged } }
+      : unchangedAgentsOmitted === true
+        ? { unchangedAgentsOmitted }
+        : {}),
   } as T;
 }
 
