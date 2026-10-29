@@ -12,12 +12,22 @@ export function resultSchemaInstruction(schema: ResultSchema): string {
 
 /** The last fenced JSON block in a reply, or the whole reply when it is bare JSON. */
 export function extractJson(text: string): Option.Option<unknown> {
+  const blocks: Array<string> = [];
+  let open: Array<string> | null = null;
+  for (const line of text.split("\n")) {
+    // CommonMark: a fence opens or closes only at a line start, indented at most 3 spaces.
+    if (/^ {0,3}```/.test(line)) {
+      if (open === null) open = [];
+      else {
+        blocks.push(open.join("\n"));
+        open = null;
+      }
+    } else open?.push(line);
+  }
   // An unclosed final fence must not fall back to an earlier, superseded block.
-  if ((text.match(/```/g) ?? []).length % 2 === 1) return Option.none();
-  const fences = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)];
-  const candidate = fences.length === 0 ? text : (fences.at(-1)?.[1] ?? "");
+  if (open !== null) return Option.none();
   try {
-    return Option.some(JSON.parse(candidate.trim()));
+    return Option.some(JSON.parse((blocks.at(-1) ?? text).trim()));
   } catch {
     return Option.none();
   }

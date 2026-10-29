@@ -5,7 +5,7 @@ import { taskPrompt } from "./delegatedTaskModes.ts";
 import { extractJson, validateJson } from "./resultSchema.ts";
 
 it("reads the last fenced JSON block, or bare JSON", () => {
-  expect(extractJson('first ```json\n{"a":1}\n``` then ```json\n{"a":2}\n```')).toEqual(
+  expect(extractJson('first\n```json\n{"a":1}\n```\nthen\n```json\n{"a":2}\n```')).toEqual(
     Option.some({ a: 2 }),
   );
   expect(extractJson(' {"a":3} ')).toEqual(Option.some({ a: 3 }));
@@ -14,8 +14,13 @@ it("reads the last fenced JSON block, or bare JSON", () => {
 
 it("never falls back to an earlier block when the final one is broken", () => {
   const accepted = '```json\n{"verdict":"accept"}\n```';
-  expect(extractJson(`${accepted} then \`\`\`json\n{"verdict":\n\`\`\``)).toEqual(Option.none());
-  expect(extractJson(`${accepted} then \`\`\`json\n{"verdict":"revise"}`)).toEqual(Option.none());
+  expect(extractJson(`${accepted}\nthen\n\`\`\`json\n{"verdict":\n\`\`\``)).toEqual(Option.none());
+  expect(extractJson(`${accepted}\nthen\n\`\`\`json\n{"verdict":"revise"}`)).toEqual(Option.none());
+});
+
+it("keeps backticks inside JSON strings", () => {
+  expect(extractJson('{"note":"```"}')).toEqual(Option.some({ note: "```" }));
+  expect(extractJson('Done.\n```json\n{"note":"```"}\n```')).toEqual(Option.some({ note: "```" }));
 });
 
 it("matches enum members that are objects or arrays by value", () => {
