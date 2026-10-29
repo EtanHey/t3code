@@ -16,7 +16,7 @@ import {
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
-import { dedupeSubagentBodies } from "@t3tools/shared/orchestrationV2DedupedBodies";
+import { restoreSubagentBodies } from "@t3tools/shared/orchestrationV2DedupedBodies";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -36,6 +36,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import { makeLiveBodyDeduper } from "../orchestration-v2/WireProjection.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -406,6 +407,37 @@ const workflowRunsIn = (scope: Scope.Scope) =>
 
 const sizeOf = Schema.encodeSync(Schema.fromJsonString(OrchestrationV2DomainEvent));
 
+/** The largest row update a client accepting deduped bodies receives, and its restored agents. */
+const largestUpdate = (threadId: ThreadId, subagentId: NodeId) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const stored = yield* orchestrator.streamStoredEventsFrom({ threadId, afterSequence: 0 }).pipe(
+      Stream.takeUntil(
+        ({ event }) =>
+          event.type === "subagent.updated" &&
+          event.payload.id === subagentId &&
+          event.payload.status !== "running",
+      ),
+      Stream.runCollect,
+    );
+    const toWire = makeLiveBodyDeduper({ workflowAgentDeltas: true });
+    let restored: OrchestrationV2Subagent | undefined;
+    let largest = 0;
+    for (const { sequence, event } of stored) {
+      const item = toWire({ kind: "event", sequence, event });
+      if (item.kind !== "event" || item.event.type !== "subagent.updated") continue;
+      if (item.event.payload.id !== subagentId || event.type !== "subagent.updated") continue;
+      // The record carries the spec once; updates are budgeted, without agent results.
+      if (restored !== undefined) {
+        const payload = { ...item.event.payload, result: null };
+        largest = Math.max(largest, Buffer.byteLength(sizeOf({ ...item.event, payload })));
+      }
+      restored = restoreSubagentBodies(item.event.payload, restored);
+      assert.deepEqual(restored.workflow, event.payload.workflow);
+    }
+    return { largest, agents: restored?.workflow?.agents ?? [] };
+  });
+
 it.layer(layerTest)("t3_workflow_run", (it) => {
   it.effect("runs mixed-provider stages after its parent's turn ends and wakes it once", () =>
     Effect.gen(function* () {
@@ -434,35 +466,80 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
     }),
   );
 
-  it.effect("keeps a mid-run workflow row update within 2 KB on the wire", () =>
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const runs = yield* workflowRunsIn(yield* Effect.scope);
-      const parent = yield* seedParent("bytes");
-      const { subagentId } = yield* runs.run(parent.scope, spec);
-      yield* childrenOf(parent.threadId, subagentId, 2);
-      const updates = (yield* orchestrator
-        .streamStoredEventsFrom({ threadId: parent.threadId, afterSequence: 0 })
-        .pipe(
-          Stream.takeUntil(
-            (stored) =>
-              stored.event.type === "subagent.updated" &&
-              stored.event.payload.id === subagentId &&
-              stored.event.payload.workflow?.agents.filter((agent) => agent.state === "running")
-                .length === 2,
-          ),
-          Stream.runCollect,
-        )).flatMap(({ event }) =>
-        event.type === "subagent.updated" && event.payload.id === subagentId ? [event] : [],
-      );
-      const [previous, latest] = updates.slice(-2);
-      // Clients that opt in get the spec once; later updates mark it omitted.
-      const wire = sizeOf({
-        ...latest!,
-        payload: dedupeSubagentBodies(latest!.payload, previous!.payload),
-      });
-      assert.isAtMost(Buffer.byteLength(wire), 2048);
-    }),
+  it.effect(
+    "keeps every workflow row update within 2 KB on the wire across a 20-agent stage and 3 rounds",
+    () =>
+      Effect.gen(function* () {
+        const runs = yield* workflowRunsIn(yield* Effect.scope);
+        const parent = yield* seedParent("bytes");
+        const wide = {
+          name: "wide",
+          stages: [
+            {
+              id: "fan",
+              agents: Array.from({ length: 20 }, (_, index) => ({
+                id: `agent-${index + 1}`,
+                task: `Part ${index + 1}.`,
+              })),
+            },
+            {
+              id: "loop",
+              repeat: {
+                stages: [
+                  { id: "revise", agents: [{ id: "writer", task: "Revise {{feedback}}." }] },
+                  {
+                    id: "review",
+                    agents: [
+                      {
+                        id: "judge",
+                        task: "Judge {{revise}}.",
+                        resultSchema: { type: "object", required: ["ok"] },
+                      },
+                    ],
+                  },
+                ],
+                judge: "judge",
+                until: { path: "ok", equals: true },
+                max: 3,
+              },
+            },
+          ],
+        };
+        const { subagentId } = yield* runs.run(parent.scope, wide);
+        yield* parent.endTurn;
+        const settled = new Set<NodeId>();
+        const settleNext = (count: number, text: string) =>
+          Effect.gen(function* () {
+            const children = yield* childrenOf(parent.threadId, subagentId, settled.size + count);
+            for (const child of children.filter((c) => !settled.has(c.id))) {
+              settled.add(child.id);
+              yield* settleChild(child, text);
+            }
+          });
+        yield* settleNext(20, "Part done.");
+        for (const ok of [false, false, true]) {
+          yield* settleNext(1, "Revised.");
+          yield* settleNext(1, `\`\`\`json\n{"ok":${ok}}\n\`\`\``);
+        }
+        assert.equal((yield* ended(parent.threadId, subagentId))?.status, "completed");
+
+        const accepted = yield* largestUpdate(parent.threadId, subagentId);
+        assert.lengthOf(accepted.agents, 26);
+        assert.isAtMost(accepted.largest, 2048);
+
+        // A stop mid-fanout ends all 20 at once.
+        const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+        const other = yield* seedParent("bytes-stop");
+        const stopped = yield* runs.run(other.scope, { name: "wide", stages: [wide.stages[0]] });
+        yield* childrenOf(other.threadId, stopped.subagentId, 20);
+        yield* threadManagement.stopWorkflow({
+          threadId: other.threadId,
+          subagentId: stopped.subagentId,
+        });
+        assert.equal((yield* ended(other.threadId, stopped.subagentId))?.status, "cancelled");
+        const cancelled = yield* largestUpdate(other.threadId, stopped.subagentId);
+        assert.isAtMost(cancelled.largest, 2048);
+      }),
   );
 
   it.effect("stops mid-run: running children stop, no later stage starts, it ends cancelled", () =>

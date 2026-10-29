@@ -92,8 +92,9 @@ function toRow(
           index,
           label: launch.agent,
           ...(childThreadId === undefined ? {} : { childThreadId }),
+          // A launch the run cancels as it ends stays live here; clients show the run's end for it.
           state:
-            launch.outcome === null
+            launch.outcome === null || launch.cancelRequested
               ? launch.taskId === null
                 ? "queued"
                 : "running"
@@ -172,7 +173,8 @@ const make = Effect.gen(function* () {
         const taskId =
           agent.childThreadId === undefined ? null : (taskIds.get(agent.childThreadId) ?? null);
         const outcome: WorkflowAgentOutcome | null =
-          agent.state === "queued" || agent.state === "running"
+          (agent.state === "queued" || agent.state === "running") &&
+          run.row.workflowRun?.status === "running"
             ? null
             : taskId === null
               ? { status: "failed", result: null }
