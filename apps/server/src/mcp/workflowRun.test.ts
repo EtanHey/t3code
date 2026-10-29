@@ -424,6 +424,27 @@ it.effect("repeat success requires acceptance or explicit exhausted pass", () =>
   }),
 );
 
+it.effect("a completed child whose JSON failed its resultSchema fails the run", () =>
+  Effect.gen(function* () {
+    const invalid: WorkflowAgentOutcome = {
+      status: "completed",
+      result: "x",
+      invalidOutput: "$.verdict: required",
+    };
+    const worker = makeFake({
+      reply: (start) => ({ outcome: start.agent.id === "a" ? invalid : ok(start.key) }),
+    });
+    expect((yield* runWorkflow(worker.port, innerLoop(3))).status).toBe("failed");
+    expect(worker.created).not.toContain("revise.writer#1");
+
+    const judge = makeFake({
+      reply: (start) => ({ outcome: start.agent.id === "judge" ? invalid : ok(start.key) }),
+    });
+    expect((yield* runWorkflow(judge.port, innerLoop(2, "pass"))).status).toBe("failed");
+    expect(judge.created).not.toContain("polish.editor#1");
+  }),
+);
+
 it.effect("late callbacks and restart cannot change terminal run or child states", () =>
   Effect.gen(function* () {
     const fake = makeFake({

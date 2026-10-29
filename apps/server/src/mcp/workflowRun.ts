@@ -53,8 +53,15 @@ export const WorkflowAgentOutcome = Schema.Struct({
   status: Schema.Literals(["completed", "failed", "cancelled", "interrupted", "invalid_output"]),
   result: Schema.NullOr(Schema.String),
   structuredResult: Schema.optional(Schema.Unknown),
+  invalidOutput: Schema.optional(Schema.String),
 });
 export type WorkflowAgentOutcome = typeof WorkflowAgentOutcome.Type;
+
+/** delegate_task keeps `completed` when the reply misses its resultSchema; a workflow fails it. */
+const checked = (outcome: WorkflowAgentOutcome): WorkflowAgentOutcome =>
+  outcome.status === "completed" && outcome.invalidOutput !== undefined
+    ? { status: "invalid_output", result: outcome.invalidOutput }
+    : outcome;
 
 const WorkflowLaunch = Schema.Struct({
   stage: WorkflowId,
@@ -332,7 +339,9 @@ const drive = Effect.fn("WorkflowRun.drive")(function* (
       Effect.catch((error) =>
         Effect.succeed<WorkflowAgentOutcome>({ status: "failed", result: error.message }),
       ),
-      Effect.flatMap((outcome) => Queue.offer(events, { _tag: "settled", key, outcome })),
+      Effect.flatMap((outcome) =>
+        Queue.offer(events, { _tag: "settled", key, outcome: checked(outcome) }),
+      ),
       Effect.forkScoped,
     );
   const startTask = Effect.fn("WorkflowRun.startAgent")(function* (launch: WorkflowLaunch) {
