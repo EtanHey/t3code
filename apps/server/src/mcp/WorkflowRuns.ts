@@ -1,5 +1,6 @@
 import {
   CommandId,
+  isOrchestrationV2WorkActive,
   type EnvironmentId,
   NodeId,
   type OrchestrationV2SubagentWorkflow,
@@ -16,7 +17,10 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import { forkParked } from "../serverActivation.ts";
 import {
   type McpInvocationScope,
   type McpThreadInvocationScope,
@@ -48,6 +52,12 @@ export class WorkflowRuns extends Context.Service<
       scope: McpInvocationScope,
       subagentId: NodeId,
     ) => Effect.Effect<WorkflowResult, OrchestratorMcpFailure>;
+    /** Continues every running workflow run, as after a restart. */
+    readonly start: () => Effect.Effect<
+      void,
+      never,
+      Scope.Scope | ProjectionStore.ProjectionStoreV2 | ServerEnvironment.ServerEnvironment
+    >;
   }
 >()("t3/mcp/WorkflowRuns") {}
 
@@ -139,6 +149,9 @@ const make = Effect.gen(function* () {
       Effect.mapError(() => failure("orchestration_error", "The workflow spec is unreadable.")),
       Effect.flatMap(decodeWorkflowSpec),
     );
+    const live = subagents.flatMap((child) =>
+      child.parentNodeId === row.id && isOrchestrationV2WorkActive(child.status) ? [child.id] : [],
+    );
     const childThreads = new Map(
       subagents.flatMap((child): Array<[string, ThreadId]> =>
         child.parentNodeId === row.id && child.childThreadId !== null
@@ -159,7 +172,7 @@ const make = Effect.gen(function* () {
       capabilities: new Set(["orchestration"]),
       issuedAt: 0,
     };
-    return { row, spec, childThreads, scope };
+    return { row, spec, childThreads, live, scope };
   });
 
   /** Rebuilds the runner's snapshot; finished launches read their outcome from their child task. */
@@ -198,7 +211,15 @@ const make = Effect.gen(function* () {
     taskId: NodeId,
   ) {
     const run = yield* readRun(environmentId, threadId, taskId);
-    if (run.row.workflowRun?.status !== "running" || run.row.runId === null) return;
+    // A restart can cut off an ended run's cancels; its recorded end and wake stay as they are.
+    if (run.row.workflowRun?.status !== "running") {
+      return yield* Effect.forEach(
+        run.live,
+        (child) => Effect.ignore(mcp.cancelTask(run.scope, { taskId: child })),
+        { discard: true },
+      );
+    }
+    if (run.row.runId === null) return;
     const { row, spec, childThreads, scope } = run;
     const owner = { taskId: row.id, runId: row.runId! };
     const port: WorkflowPort = {
@@ -320,7 +341,18 @@ const make = Effect.gen(function* () {
     return workflowResult(found.spec, yield* snapshotOf(found));
   });
 
-  return WorkflowRuns.of({ run, status });
+  const start = () =>
+    forkParked(
+      Effect.gen(function* () {
+        const environmentId = yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId;
+        const open = yield* (yield* ProjectionStore.ProjectionStoreV2).getOpenWorkflowRuns;
+        for (const { parentThreadId, taskId } of open) {
+          yield* follow(environmentId, parentThreadId, taskId).pipe(Effect.forkIn(runners));
+        }
+      }).pipe(Effect.ignoreCause({ log: true })),
+    );
+
+  return WorkflowRuns.of({ run, status, start });
 });
 
 export const layer = Layer.effect(WorkflowRuns, make);

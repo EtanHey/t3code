@@ -36,6 +36,8 @@ import {
   OrchestratorMcpThreadWaitResult,
   ThreadMetadataMcpUpdateInput,
   ThreadMetadataMcpUpdateResult,
+  NodeId,
+  ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
@@ -49,6 +51,7 @@ import * as PeerLinks from "../../../peer/PeerLinks.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
+import * as WorkflowRuns from "../../WorkflowRuns.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -122,9 +125,44 @@ const TaskCancelTool = Tool.make("task_cancel", {
   .annotate(Tool.Title, "Cancel delegated task")
   .annotate(Tool.Destructive, true);
 
+const workflowDependencies = [...dependencies, WorkflowRuns.WorkflowRuns];
+
+// Stages stay loose here to keep the tool list small; the service decodes the full spec.
+const WorkflowRunTool = Tool.make("t3_workflow_run", {
+  description:
+    "Run agents in stages; returns at once and wakes you when done. Stages run in order: `{id, agents:[{id, task, target?, role?, isolation?, resultSchema?}]}` in parallel, or `{id, repeat:{stages, judge, until:{path, equals}, max, onExhausted?}}`. `{{stage}}`, `{{stage.agent}}`, `{{feedback}}` in a task insert results.",
+  parameters: Schema.Struct({
+    name: TrimmedNonEmptyString,
+    stages: Schema.Array(Schema.Unknown),
+    timeoutMs: Schema.optional(Schema.Int),
+  }),
+  success: Schema.Struct({
+    subagentId: NodeId,
+    next: Schema.Literal(ORCHESTRATOR_MCP_RUNNING_TASK_NEXT),
+  }),
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: workflowDependencies,
+})
+  .annotate(Tool.Title, "Run a workflow")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true);
+
+const WorkflowStatusTool = Tool.make("t3_workflow_status", {
+  description: "Read a `t3_workflow_run` and each agent's result.",
+  parameters: Schema.Struct({ subagentId: NodeId }),
+  success: Schema.Unknown,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: workflowDependencies,
+})
+  .annotate(Tool.Title, "Get workflow status")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
 const WorkflowStopTool = Tool.make("t3_workflow_stop", {
   description:
-    "Stop a running Claude workflow in a thread. `subagentId`: coordinator from `t3_thread_read` 'activity'. Stops only the workflow, not the thread.",
+    "Stop a running workflow in a thread. `subagentId`: from `t3_workflow_run`, or a Claude coordinator in `t3_thread_read` 'activity'. Stops only the workflow, not the thread.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     ...OrchestrationV2StopWorkflowInput.fields,
@@ -352,6 +390,8 @@ export const OrchestratorToolkit = Toolkit.make(
   DelegateTaskTool,
   TaskStatusTool,
   TaskCancelTool,
+  WorkflowRunTool,
+  WorkflowStatusTool,
   WorkflowStopTool,
   BackgroundWaitTool,
   ScheduleTaskTool,
