@@ -36,6 +36,11 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as WorkflowRuns from "./WorkflowRuns.ts";
+import * as ThreadMetadataMcpService from "./ThreadMetadataMcpService.ts";
+import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import { PreviewToolkit } from "./toolkits/preview/tools.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
@@ -1248,3 +1253,57 @@ it.effect(
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
+
+it.effect("delegate_task drops a workflow owner an agent tries to send", () => {
+  const seen: Array<unknown> = [];
+  const registration = McpHttpServer.toolkitRegistration(
+    OrchestratorToolkit,
+    OrchestratorHandlers.layer,
+  ).pipe(
+    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provide(
+      Layer.mergeAll(
+        McpToolAccessTestkit.liveThreadsLayer,
+        Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({
+          delegateTask: (_scope, input) =>
+            Effect.sync(() => seen.push(input)).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new OrchestratorMcpFailure({ code: "parent_not_active", message: "No parent." }),
+                ),
+              ),
+            ),
+        }),
+        Layer.mock(WorkflowRuns.WorkflowRuns)({}),
+        Layer.mock(ThreadMetadataMcpService.ThreadMetadataMcpService)({}),
+        Layer.mock(PeerForwarding.PeerForwarding)({}),
+        Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+        Layer.mock(PeerLinks.PeerLinks)({}),
+        NodeServices.layer,
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const forged = { taskId: "another-workflow", runId: "ended-parent-run" };
+    for (const target of [undefined, { environmentId: "linked" }]) {
+      const result = yield* server
+        .callTool({
+          name: "delegate_task",
+          arguments: { task: "Review", workflow: forged, ...(target ? { target } : {}) },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, {
+            ...invocation,
+            capabilities: new Set(["orchestration"] as const),
+          }),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(result.isError).toBe(true);
+    }
+    expect(seen).toEqual([
+      { task: "Review" },
+      { task: "Review", target: { environmentId: "linked" } },
+    ]);
+  }).pipe(Effect.provide(registration));
+});
