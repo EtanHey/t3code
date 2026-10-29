@@ -853,6 +853,9 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
 });
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
+/** The JSON Schema subset (type, properties, required, items, enum) a delegated task's final JSON must match. */
+export const OrchestrationV2ResultSchema = Schema.Record(Schema.String, Schema.Unknown);
+
 export const OrchestrationV2Subagent = Schema.Struct({
   id: NodeId,
   threadId: ThreadId,
@@ -872,6 +875,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
+  resultSchema: Schema.optional(OrchestrationV2ResultSchema),
   status: Schema.Literals([
     "idle",
     "pending",
@@ -3267,6 +3271,7 @@ export const OrchestrationV2Command = Schema.Union([
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     // Defaults to settled_only; fire-and-forget wakes require always.
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+    resultSchema: Schema.optional(OrchestrationV2ResultSchema),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({
@@ -3370,6 +3375,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     modelSelection: ModelSelection,
     remoteChild: OrchestrationV2RemoteTaskChild,
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+    resultSchema: Schema.optional(OrchestrationV2ResultSchema),
   }),
   /**
    * Completes a delegated task that ran in a linked environment, with what its

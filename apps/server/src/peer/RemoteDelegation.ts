@@ -305,6 +305,7 @@ const make = Effect.gen(function* () {
           modelSelection: launched.modelSelection,
           remoteChild,
           completionWake: input.mode === "wait" ? "settled_only" : "always",
+          ...(input.resultSchema === undefined ? {} : { resultSchema: input.resultSchema }),
         })
         .pipe(
           // The cause goes to the log; the caller learns only that recording failed.
