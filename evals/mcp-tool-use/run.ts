@@ -373,6 +373,10 @@ const t3Tools: ReadonlyArray<ApiTool> = t3SourceTools.map((tool) => ({
   description: Tool.getDescription(tool) ?? "",
   input_schema: advertisedJsonSchema(tool),
 }));
+// McpHttpServer decodes each tool's parameters as JSON before its handler runs.
+const decodeWorkflowParameters = Schema.decodeUnknownEffect(
+  Schema.toCodecJson(OrchestratorToolkit.tools.t3_workflow_run.parametersSchema),
+);
 const enabledWhen = (predicate: () => boolean) =>
   new Set(
     t3SourceTools
@@ -1293,7 +1297,8 @@ const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* 
     );
   if (isT3Name(call.name)) {
     if (name === "t3_workflow_run") {
-      const rejected = yield* decodeWorkflowSpec(input).pipe(
+      const rejected = yield* decodeWorkflowParameters(input).pipe(
+        Effect.flatMap(decodeWorkflowSpec),
         Effect.as(null),
         Effect.catch((error) => Effect.succeed(error.message)),
       );

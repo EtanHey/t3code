@@ -127,13 +127,19 @@ const TaskCancelTool = Tool.make("task_cancel", {
 
 const workflowDependencies = [...dependencies, WorkflowRuns.WorkflowRuns];
 
-// Stages stay loose here to keep the tool list small; the service decodes the full spec.
+// Stages advertise only their outline to keep the tool list small; the service decodes the full spec.
+const WorkflowStage = Schema.Struct({
+  id: Schema.String,
+  agents: Schema.optional(Schema.Array(Schema.Unknown)),
+  repeat: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+}).annotate({ message: "stages[] entries are objects: {id, agents:[…]} or {id, repeat:{…}}" });
+
 const WorkflowRunTool = Tool.make("t3_workflow_run", {
   description:
     "Run agents in stages; returns at once and wakes you when done. Stages run in order: `{id, agents:[{id, task, target?, role?, isolation?, resultSchema?}]}` in parallel, or `{id, repeat:{stages, judge, until:{path, equals}, max, onExhausted?}}`. `{{stage}}`, `{{stage.agent}}`, `{{feedback}}` in a task insert results.",
   parameters: Schema.Struct({
     name: TrimmedNonEmptyString,
-    stages: Schema.Array(Schema.Unknown),
+    stages: Schema.Array(WorkflowStage),
     timeoutMs: Schema.optional(Schema.Int),
   }),
   success: Schema.Struct({

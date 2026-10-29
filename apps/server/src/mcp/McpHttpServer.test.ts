@@ -35,6 +35,7 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import * as WorkflowRuns from "./WorkflowRuns.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import { PreviewToolkit } from "./toolkits/preview/tools.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
@@ -145,6 +146,7 @@ const layerRecordingTools = (calls: Array<unknown>) => {
     OrchestratorToolkit.tools.delegate_task,
     OrchestratorToolkit.tools.t3_thread_read,
     OrchestratorToolkit.tools.t3_thread_wait,
+    OrchestratorToolkit.tools.t3_workflow_run,
     ProjectToolkit.tools.t3_project_update,
   );
   const record = McpToolAccess.reads((params: unknown) =>
@@ -160,6 +162,7 @@ const layerRecordingTools = (calls: Array<unknown>) => {
       delegate_task: record,
       t3_thread_read: record,
       t3_thread_wait: record,
+      t3_workflow_run: record,
       t3_project_update: record,
     }),
   ).pipe(
@@ -168,6 +171,7 @@ const layerRecordingTools = (calls: Array<unknown>) => {
       Layer.mergeAll(
         McpToolAccessTestkit.liveThreadsLayer,
         Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({}),
+        Layer.mock(WorkflowRuns.WorkflowRuns)({}),
         Layer.mock(ProjectService.ProjectService)({}),
         NodeServices.layer,
       ),
@@ -462,6 +466,29 @@ it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
     }).pipe(Effect.provide(layerRecordingTools(calls)));
   },
 );
+
+it.effect("rejects a string workflow stage by naming the stage shape before the run starts", () => {
+  const calls: Array<unknown> = [];
+  return Effect.gen(function* () {
+    const rejected = yield* callTool("t3_workflow_run", {
+      name: "review",
+      stages: ['{"id":"draft","agents":[{"id":"a","task":"Draft."}]}'],
+    }).pipe(Effect.flip);
+
+    expect(String(rejected)).toContain(
+      'stages[] entries are objects: {id, agents:[…]} or {id, repeat:{…}}\n  at ["stages"][0]',
+    );
+    expect(calls).toEqual([]);
+  }).pipe(Effect.provide(layerRecordingTools(calls)));
+});
+
+it("advertises workflow stages as objects that need an id", () => {
+  const schema = advertisedJsonSchema(OrchestratorToolkit.tools.t3_workflow_run) as {
+    properties: { stages: { items?: { type?: string; required?: Array<string> } } };
+  };
+  expect(schema.properties.stages.items?.type).toBe("object");
+  expect(schema.properties.stages.items?.required).toEqual(["id"]);
+});
 
 it("keeps cross-tool routing out of the delegate_task description", () => {
   const description = OrchestratorToolkit.tools.delegate_task.description ?? "";
