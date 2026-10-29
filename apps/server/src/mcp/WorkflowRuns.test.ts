@@ -599,6 +599,69 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
     }),
   );
 
+  it.effect("status, wake and resume agree that a schema-failed judge failed the run", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const runs = yield* workflowRunsIn(yield* Effect.scope);
+      const live = yield* seedParent("invalid-judge");
+      const { subagentId } = yield* runs.run(live.scope, spec);
+      yield* live.endTurn;
+      const drafts = yield* childrenOf(live.threadId, subagentId, 2);
+      for (const child of drafts) yield* settleChild(child, "Draft.");
+      const judge = (yield* childrenOf(live.threadId, subagentId, 3)).find(
+        (child) => !drafts.some((draft) => draft.id === child.id),
+      )!;
+      yield* settleChild(judge, '```json\n{"nope":true}\n```');
+      const row = yield* ended(live.threadId, subagentId);
+      assert.equal(row?.status, "failed");
+      const woken = JSON.parse(row?.result ?? "{}");
+      assert.equal(woken.stages[1].agents[0].status, "invalid_output");
+      assert.deepEqual(yield* runs.status(live.scope, subagentId), woken);
+
+      // The runner records the judge's outcome, and the server stops before it ends the run.
+      const parent = yield* seedParent("invalid-judge-restart");
+      const before = yield* Scope.make();
+      const resumed = yield* (yield* workflowRunsIn(before)).run(parent.scope, spec);
+      yield* parent.endTurn;
+      const first = yield* childrenOf(parent.threadId, resumed.subagentId, 2);
+      for (const child of first) yield* settleChild(child, "Draft.");
+      const late = (yield* childrenOf(parent.threadId, resumed.subagentId, 3)).find(
+        (child) => !first.some((draft) => draft.id === child.id),
+      )!;
+      yield* Scope.close(before, Exit.void);
+      yield* settleChild(late, '```json\n{"nope":true}\n```');
+      const open = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+        (task) => task.id === resumed.subagentId,
+      )!;
+      yield* orchestrator.dispatch({
+        type: "workflow_run.update",
+        commandId: CommandId.make("command:invalid-judge-restart:judged"),
+        parentThreadId: parent.threadId,
+        taskId: resumed.subagentId,
+        workflow: {
+          ...open.workflow!,
+          agents: open.workflow!.agents.map((agent) =>
+            agent.label === "j"
+              ? { ...agent, childThreadId: late.childThreadId!, state: "failed" as const }
+              : agent,
+          ),
+        },
+      });
+      assert.lengthOf(
+        (yield* projections.getOpenWorkflowRuns).filter(
+          ({ taskId }) => taskId === resumed.subagentId,
+        ),
+        1,
+      );
+
+      yield* (yield* workflowRunsIn(yield* Effect.scope)).start();
+      const after = yield* ended(parent.threadId, resumed.subagentId);
+      assert.equal(after?.status, "failed");
+      assert.equal(JSON.parse(after?.result ?? "{}").stages[1].agents[0].status, "invalid_output");
+    }),
+  );
+
   it.effect("cancels the live children of a run that ended just before a restart", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

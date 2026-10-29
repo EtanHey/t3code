@@ -53,15 +53,8 @@ export const WorkflowAgentOutcome = Schema.Struct({
   status: Schema.Literals(["completed", "failed", "cancelled", "interrupted", "invalid_output"]),
   result: Schema.NullOr(Schema.String),
   structuredResult: Schema.optional(Schema.Unknown),
-  invalidOutput: Schema.optional(Schema.String),
 });
 export type WorkflowAgentOutcome = typeof WorkflowAgentOutcome.Type;
-
-/** delegate_task keeps `completed` when the reply misses its resultSchema; a workflow fails it. */
-const checked = (outcome: WorkflowAgentOutcome): WorkflowAgentOutcome =>
-  outcome.status === "completed" && outcome.invalidOutput !== undefined
-    ? { status: "invalid_output", result: outcome.invalidOutput }
-    : outcome;
 
 const WorkflowLaunch = Schema.Struct({
   stage: WorkflowId,
@@ -111,11 +104,6 @@ export interface WorkflowPort {
   readonly await: (taskId: string) => Effect.Effect<WorkflowAgentOutcome, OrchestratorMcpFailure>;
   readonly cancel: (taskId: string) => Effect.Effect<void, OrchestratorMcpFailure>;
   readonly persist: (snapshot: WorkflowSnapshot) => Effect.Effect<void, OrchestratorMcpFailure>;
-}
-
-export interface WorkflowRunOptions {
-  /** Completes when `t3_workflow_stop` or the parent's cancel asks the run to stop. */
-  readonly stop?: Effect.Effect<void>;
 }
 
 type AgentResult = {
@@ -300,14 +288,13 @@ const findAgent = (spec: WorkflowSpec, launch: WorkflowLaunch) =>
 
 type WorkflowEvent =
   | { readonly _tag: "settled"; readonly key: string; readonly outcome: WorkflowAgentOutcome }
-  | { readonly _tag: "stop" }
   | { readonly _tag: "tick" };
 
-const drive = Effect.fn("WorkflowRun.drive")(function* (
+/** Continues from the last persisted snapshot: re-awaits live tasks, never relaunches one. */
+export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
   port: WorkflowPort,
   spec: WorkflowSpec,
   initial: WorkflowSnapshot,
-  options: WorkflowRunOptions,
 ) {
   const events = yield* Queue.unbounded<WorkflowEvent>();
   let state = initial;
@@ -339,9 +326,7 @@ const drive = Effect.fn("WorkflowRun.drive")(function* (
       Effect.catch((error) =>
         Effect.succeed<WorkflowAgentOutcome>({ status: "failed", result: error.message }),
       ),
-      Effect.flatMap((outcome) =>
-        Queue.offer(events, { _tag: "settled", key, outcome: checked(outcome) }),
-      ),
+      Effect.flatMap((outcome) => Queue.offer(events, { _tag: "settled", key, outcome })),
       Effect.forkScoped,
     );
   const startTask = Effect.fn("WorkflowRun.startAgent")(function* (launch: WorkflowLaunch) {
@@ -362,12 +347,6 @@ const drive = Effect.fn("WorkflowRun.drive")(function* (
     yield* watch(key, started.success);
   });
 
-  if (options.stop !== undefined) {
-    yield* options.stop.pipe(
-      Effect.andThen(Queue.offer(events, { _tag: "stop" })),
-      Effect.forkScoped,
-    );
-  }
   const remaining = state.deadline - (yield* Clock.currentTimeMillis);
   if (remaining > 0) {
     yield* Effect.sleep(remaining).pipe(
@@ -383,7 +362,6 @@ const drive = Effect.fn("WorkflowRun.drive")(function* (
 
   const apply = (event: WorkflowEvent) => {
     if (event._tag === "tick") return Effect.void;
-    if (event._tag === "stop") return state.stop ? Effect.void : save({ ...state, stop: true });
     const launch = state.launches.find((l) => keyOf(l) === event.key);
     return launch === undefined || launch.outcome !== null
       ? Effect.void
@@ -431,16 +409,6 @@ const drive = Effect.fn("WorkflowRun.drive")(function* (
   return workflowResult(spec, state);
 }, Effect.scoped);
 
-/** Starts a run. Children keep running if the server stops; `resumeWorkflow` picks them up. */
-export const runWorkflow = Effect.fn("WorkflowRun.run")(function* (
-  port: WorkflowPort,
-  input: unknown,
-  options: WorkflowRunOptions = {},
-) {
-  const spec = yield* decodeWorkflowSpec(input);
-  return yield* drive(port, spec, initialSnapshot(spec, yield* Clock.currentTimeMillis), options);
-});
-
 export const initialSnapshot = (spec: WorkflowSpec, now: number): WorkflowSnapshot => ({
   status: "running",
   cursor: 0,
@@ -450,16 +418,6 @@ export const initialSnapshot = (spec: WorkflowSpec, now: number): WorkflowSnapsh
   stop: false,
   launches: [],
   exits: [],
-});
-
-/** Continues from the last persisted snapshot: re-awaits live tasks, never relaunches one. */
-export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
-  port: WorkflowPort,
-  spec: WorkflowSpec,
-  snapshot: WorkflowSnapshot,
-  options: WorkflowRunOptions = {},
-) {
-  return yield* drive(port, spec, snapshot, options);
 });
 
 export function workflowResult(spec: WorkflowSpec, state: WorkflowSnapshot): WorkflowResult {

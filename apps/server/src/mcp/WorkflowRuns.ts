@@ -74,12 +74,17 @@ const unavailable = (error: { readonly message: string }) =>
 
 const isOutcomeStatus = Schema.is(WorkflowAgentOutcome.fields.status);
 
-const outcomeOf = (result: OrchestratorMcpDelegateTaskResult): WorkflowAgentOutcome => ({
-  status: isOutcomeStatus(result.status) ? result.status : "failed",
-  result: result.summary,
-  ...(result.structuredResult === undefined ? {} : { structuredResult: result.structuredResult }),
-  ...(result.invalidOutput === undefined ? {} : { invalidOutput: result.invalidOutput }),
-});
+/** delegate_task keeps `completed` when the reply misses its resultSchema; a workflow fails it. */
+const outcomeOf = (result: OrchestratorMcpDelegateTaskResult): WorkflowAgentOutcome =>
+  result.status === "completed" && result.invalidOutput !== undefined
+    ? { status: "invalid_output", result: result.invalidOutput }
+    : {
+        status: isOutcomeStatus(result.status) ? result.status : "failed",
+        result: result.summary,
+        ...(result.structuredResult === undefined
+          ? {}
+          : { structuredResult: result.structuredResult }),
+      };
 
 /** The row keeps launches as `workflow.agents` (results stay on the child tasks) and the rest as `workflowRun`. */
 function toRow(
@@ -225,11 +230,14 @@ const make = Effect.gen(function* () {
     const port: WorkflowPort = {
       start: ({ key, agent: { id: _id, task: _template, ...options }, task }) =>
         mcp
-          .delegateTask(
-            scope,
-            { ...options, task, title: key, mode: "async", clientRequestId: key },
-            owner,
-          )
+          .delegateTask(scope, {
+            ...options,
+            task,
+            title: key,
+            mode: "async",
+            clientRequestId: key,
+            workflow: owner,
+          })
           .pipe(
             Effect.map((started) => {
               if (started.childThreadId !== null) {
