@@ -9,6 +9,8 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
+import { resultSchemaInstruction } from "./resultSchema.ts";
+
 /** How much a runtime mode allows, narrowest first. */
 export function runtimeModeRank(mode: RuntimeMode): number {
   switch (mode) {
@@ -89,7 +91,11 @@ export function resolveInteractionMode(
 
 /** The task as its child receives it, with the role the caller asked for. */
 export function taskPrompt(input: OrchestratorMcpDelegateTaskInput): string {
+  const task =
+    input.resultSchema === undefined
+      ? input.task
+      : `${input.task}\n\n${resultSchemaInstruction(input.resultSchema)}`;
   return input.role === undefined || input.role === "general"
-    ? input.task
-    : `Act as the ${input.role} sub-agent for this task.\n\n${input.task}`;
+    ? task
+    : `Act as the ${input.role} sub-agent for this task.\n\n${task}`;
 }

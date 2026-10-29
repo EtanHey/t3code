@@ -412,6 +412,134 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
+  it.effect("resultSchema: checks a finished task's JSON at read time, here and remote", () =>
+    Effect.gen(function* () {
+      const parentThreadId = ThreadId.make("thread:mcp-result-schema-parent");
+      const childThreadId = ThreadId.make("thread:mcp-result-schema-child");
+      const taskId = NodeId.make("node:mcp-result-schema-task");
+      const resultSchema = {
+        type: "object",
+        required: ["verdict"],
+        properties: { verdict: { enum: ["accept", "revise"] } },
+      };
+      let task: Record<string, unknown> = {};
+      const parentProjection = () =>
+        ({
+          thread: { id: parentThreadId },
+          runs: [],
+          contextTransfers: [],
+          subagents: [
+            {
+              id: taskId,
+              threadId: parentThreadId,
+              origin: "app_owned",
+              childThreadId,
+              driver: "codex",
+              providerInstanceId: "codex",
+              model: "gpt-5.6-terra",
+              status: "completed",
+              completionDelivery: { state: "acknowledged" },
+              ...task,
+            },
+          ],
+        }) as unknown as OrchestrationV2ThreadProjection;
+      const childProjection = () =>
+        ({
+          thread: { id: childThreadId, title: "Child task" },
+          runs: [
+            {
+              id: RunId.make("run:mcp-result-schema-child"),
+              ordinal: 1,
+              status: "completed",
+              delegatedTaskId: taskId,
+            },
+          ],
+          contextTransfers: [],
+          messages: [],
+          subagents: [],
+          providerThreads: [],
+          runtimeRequests: [],
+          nodes: [],
+          turnItems: [],
+        }) as unknown as OrchestrationV2ThreadProjection;
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: (threadId) =>
+            Effect.succeed(threadId === parentThreadId ? parentProjection() : childProjection()),
+          getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
+        }),
+        ServerSettings.layerTest(),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
+        }),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      const scope: McpInvocationScope = {
+        environmentId: EnvironmentId.make("environment:mcp-result-schema"),
+        requestNamespace: "provider-session:mcp-result-schema",
+        thread: {
+          threadId: parentThreadId,
+          providerSessionId: "provider-session:mcp-result-schema",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        client: undefined,
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1,
+      };
+      const remote = {
+        childThreadId: null,
+        remoteChild: {
+          environmentId: EnvironmentId.make("environment:box"),
+          threadId: ThreadId.make("thread:on-the-box"),
+          label: "Box",
+        },
+      };
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const read = (row: Record<string, unknown>) => {
+          task = row;
+          return service.taskStatus(scope, taskId);
+        };
+        const matching = 'Done.\n```json\n{"verdict":"accept"}\n```';
+
+        const plain = yield* read({ result: matching });
+        assert.notProperty(plain, "structuredResult");
+        assert.notProperty(plain, "invalidOutput");
+        assert.equal(plain.summary, matching);
+        assert.deepEqual(yield* read({ result: matching, resultSchema }), {
+          ...plain,
+          structuredResult: { verdict: "accept" },
+        });
+
+        const mismatch = yield* read({ result: '```json\n{"verdict":"maybe"}\n```', resultSchema });
+        assert.equal(mismatch.status, "completed");
+        assert.notProperty(mismatch, "structuredResult");
+        assert.equal(mismatch.invalidOutput, '$.verdict: not one of ["accept","revise"]');
+        assert.equal(
+          (yield* read({ result: "No JSON at all.", resultSchema })).invalidOutput,
+          "No JSON in the reply.",
+        );
+
+        const remotePlain = yield* read({ ...remote, result: matching });
+        assert.notProperty(remotePlain, "structuredResult");
+        assert.deepEqual(yield* read({ ...remote, result: matching, resultSchema }), {
+          ...remotePlain,
+          structuredResult: { verdict: "accept" },
+        });
+        assert.equal(
+          (yield* read({ ...remote, result: '{"verdict":1}', resultSchema })).invalidOutput,
+          '$.verdict: not one of ["accept","revise"]',
+        );
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+    }),
+  );
+
   it.effect("does not dispose delivery when a nonterminal task has no active child run", () =>
     Effect.gen(function* () {
       const parentThreadId = ThreadId.make("thread:mcp-cancel-parent");

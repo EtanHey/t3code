@@ -37,6 +37,7 @@ import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
+  OrchestrationV2ResultSchema,
   OrchestrationV2RunStatus,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
@@ -193,6 +194,16 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
     }),
   ),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
+  resultSchema: Schema.optional(
+    OrchestrationV2ResultSchema.annotate({
+      description:
+        "JSON Schema: type, properties, required, items, enum. The child ends with matching JSON, returned as `structuredResult`, or `invalidOutput` says why not.",
+    }).check(
+      Schema.makeFilter((schema) =>
+        JSON.stringify(schema).length <= 8_000 ? true : "resultSchema is over 8,000 characters.",
+      ),
+    ),
+  ),
 });
 export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTaskInput.Type;
 
@@ -223,6 +234,8 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   model: Schema.NullOr(Schema.String),
   options: Schema.optional(Schema.Array(ProviderOptionSelection)),
   summary: Schema.NullOr(Schema.String),
+  structuredResult: Schema.optional(Schema.Unknown),
+  invalidOutput: Schema.optional(Schema.String),
   resultContextTransferId: Schema.NullOr(ContextTransferId),
   hasPendingQuestion: Schema.Boolean.annotate({
     description:

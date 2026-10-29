@@ -448,6 +448,100 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
       }),
   );
 
+  it.effect("keeps a delegated task's resultSchema through its child's completion", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("result-schema-parent");
+      const originRunId = RunId.make("result-schema-origin");
+      yield* seedParentWithTerminalTask({
+        threadId,
+        projectId: ProjectId.make("result-schema-project"),
+        runId: originRunId,
+        rootNodeId: NodeId.make("result-schema-origin-root"),
+        taskId: NodeId.make("result-schema-earlier"),
+        deliveryState: "acknowledged",
+        now,
+      });
+      const origin = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      yield* sink.write({
+        events: [
+          {
+            ...runEvent({ threadId, runId: originRunId, ordinal: 1, status: "completed", now }),
+            payload: { ...origin, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("result-schema-start"),
+        threadId,
+        messageId: MessageId.make("result-schema-start"),
+        text: "Delegate a judge",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "queue_after_active" },
+      });
+      yield* orchestrator.resumeQueuedRuns;
+      const parentRun = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+      const resultSchema = { type: "object", required: ["verdict"] };
+      yield* orchestrator.dispatch({
+        type: "delegated_task.request",
+        createdBy: "agent",
+        creationSource: "mcp",
+        commandId: CommandId.make("result-schema-delegate"),
+        parentThreadId: threadId,
+        parentRunId: parentRun.id,
+        parentNodeId: parentRun.rootNodeId!,
+        task: "Judge it",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        completionWake: "always",
+        resultSchema,
+      });
+      const delegated = (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+        (task) => task.childThreadId !== null,
+      )!;
+      assert.deepEqual(delegated.resultSchema, resultSchema);
+      const childThreadId = delegated.childThreadId!;
+      const childRun = (yield* orchestrator.getThreadProjection(childThreadId)).runs[0]!;
+      const afterSequence = yield* sink.latestSequence();
+      yield* sink.write({
+        events: [
+          {
+            ...runEvent({
+              threadId: childThreadId,
+              runId: childRun.id,
+              ordinal: childRun.ordinal,
+              status: "completed",
+              now,
+            }),
+            payload: { ...childRun, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      yield* sink.stream({ afterSequence, eventType: "subagent.updated" }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "subagent.updated" &&
+            stored.event.payload.id === delegated.id &&
+            stored.event.payload.status === "completed",
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      const finished = (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+        (task) => task.id === delegated.id,
+      );
+      assert.equal(finished?.status, "completed");
+      assert.deepEqual(finished?.resultSchema, resultSchema);
+    }),
+  );
+
   it.effect("acceptance batches pending siblings without acknowledging their results", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

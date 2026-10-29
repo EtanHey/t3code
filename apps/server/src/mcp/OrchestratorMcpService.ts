@@ -117,6 +117,7 @@ import {
   runtimeModeRank,
   taskPrompt,
 } from "./delegatedTaskModes.ts";
+import { withStructuredResult } from "./resultSchema.ts";
 import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
@@ -1563,7 +1564,7 @@ const make = Effect.gen(function* () {
     } satisfies OrchestratorMcpDelegateTaskResult;
     const response: OrchestratorMcpDelegateTaskResult =
       endsTaskWait(result) || task.completionDelivery?.state === "disposed"
-        ? result
+        ? withStructuredResult(task.resultSchema, result)
         : { ...result, next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT };
     if (
       acknowledgeTerminal &&
@@ -1681,7 +1682,7 @@ const make = Effect.gen(function* () {
           ),
         );
     }
-    return {
+    return withStructuredResult(task.resultSchema, {
       taskId: task.id,
       childThreadId: null,
       ...(task.remoteChild === undefined
@@ -1706,7 +1707,7 @@ const make = Effect.gen(function* () {
       hasPendingQuestion: false,
       pendingApproval: null,
       waitTimedOut,
-    } satisfies OrchestratorMcpDelegateTaskResult;
+    });
   });
 
   const waitForTask = Effect.fn("OrchestratorMcpService.waitForTask")(
@@ -2291,6 +2292,7 @@ const make = Effect.gen(function* () {
           // delegations deliver through the blocking tool call, so a wake is
           // only needed if the parent settled first (timeout, disconnect).
           completionWake: input.mode === "wait" ? "settled_only" : "always",
+          ...(input.resultSchema === undefined ? {} : { resultSchema: input.resultSchema }),
         })
         .pipe(
           Effect.mapError((error) =>

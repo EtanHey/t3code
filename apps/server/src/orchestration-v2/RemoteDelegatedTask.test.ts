@@ -225,6 +225,45 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
     }),
   );
 
+  it.effect("keeps its resultSchema on the task through completion", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const parent = yield* seedLiveParent("result-schema");
+      const resultSchema = { type: "object", required: ["verdict"] };
+      const recorded = yield* orchestrator.dispatch({
+        type: "delegated_task.remote.request",
+        commandId: CommandId.make("command:remote-delegate:result-schema"),
+        parentThreadId: parent.threadId,
+        parentRunId: parent.runId,
+        parentNodeId: parent.rootNodeId,
+        task: "Judge it there.",
+        driver: ProviderDriverKind.make("remote"),
+        modelSelection,
+        remoteChild,
+        resultSchema,
+      });
+      const taskEvent = recorded.storedEvents.find(
+        (stored) => stored.event.type === "subagent.updated",
+      );
+      const taskId =
+        taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload.id : undefined;
+      assert.isDefined(taskId);
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.complete",
+        commandId: CommandId.make("command:remote-complete:result-schema"),
+        parentThreadId: parent.threadId,
+        taskId: taskId!,
+        status: "completed",
+        result: '{"verdict":"accept"}',
+        stoppedThere: "ran-out",
+      });
+      const projection = yield* orchestrator.getThreadProjection(parent.threadId);
+      const task = projection.subagents.find((candidate) => candidate.id === taskId);
+      assert.equal(task?.status, "completed");
+      assert.deepEqual(task?.resultSchema, resultSchema);
+    }),
+  );
+
   it.effect("keeps a newer stop recoverable after an older acknowledgement", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
