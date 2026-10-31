@@ -374,15 +374,16 @@ function decide(spec: WorkflowSpec, state: WorkflowSnapshot, now: number): Step 
     exits: [...state.exits, { stage: loop.id, reason, round: state.round }],
   });
   const value = judgedIn(state, loop, state.round);
-  if (accepts(repeat.until, value)) return advance(exit("accepted"));
-  // A missing or malformed judge result fails the run; it never counts as a dry vote.
+  // A missing or malformed judge result fails the run; it never accepts or counts as dry.
   const growth = growthOf(loop, value);
   if (growth === null) return finish("failed");
+  if (accepts(repeat.until, value)) return advance(exit("accepted"));
   const round = state.round + 1;
   const recorded = state.launches.filter((l) => l.round === round && isGrown(loop, l));
+  // Keys are unique across the run: every spec agent and every launch before this batch.
   const seen = new Set([
-    ...repeat.stages.flatMap((s) => s.agents.map((agent) => agent.id)),
-    ...state.launches.filter((l) => l.round < round && isGrown(loop, l)).map((l) => l.agent),
+    ...agentStages(spec).flatMap((s) => s.agents.map((agent) => agent.id)),
+    ...state.launches.filter((l) => !recorded.includes(l)).map((l) => l.agent),
   ]);
   const grown = growth.adds.filter(({ key }) => {
     const fresh = !seen.has(key);

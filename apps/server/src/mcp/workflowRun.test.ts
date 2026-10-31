@@ -821,6 +821,76 @@ it.effect("exits after K consecutive dry votes, never on an invalid or missing j
   }),
 );
 
+it.effect("an accepting judge whose growth is invalid fails the run instead of passing", () =>
+  Effect.gen(function* () {
+    for (const bad of [
+      { verdict: "accept", rerun: ["polish"] },
+      { verdict: "accept", addAgents: [{ key: "x", template: "nope" }] },
+      { verdict: "accept", addAgents: "bad" },
+    ]) {
+      const fake = makeFake({ reply: judging([bad]) });
+      const result = yield* runWorkflow(fake.port, grow(3, { dry: 1 }));
+      expect({ bad, status: result.status }).toEqual({ bad, status: "failed" });
+      expect(result.stages[0]).toMatchObject({ exit: null });
+      expect(fake.created).not.toContain("polish.editor#1");
+    }
+    for (const raw of [null, "bad", []]) {
+      const fake = makeFake({
+        reply: (start) => ({
+          outcome: start.agent.id === "critic" ? ok("judged", raw) : ok(start.key),
+        }),
+      });
+      const result = yield* runWorkflow(fake.port, grow(3, { dry: 1 }));
+      expect({ raw, status: result.status }).toEqual({ raw, status: "failed" });
+    }
+  }),
+);
+
+it.effect("deduplicates grown keys across the whole run, not just the current repeat", () =>
+  Effect.gen(function* () {
+    const second = {
+      id: "again",
+      repeat: {
+        stages: [
+          { id: "redraft", agents: [{ id: "poet2", task: "Write." }] },
+          { id: "recheck", agents: [{ id: "critic2", task: "Judge.", resultSchema: VERDICT }] },
+        ],
+        judge: "critic2",
+        until: { path: "verdict", equals: "accept" },
+        max: 2,
+        templates: { rewrite: { task: "Rewrite for {{input.focus}}." } },
+      },
+    };
+    const spec = {
+      name: "two-loops",
+      stages: [{ id: "intro", agents: [{ id: "seed", task: "Seed." }] }, grow(2).stages[0], second],
+    };
+    const judge = (start: WorkflowAgentStart, addAgents: ReadonlyArray<unknown>) =>
+      ok("judged", start.round === 1 ? { verdict: "reject", addAgents } : { verdict: "accept" });
+    const fake = makeFake({
+      reply: (start) => ({
+        outcome:
+          start.agent.id === "critic"
+            ? judge(start, [rewrite("seed", "x"), rewrite("poet2", "w"), rewrite("gap", "y")])
+            : start.agent.id === "critic2"
+              ? judge(start, [rewrite("gap", "z")])
+              : ok(start.key),
+      }),
+    });
+
+    const result = yield* runWorkflow(fake.port, spec);
+
+    expect(result.status).toBe("completed");
+    // A static agent of a later repeat counts as seen before it ever runs.
+    expect(fake.created).not.toContain("draft.poet2#2");
+    expect(fake.created.filter((key) => /\.(seed|gap)#/.test(key))).toEqual([
+      "intro.seed#1",
+      "draft.gap#2",
+    ]);
+    expect(fake.violations).toEqual([]);
+  }),
+);
+
 it.effect("waits for grown agents before starting the next stage or judge", () =>
   Effect.gen(function* () {
     const fake = makeFake({
