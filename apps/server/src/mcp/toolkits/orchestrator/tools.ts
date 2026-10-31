@@ -151,9 +151,9 @@ const WorkflowRunTool = Tool.make("t3_workflow_run", {
   description: `Run agents in stages; returns now, wakes you when done.
 type Spec={name:string;stages:Stage[]}
 type Stage={id:string;agents:Agent[]}|{id:string;repeat:Loop} // never both; agents run in parallel
-type Agent={id:string;task:string;target?:{model?:string;options?:object}/*omit to inherit your model and options*/;isolation?:'shared'|'worktree';resultSchema?:JSONSchema}
-type Loop={stages:{id:string;agents:Agent[]}[]/*rerun in order each round*/;judge:string/*id of an agent in the LAST of these stages*/;until:{path:string/*field of the judge's result, e.g. 'ok'*/;equals:string|number|boolean};max:number/*rounds, 1-10*/;onExhausted?:'fail'|'pass';dry?:number;templates?:{[name:string]:{task:string}}}
-In a task, {{stageId}} inserts an earlier stage's results, {{stageId.agentId}} one agent's. In a loop, a stage not yet run this round gives last round's (null in round 1); so does {{feedback}}, the judge's result. The judge's result has until's field; with templates it may add addAgents:{template:string;task?:string;input?:object/*{{input.x}} in the template*/;stage?:string}[] (they run next round) and rerun:stageId[]; dry:N ends after N rounds with neither. Only a loop's judge adds agents, so round 1 goes inside the loop.`,
+type Agent={id:string;task:string;target?:{model?:string;options?:object}/*omit to inherit your model and options; options must be ones that model lists*/;isolation?:'shared'|'worktree';resultSchema?:JSONSchema}
+type Loop={stages:{id:string;agents:Agent[]/*[] to grow into*/}[]/*rerun in order each round*/;judge?:string/*id of an agent in the LAST of these stages; default: its only agent*/;until:{path:string/*field of the judge's result, e.g. 'ok'*/;equals:string|number|boolean};max:number/*rounds, 1-10*/;onExhausted?:'fail'|'pass';dry?:number;templates?:{[name:string]:{task:string}}}
+In a task, {{stageId}} inserts an earlier stage's results, {{stageId.agentId}} one agent's; after a loop, name its inner stages, not the loop. In a loop, a stage not yet run this round gives last round's (null in round 1); so does {{feedback}}, the judge's result. The judge's result has until's field; with templates it may add addAgents:{template:string;task?:string;input?:object/*{{input.x}} in the template*/;stage?:string}[] (they run next round) and rerun:stageId[]; dry:N ends after N rounds with neither. Only a loop's judge adds agents, so round 1 goes inside the loop.`,
   parameters: withRest(
     Schema.Struct({
       name: TrimmedNonEmptyString,

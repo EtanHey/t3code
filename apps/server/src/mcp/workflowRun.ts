@@ -26,14 +26,16 @@ export const WorkflowAgent = Schema.Struct({
 export type WorkflowAgent = typeof WorkflowAgent.Type;
 
 const AgentStage = Schema.Struct({ id: WorkflowId, agents: Schema.NonEmptyArray(WorkflowAgent) });
-type AgentStage = typeof AgentStage.Type;
+// A loop's stage may start empty: the judge grows agents into it.
+const LoopStage = Schema.Struct({ id: WorkflowId, agents: Schema.Array(WorkflowAgent) });
+type AgentStage = typeof LoopStage.Type;
 
 const RoundCount = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 }));
 
 const RepeatStage = Schema.Struct({
   id: WorkflowId,
   repeat: Schema.Struct({
-    stages: Schema.NonEmptyArray(AgentStage),
+    stages: Schema.NonEmptyArray(LoopStage),
     judge: WorkflowId,
     until: Schema.Struct({
       path: TrimmedNonEmptyString,
@@ -273,8 +275,23 @@ function stageError(input: unknown): string | null {
   return null;
 }
 
+/** A loop that names no judge takes its last stage's only agent. */
+function withDefaultJudges(input: unknown): unknown {
+  if (!isRecord(input) || !Array.isArray(input.stages)) return input;
+  const stages = input.stages.map((stage: unknown) => {
+    if (!isRecord(stage) || !isRecord(stage.repeat) || "judge" in stage.repeat) return stage;
+    const last: unknown = Array.isArray(stage.repeat.stages) ? stage.repeat.stages.at(-1) : null;
+    const agents: unknown = isRecord(last) ? last.agents : null;
+    const [only] = Array.isArray(agents) && agents.length === 1 ? agents : [];
+    if (!isRecord(only) || typeof only.id !== "string") return stage;
+    return { ...stage, repeat: { ...stage.repeat, judge: only.id } };
+  });
+  return { ...input, stages };
+}
+
 /** Decodes a spec and rejects unknown or forward references before anything starts. */
-export const decodeWorkflowSpec = Effect.fn("WorkflowRun.decodeSpec")(function* (input: unknown) {
+export const decodeWorkflowSpec = Effect.fn("WorkflowRun.decodeSpec")(function* (raw: unknown) {
+  const input = withDefaultJudges(raw);
   const shape = stageError(input);
   if (shape !== null) return yield* invalid(shape);
   const spec = yield* decodeSpec(input).pipe(Effect.mapError((error) => invalid(error.message)));

@@ -734,6 +734,42 @@ it.effect("rejects what it would otherwise drop or leave unresolved, before any 
   }),
 );
 
+it.effect(
+  "defaults a loop's judge to its last stage's only agent, and grows into empty stages",
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFake({
+        reply: judging([{ addAgents: [{ key: "rw-1", template: "rewrite", stage: "fix" }] }, {}]),
+      });
+      const { judge: _judge, ...loop } = grow(3).stages[0]!.repeat as Record<string, unknown>;
+      const [draftStage, , critique] = grow(3).stages[0]!.repeat!.stages;
+
+      const result = yield* runWorkflow(fake.port, {
+        name: "defaults",
+        stages: [
+          {
+            id: "loop",
+            repeat: {
+              ...loop,
+              stages: [draftStage, { id: "fix", agents: [] }, critique],
+              max: 2,
+              onExhausted: "pass",
+            },
+          },
+        ],
+      });
+
+      expect(result.status).toBe("completed");
+      expect(fake.startCalls).toEqual([
+        "draft.poet#1",
+        "critique.critic#1",
+        "draft.poet#2",
+        "fix.rw-1#2",
+        "critique.critic#2",
+      ]);
+    }),
+);
+
 it.effect("lets a loop stage read its own loop's later stages as last round's results", () =>
   Effect.gen(function* () {
     const fake = makeFake({ reply: verdicts(["reject", "accept"]) });
