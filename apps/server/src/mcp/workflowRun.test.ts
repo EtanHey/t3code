@@ -8,6 +8,7 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
+import { validateJson } from "./resultSchema.ts";
 import {
   decodeWorkflowSpec,
   initialSnapshot,
@@ -776,7 +777,7 @@ it.effect("lets a loop stage read its own loop's later stages as last round's re
     const loop = repeat(2);
     const [, review] = loop.stages;
 
-    const result = yield* runWorkflow(fake.port, {
+    const spec = {
       name: "back-reference",
       stages: [
         draft,
@@ -787,19 +788,60 @@ it.effect("lets a loop stage read its own loop's later stages as last round's re
             stages: [
               {
                 id: "revise",
-                agents: [{ id: "writer", task: "Fix {{revise.writer}} per {{review.judge}}." }],
+                agents: [
+                  {
+                    id: "writer",
+                    task: "Fix {{revise.writer}} per {{review.judge}} in {{revise}}.",
+                  },
+                  { id: "peer", task: "Peer {{revise.writer}}, stage {{revise}}, {{review}}." },
+                ],
               },
               review,
             ],
           },
         },
       ],
-    });
+    };
+
+    const result = yield* runWorkflow(fake.port, spec);
 
     expect(result.status).toBe("completed");
-    expect(fake.rendered.get("revise.writer#1")).toBe("Fix null per null.");
+    expect(fake.rendered.get("revise.writer#1")).toBe("Fix null per null in null.");
+    expect(fake.rendered.get("revise.peer#1")).toBe("Peer null, stage null, null.");
+    const lastRound = '{"writer":"revise.writer#1","peer":"revise.peer#1"}';
     expect(fake.rendered.get("revise.writer#2")).toBe(
-      'Fix revise.writer#1 per {"verdict":"reject"}.',
+      `Fix revise.writer#1 per {"verdict":"reject"} in ${lastRound}.`,
+    );
+    expect(fake.rendered.get("revise.peer#2")).toBe(
+      `Peer revise.writer#1, stage ${lastRound}, {"judge":{"verdict":"reject"}}.`,
+    );
+
+    // Resumed in round 2 after the writer finished there: the peer still reads round 1 only.
+    const decoded = yield* decodeWorkflowSpec(spec);
+    const done = (stage: string, round: number, agent: string, outcome: WorkflowAgentOutcome) => ({
+      stage,
+      round,
+      agent,
+      taskId: `task:${launchKey(stage, round, agent)}`,
+      cancelRequested: false,
+      outcome,
+    });
+    const resumed = makeFake({ reply: verdicts(["reject", "accept"]) });
+    yield* resumeWorkflow(resumed.port, decoded, {
+      ...initialSnapshot(decoded, yield* Clock.currentTimeMillis),
+      cursor: 1,
+      round: 2,
+      launches: [
+        done("draft", 1, "a", ok("A")),
+        done("draft", 1, "b", ok("B")),
+        done("revise", 1, "writer", ok("writer-1")),
+        done("revise", 1, "peer", ok("peer-1")),
+        done("review", 1, "judge", ok("verdict", { verdict: "reject" })),
+        done("revise", 2, "writer", ok("writer-2")),
+      ],
+    });
+    expect(resumed.rendered.get("revise.peer#2")).toBe(
+      'Peer writer-1, stage {"writer":"writer-1","peer":"peer-1"}, {"judge":{"verdict":"reject"}}.',
     );
   }),
 );
@@ -854,6 +896,124 @@ it.effect("gives a judge the result schema its until and templates need", () =>
       required: ["verdict"],
     });
     expect(schemas.get("revise.writer#1")).toBeUndefined();
+
+    // A parent's own judge schema wins: its fields and constraints stay; only absent ones are added.
+    const own = {
+      type: "object",
+      properties: { verdict: { type: "string" }, addAgents: { type: "array" } },
+      required: ["verdict", "addAgents"],
+    };
+    const parented = makeFake({
+      reply: verdicts(["accept"]),
+      onStart: (start) => Effect.sync(() => schemas.set(start.key, start.agent.resultSchema)),
+    });
+    yield* runWorkflow(parented.port, {
+      name: "parent-judge",
+      stages: [
+        draft,
+        {
+          id: "loop",
+          repeat: {
+            ...loop,
+            stages: [revise, { ...review, agents: [{ ...bare.agents[0]!, resultSchema: own }] }],
+            templates: { fix: { task: "Fix." } },
+          },
+        },
+      ],
+    });
+    expect(schemas.get("review.judge#1")).toEqual({
+      ...own,
+      properties: {
+        ...own.properties,
+        rerun: { type: "array", items: { enum: ["revise", "review"] } },
+      },
+    });
+  }),
+);
+
+it.effect("a generated judge schema keeps until's field when it is named feedback", () =>
+  Effect.gen(function* () {
+    for (const [path, accepting] of [
+      ["feedback", { feedback: true }],
+      ["feedback.ok", { feedback: { ok: true } }],
+    ] as const) {
+      // The judge's reply passes through the real result validator, as a delegated task's does.
+      const fake = makeFake({
+        reply: (start) => {
+          const value = start.agent.id === "judge" ? accepting : start.key;
+          const mismatch =
+            start.agent.resultSchema === undefined
+              ? null
+              : validateJson(start.agent.resultSchema, value);
+          return {
+            outcome:
+              mismatch === null
+                ? ok(start.key, start.agent.id === "judge" ? value : undefined)
+                : { status: "invalid_output", result: mismatch },
+          };
+        },
+      });
+      const loop = repeat(2);
+      const [revise, review] = loop.stages;
+      const result = yield* runWorkflow(fake.port, {
+        name: "feedback-until",
+        stages: [
+          draft,
+          {
+            id: "loop",
+            repeat: {
+              ...loop,
+              stages: [revise, { ...review, agents: [{ id: "judge", task: "Judge." }] }],
+              until: { path, equals: true },
+            },
+          },
+        ],
+      });
+      expect({ path, status: result.status }).toEqual({ path, status: "completed" });
+    }
+  }),
+);
+
+it.effect("checks until.path only against what a judge schema actually rules out", () =>
+  Effect.gen(function* () {
+    const withJudgeSchema = (resultSchema: Record<string, unknown>) => {
+      const loop = repeat(2);
+      const [revise, review] = loop.stages;
+      return {
+        name: "until-path",
+        stages: [
+          draft,
+          {
+            id: "loop",
+            repeat: {
+              ...loop,
+              stages: [
+                revise,
+                { ...review, agents: [{ id: "judge", task: "Judge.", resultSchema }] },
+              ],
+              until: { path: "ok", equals: true },
+            },
+          },
+        ],
+      };
+    };
+    // Open schemas allow undeclared fields, so a path outside properties is still reachable.
+    const open = { type: "object", properties: { reason: { type: "string" } }, required: ["ok"] };
+    const accepting = makeFake({
+      reply: (start) => ({
+        outcome:
+          start.agent.id === "judge"
+            ? ok("judged", { ok: true, reason: "accepted" })
+            : ok(start.key),
+      }),
+    });
+    expect((yield* runWorkflow(accepting.port, withJudgeSchema(open))).status).toBe("completed");
+
+    const closed = { ...open, required: [], additionalProperties: false };
+    const fake = makeFake({ reply: () => ({ outcome: ok("x") }) });
+    const error = yield* runWorkflow(fake.port, withJudgeSchema(closed)).pipe(Effect.flip);
+    expect(error.message).toContain('until.path "ok"');
+    expect(fake.startCalls).toEqual([]);
   }),
 );
 

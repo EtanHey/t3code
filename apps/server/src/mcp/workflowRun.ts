@@ -162,17 +162,33 @@ const CANCELLED: WorkflowAgentOutcome = { status: "cancelled", result: null };
 const invalid = (message: string) =>
   new OrchestratorMcpFailure({ code: "invalid_request", message });
 
-/** The field `until.path` names, as the parent's judge schema declares it, or null if it cannot tell. */
+/**
+ * Why `until.path` cannot be in the judge's result, or null. Open schemas allow undeclared fields, so
+ * a path is ruled out only by a closed object, or by starting with one of the loop's own ids
+ * (a `stage.agent.field` guess) that the schema does not declare.
+ */
 function untilError(stage: RepeatStage, judge: WorkflowAgent): string | null {
-  let schema: unknown = judge.resultSchema;
-  for (const segment of stage.repeat.until.path.split(".")) {
-    const properties = isRecord(schema) && isRecord(schema.properties) ? schema.properties : null;
-    if (properties === null) return null;
-    if (!Object.hasOwn(properties, segment)) {
-      const example = Object.keys(properties)[0];
-      return `Repeat "${stage.id}": until.path "${stage.repeat.until.path}" is not a field of judge "${judge.id}"'s resultSchema${example === undefined ? "" : `, such as "${example}"`}.`;
+  const { path } = stage.repeat.until;
+  const loopIds = new Set([
+    stage.id,
+    ...stage.repeat.stages.flatMap((s) => [s.id, ...s.agents.map((a) => a.id)]),
+  ]);
+  let schema: unknown = judge.resultSchema ?? {};
+  for (const [depth, segment] of path.split(".").entries()) {
+    if (!isRecord(schema)) return null;
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    if (Object.hasOwn(properties, segment)) {
+      schema = properties[segment];
+      continue;
     }
-    schema = properties[segment];
+    const where = `Repeat "${stage.id}": until.path "${path}"`;
+    if (schema.additionalProperties === false) {
+      return `${where} is not a field judge "${judge.id}"'s resultSchema allows.`;
+    }
+    if (depth === 0 && loopIds.has(segment)) {
+      return `${where} names a stage or agent; it is a field of judge "${judge.id}"'s own result, such as "ok".`;
+    }
+    return null;
   }
   return null;
 }
@@ -459,14 +475,20 @@ function dryStreak(
 /** delegate_task's prompt cap, in bytes; a task is measured before it is built. */
 const TASK_BYTES = 120_000;
 
-/** Null when the task would render past TASK_BYTES. `visible` limits the stages it may read. */
+/**
+ * Null when the task would render past TASK_BYTES. `from` is the rendering agent's stage; `visible`
+ * limits the stages it may read.
+ */
 function renderTask(
   spec: WorkflowSpec,
   state: WorkflowSnapshot,
   template: string,
+  from: string,
   input?: Readonly<Record<string, unknown>>,
   visible?: ReadonlySet<string>,
 ): string | null {
+  const loop = spec.stages[state.cursor];
+  const order = loop === undefined || "agents" in loop ? [] : loop.repeat.stages.map((s) => s.id);
   const resolve = (match: string, stageRef: string, agentRef?: string) => {
     if (stageRef === "feedback") {
       const stage = spec.stages[state.cursor];
@@ -478,14 +500,22 @@ function renderTask(
     }
     if (visible !== undefined && !visible.has(stageRef)) return match;
     if (!agentStages(spec).some((stage) => stage.id === stageRef)) return match;
+    const completed = state.launches.filter(
+      (l) => l.stage === stageRef && l.outcome?.status === "completed",
+    );
+    // A same-loop stage that has not run yet this round reads only the last round it ran in, so a
+    // sibling finishing first, or a resume, never changes what this task sees.
+    const ahead = order.includes(from) && order.indexOf(stageRef) >= order.indexOf(from);
+    const before = completed.filter((l) => l.round < state.round).map((l) => l.round);
+    const round = ahead ? Math.max(0, ...before) : undefined;
     const latest = new Map<string, unknown>();
-    for (const launch of state.launches) {
-      if (launch.stage === stageRef && launch.outcome?.status === "completed") {
-        latest.set(launch.agent, valueOf(launch.outcome));
+    for (const launch of completed) {
+      if (round === undefined || launch.round === round) {
+        latest.set(launch.agent, valueOf(launch.outcome!));
       }
     }
     if (agentRef !== undefined) return asText(latest.get(agentRef) ?? null);
-    return JSON.stringify(Object.fromEntries(latest));
+    return latest.size === 0 && ahead ? "null" : JSON.stringify(Object.fromEntries(latest));
   };
   const values = new Map<string, { readonly text: string; readonly bytes: number }>();
   let bytes = Buffer.byteLength(template.replace(REFERENCE, ""));
@@ -662,7 +692,8 @@ function judgeSchema(stage: RepeatStage, judge: WorkflowAgent): WorkflowAgent["r
   });
   const base = judge.resultSchema ?? {
     type: "object",
-    properties: { [field]: rest.reduceRight(nest, leaf), feedback: { type: "string" } },
+    // until's field comes last, so a path through `feedback` keeps its type.
+    properties: { feedback: { type: "string" }, [field]: rest.reduceRight(nest, leaf) },
     required: [field],
   };
   const names = Object.keys(templates);
@@ -770,7 +801,7 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
       return yield* update(key, { outcome: { status: "failed", result: "Not in the spec." } });
     }
     const { agent } = found;
-    const task = renderTask(spec, state, agent.task, found.input, found.visible);
+    const task = renderTask(spec, state, agent.task, launch.stage, found.input, found.visible);
     if (task === null) {
       const result = `Its task renders to more than ${TASK_BYTES} bytes.`;
       return yield* update(key, { outcome: { status: "failed", result } });
