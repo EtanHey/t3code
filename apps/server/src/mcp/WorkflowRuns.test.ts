@@ -1108,6 +1108,99 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
       }),
   );
 
+  it.effect(
+    "shows a judge's grown agents queued under their phase and round, within 2 KB per update",
+    () =>
+      Effect.gen(function* () {
+        const runs = yield* workflowRunsIn(yield* Effect.scope);
+        const parent = yield* seedParent("grow");
+        const growing = {
+          name: "grow",
+          stages: [
+            {
+              id: "loop",
+              repeat: {
+                stages: [
+                  { id: "draft", agents: [{ id: "poet", task: "Write." }] },
+                  {
+                    id: "critique",
+                    agents: [
+                      {
+                        id: "critic",
+                        task: "Judge {{draft}}.",
+                        resultSchema: { type: "object", required: ["ok"] },
+                      },
+                    ],
+                  },
+                ],
+                judge: "critic",
+                until: { path: "ok", equals: true },
+                max: 2,
+                templates: { probe: { task: "Probe {{input.angle}}." } },
+              },
+            },
+          ],
+        };
+        const { subagentId } = yield* runs.run(parent.scope, growing);
+        yield* parent.endTurn;
+        const settled = new Set<NodeId>();
+        const settleNext = (count: number, text: string) =>
+          Effect.gen(function* () {
+            const children = yield* childrenOf(parent.threadId, subagentId, settled.size + count);
+            for (const child of children.filter((c) => !settled.has(c.id))) {
+              settled.add(child.id);
+              yield* settleChild(child, text);
+            }
+            return children;
+          });
+        const addAgents = Array.from({ length: 17 }, (_, index) => ({
+          key: `probe-${index + 1}`,
+          template: "probe",
+          input: { angle: `angle ${index + 1}` },
+        }));
+        yield* settleNext(1, "Draft.");
+        yield* settleNext(
+          1,
+          `\`\`\`json\n${JSON.stringify({ ok: false, addAgents, rerun: ["critique"] })}\n\`\`\``,
+        );
+
+        const grown = yield* (yield* parentEvents(parent.threadId)).pipe(
+          Stream.filter(({ payload }) =>
+            (payload.workflow?.agents ?? []).some((agent) => agent.label === "probe-17"),
+          ),
+          Stream.runHead,
+          Effect.map((event) => Option.getOrThrow(event).payload.workflow!),
+        );
+        assert.deepEqual(
+          grown.phases.map((phase) => phase.title),
+          ["draft · round 1", "critique · round 1", "draft · round 2", "critique · round 2"],
+        );
+        // Every grown row is there before round 2 starts anything; rerun left the poet out.
+        const round2 = grown.agents.filter((agent) => (agent.phaseIndex ?? 0) >= 2);
+        assert.deepEqual(
+          round2.map((row) => row.label),
+          [...addAgents.map((add) => add.key), "critic"],
+        );
+        for (const row of round2) {
+          assert.deepEqual([row.state, row.childThreadId], ["queued", undefined]);
+        }
+
+        const probes = yield* settleNext(17, "Probed.");
+        assert.include(
+          probes.find((child) => child.title === "draft.probe-3#2")?.prompt ?? "",
+          "Probe angle 3.",
+        );
+        yield* settleNext(1, '```json\n{"ok":true}\n```');
+        assert.equal((yield* ended(parent.threadId, subagentId))?.status, "completed");
+        const status = yield* runs.status(parent.scope, subagentId);
+        assert.deepInclude(status.stages[0], { exit: "accepted" });
+
+        const sized = yield* largestUpdate(parent.threadId, subagentId);
+        assert.lengthOf(sized.agents, 20);
+        assert.isAtMost(sized.largest, 2048);
+      }),
+  );
+
   it.effect("resumes after a restart without relaunching a child and still wakes once", () =>
     Effect.gen(function* () {
       const projections = yield* ProjectionStore.ProjectionStoreV2;

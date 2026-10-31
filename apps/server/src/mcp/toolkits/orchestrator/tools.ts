@@ -136,7 +136,7 @@ const WorkflowStage = Schema.Struct({
 
 const WorkflowRunTool = Tool.make("t3_workflow_run", {
   description:
-    "Run agents in stages; returns at once and wakes you when done. Stages run in order: `{id, agents:[{id, task, target?, role?, isolation?, resultSchema?}]}` in parallel, or `{id, repeat:{stages, judge, until:{path, equals}, max, onExhausted?}}`. `{{stage}}`, `{{stage.agent}}`, `{{feedback}}` in a task insert results.",
+    "Run stages in order; returns at once, wakes you when done. Stage: `{id,agents:[{id,task,target?,role?,isolation?,resultSchema?}]}` (parallel) or `{id,repeat:{stages,judge,until:{path,equals},max,onExhausted?,dry?,templates?:{name:{task}}}}`. Its judge may return `addAgents:[{key,template,input,stage?}]`, `rerun:[stage]`; `dry:N` ends after N rounds of neither. {{stage}}, {{stage.agent}}, {{feedback}}, {{input.x}} insert results.",
   parameters: Schema.Struct({
     name: TrimmedNonEmptyString,
     stages: Schema.Array(WorkflowStage),

@@ -441,23 +441,31 @@ const make = Effect.gen(function* () {
     const scope = yield* requireThreadScope(callerScope, "t3_workflow_run");
     const spec = yield* decodeWorkflowSpec(input);
     const targets = new Map<string, AgentTarget>();
-    for (const stage of agentStages(spec)) {
-      for (const agent of stage.agents) {
-        if (agent.target?.environmentId !== undefined) {
-          return yield* failure(
-            "invalid_request",
-            `Agent "${agent.id}": workflow agents run here. Omit target.environmentId.`,
-          );
-        }
-        const selection = yield* mcp
-          .checkTarget(scope, agent.target)
-          .pipe(
-            Effect.mapError((error) =>
-              failure(error.code, `Agent "${agent.id}": ${error.message}`),
-            ),
-          );
-        targets.set(targetKey(stage.id, agent.id), targetOf(selection));
+    // Templates are checked up front too; only spec agents are planned, as grown keys come later.
+    const templates = spec.stages.flatMap((stage) =>
+      "agents" in stage
+        ? []
+        : Object.entries(stage.repeat.templates ?? {}).map(([id, template]) => ({
+            stage: null,
+            agent: { ...template, id },
+          })),
+    );
+    const agents = agentStages(spec).flatMap((stage) =>
+      stage.agents.map((agent) => ({ stage: stage.id, agent })),
+    );
+    for (const { stage, agent } of [...agents, ...templates]) {
+      if (agent.target?.environmentId !== undefined) {
+        return yield* failure(
+          "invalid_request",
+          `Agent "${agent.id}": workflow agents run here. Omit target.environmentId.`,
+        );
       }
+      const selection = yield* mcp
+        .checkTarget(scope, agent.target)
+        .pipe(
+          Effect.mapError((error) => failure(error.code, `Agent "${agent.id}": ${error.message}`)),
+        );
+      if (stage !== null) targets.set(targetKey(stage, agent.id), targetOf(selection));
     }
     const parent = yield* threads
       .getThreadRecords(scope.thread.threadId, ["runs", "providerThreads"])
