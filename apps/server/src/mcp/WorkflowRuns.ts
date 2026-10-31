@@ -36,6 +36,7 @@ import {
   agentStages,
   decodeWorkflowSpec,
   initialSnapshot,
+  phaseAgents,
   resumeWorkflow,
   WorkflowAgentOutcome,
   type WorkflowPort,
@@ -171,7 +172,12 @@ function toRow(
   const { launches, ...state } = snapshot;
   const phases = workflowPhases(spec, snapshot);
   const agents = phases.flatMap(({ stage, round }, phaseIndex) =>
-    stage.agents.map((agent) => ({ stage: stage.id, agent: agent.id, round, phaseIndex })),
+    phaseAgents(spec, snapshot, stage, round).map((agent) => ({
+      stage: stage.id,
+      agent,
+      round,
+      phaseIndex,
+    })),
   );
   return {
     workflow: {

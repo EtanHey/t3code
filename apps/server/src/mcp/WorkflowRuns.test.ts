@@ -52,6 +52,10 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import {
+  deriveWorkflowGroups,
+  projectedSubagentsToRuntime,
+} from "../../../../packages/client-runtime/src/state/subagentRuntime.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import type { McpThreadInvocationScope } from "./McpInvocationContext.ts";
@@ -1001,6 +1005,106 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
         assert.equal((yield* ended(other.threadId, stopped.subagentId))?.status, "cancelled");
         const cancelled = yield* largestUpdate(other.threadId, stopped.subagentId);
         assert.isAtMost(cancelled.largest, 2048);
+      }),
+  );
+
+  it.effect(
+    "puts a judge's grown agents in their own round's phase, which reads as not started until they launch",
+    () =>
+      Effect.gen(function* () {
+        const runs = yield* workflowRunsIn(yield* Effect.scope);
+        const parent = yield* seedParent("grow-phase");
+        const { subagentId } = yield* runs.run(parent.scope, {
+          name: "grow-phase",
+          stages: [
+            {
+              id: "loop",
+              repeat: {
+                stages: [
+                  { id: "draft", agents: [{ id: "poet", task: "Write." }] },
+                  {
+                    id: "critique",
+                    agents: [
+                      {
+                        id: "critic",
+                        task: "Judge {{draft}}.",
+                        resultSchema: { type: "object", required: ["ok"] },
+                      },
+                    ],
+                  },
+                ],
+                judge: "critic",
+                until: { path: "ok", equals: true },
+                max: 2,
+                templates: { probe: { task: "Probe {{input.angle}}." } },
+              },
+            },
+          ],
+        });
+        yield* parent.endTurn;
+        const [poet] = yield* childrenOf(parent.threadId, subagentId, 1);
+        yield* settleChild(poet!, "Draft.");
+        const critic = (yield* childrenOf(parent.threadId, subagentId, 2)).find(
+          (child) => child.id !== poet!.id,
+        )!;
+        const addAgents = ["probe-1", "probe-2"].map((key) => ({
+          key,
+          template: "probe",
+          input: { angle: key },
+        }));
+        yield* settleChild(
+          critic,
+          `\`\`\`json\n${JSON.stringify({ ok: false, addAgents, rerun: ["critique"] })}\n\`\`\``,
+        );
+
+        // The row as it stands once both grown agents are recorded, before either launches.
+        const row = yield* (yield* parentEvents(parent.threadId)).pipe(
+          Stream.filter(({ payload }) =>
+            (payload.workflow?.agents ?? []).some((agent) => agent.label === "probe-2"),
+          ),
+          Stream.runHead,
+          Effect.map((event) => Option.getOrThrow(event).payload),
+        );
+        const titles = row.workflow!.phases.map((phase) => phase.title);
+        assert.deepEqual(titles, [
+          "draft · round 1",
+          "critique · round 1",
+          "draft · round 2",
+          "critique · round 2",
+        ]);
+        const grown = row.workflow!.agents.filter((agent) => agent.label.startsWith("probe-"));
+        assert.deepEqual(
+          grown.map((agent) => [agent.label, titles[agent.phaseIndex!], agent.state]),
+          [
+            ["probe-1", "draft · round 2", "queued"],
+            ["probe-2", "draft · round 2", "queued"],
+          ],
+        );
+        const phaseStates = (subagent: OrchestrationV2Subagent) =>
+          deriveWorkflowGroups(projectedSubagentsToRuntime([subagent]))[0]!.phases.map((phase) => [
+            phase.title,
+            phase.state,
+          ]);
+        assert.deepEqual(phaseStates(row), [
+          ["draft · round 1", "done"],
+          ["critique · round 1", "done"],
+          ["draft · round 2", "pending"],
+          ["critique · round 2", "pending"],
+        ]);
+
+        const probes = (yield* childrenOf(parent.threadId, subagentId, 4)).filter((child) =>
+          child.title?.startsWith("draft.probe-"),
+        );
+        assert.deepEqual(probes.map((child) => child.title).toSorted(), [
+          "draft.probe-1#2",
+          "draft.probe-2#2",
+        ]);
+        for (const child of probes) yield* settleChild(child, "Probed.");
+        const last = (yield* childrenOf(parent.threadId, subagentId, 5)).find(
+          (child) => child.title === "critique.critic#2",
+        )!;
+        yield* settleChild(last, '```json\n{"ok":true}\n```');
+        assert.equal((yield* ended(parent.threadId, subagentId))?.status, "completed");
       }),
   );
 
