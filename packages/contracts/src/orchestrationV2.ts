@@ -786,6 +786,8 @@ export const OrchestrationV2WorkflowAgent = Schema.Struct({
   state: Schema.Literals(["queued", "running", "completed", "failed"]),
   phaseIndex: Schema.optional(NonNegativeInt),
   phaseTitle: Schema.optional(TrimmedNonEmptyString),
+  /** Set when the agent may run on another provider than its workflow. */
+  providerInstanceId: Schema.optional(ProviderInstanceId),
   model: Schema.optional(TrimmedNonEmptyString),
   effort: Schema.optional(TrimmedNonEmptyString),
   speed: Schema.optional(TrimmedNonEmptyString),
@@ -855,6 +857,8 @@ export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChi
 
 /** Where a server-owned workflow run is; its launches are `workflow.agents`. */
 export const OrchestrationV2WorkflowRunState = Schema.Struct({
+  /** The row layout; absent on rows an older build recorded, which are never resumed. */
+  version: Schema.optional(PositiveInt),
   status: Schema.Literals(["running", "completed", "failed", "cancelled", "timed_out"]),
   cursor: NonNegativeInt,
   round: NonNegativeInt,

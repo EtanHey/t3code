@@ -121,7 +121,7 @@ export interface WorkflowRailItem {
 }
 
 function railTone(members: ReadonlyArray<RuntimeSubagent>): WorkflowRailTone {
-  if (members.every((member) => member.status === "pending")) return "queued";
+  if (members.every((member) => member.notStarted || member.status === "pending")) return "queued";
   if (members.some((member) => isActiveSubagentStatus(member.status) || member.status === "idle")) {
     return "working";
   }
@@ -158,10 +158,13 @@ export function nextWorkflowSelection(
   if (tapped !== undefined) return tapped === open ? null : tapped;
   if (open !== null) return null;
   const filled = rail.filter((item) => item.members.length > 0);
+  // Server-run workflows list planned phases up front; a run that stops never starts them.
+  const reached = filled.filter((item) => item.members.some((member) => member.startedAt !== null));
   return (
     (
       filled.find((item) => item.tone === "working") ??
       filled.find((item) => item.tone === "failed") ??
+      reached.at(-1) ??
       filled.at(-1)
     )?.key ?? null
   );

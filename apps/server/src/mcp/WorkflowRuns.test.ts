@@ -4,10 +4,12 @@ import {
   CommandId,
   EnvironmentId,
   EventId,
+  isOrchestrationV2WorkActive,
   MessageId,
   NodeId,
   OrchestrationV2DomainEvent,
   type OrchestrationV2Subagent,
+  type ModelSelection,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -17,16 +19,18 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { restoreSubagentBodies } from "@t3tools/shared/orchestrationV2DedupedBodies";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Ref from "effect/Ref";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -48,6 +52,10 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import {
+  deriveWorkflowGroups,
+  projectedSubagentsToRuntime,
+} from "../../../../packages/client-runtime/src/state/subagentRuntime.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import type { McpThreadInvocationScope } from "./McpInvocationContext.ts";
@@ -103,7 +111,9 @@ const provider = (instanceId: ProviderInstanceId, driver: string, model: string)
 
 class Offers extends Context.Service<
   Offers,
-  Ref.Ref<ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>>
+  SubscriptionRef.SubscriptionRef<
+    ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+  >
 >()("t3/mcp/WorkflowRuns.test/Offers") {}
 
 const layerDatabase = SqlitePersistence.layerMemory;
@@ -157,7 +167,7 @@ const layerTest = OrchestratorMcpService.layer.pipe(
       Offers.pipe(
         Effect.map((offers) => ({
           offer: (request: ProviderContinuationRequests.ProviderContinuationRequest) =>
-            Ref.update(offers, (seen) => [...seen, request]),
+            SubscriptionRef.update(offers, (seen) => [...seen, request]),
           take: Effect.never,
         })),
       ),
@@ -166,7 +176,9 @@ const layerTest = OrchestratorMcpService.layer.pipe(
   Layer.provideMerge(
     Layer.effect(
       Offers,
-      Ref.make<ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>>([]),
+      SubscriptionRef.make<ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>>(
+        [],
+      ),
     ),
   ),
   Layer.provideMerge(
@@ -200,8 +212,52 @@ const spec = {
   ],
 };
 
+/** A repeat between two stages; agent `a` names its model and effort, the rest inherit the parent's. */
+const planned = {
+  name: "plan",
+  stages: [
+    {
+      id: "draft",
+      agents: [
+        {
+          id: "a",
+          task: "Draft A.",
+          target: {
+            providerInstanceId: claude,
+            model: "claude-sonnet-5-5",
+            options: [{ id: "effort", value: "low" }],
+          },
+        },
+        { id: "b", task: "Draft B." },
+      ],
+    },
+    {
+      id: "loop",
+      repeat: {
+        stages: [
+          { id: "revise", agents: [{ id: "writer", task: "Revise {{draft}} {{feedback}}." }] },
+          {
+            id: "review",
+            agents: [
+              {
+                id: "judge",
+                task: "Judge {{revise}}.",
+                resultSchema: { type: "object", required: ["ok"] },
+              },
+            ],
+          },
+        ],
+        judge: "judge",
+        until: { path: "ok", equals: true },
+        max: 2,
+      },
+    },
+    { id: "ship", agents: [{ id: "p", task: "Ship {{revise}}." }] },
+  ],
+};
+
 /** A Codex parent whose turn is live when it calls t3_workflow_run. */
-const seedParent = (name: string) =>
+const seedParent = (name: string, selection: ModelSelection = modelSelection) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const sink = yield* EventSink.EventSinkV2;
@@ -218,7 +274,7 @@ const seedParent = (name: string) =>
       threadId,
       projectId: ProjectId.make("project:workflow-runs"),
       title: "Parent",
-      modelSelection,
+      modelSelection: selection,
       runtimeMode: "full-access",
       interactionMode: "default",
       branch: null,
@@ -237,7 +293,7 @@ const seedParent = (name: string) =>
         threadId,
         ordinal: 1,
         providerInstanceId: codex,
-        modelSelection,
+        modelSelection: selection,
         providerThreadId,
         userMessageId: MessageId.make(`message:${name}`),
         rootNodeId,
@@ -366,6 +422,24 @@ const ended = (threadId: ThreadId, workflowTaskId: NodeId) =>
     );
   });
 
+/** The first workflow row update that matches, in order. */
+const rowWhere = (
+  threadId: ThreadId,
+  workflowTaskId: NodeId,
+  matches: (row: OrchestrationV2Subagent) => boolean,
+) =>
+  Effect.gen(function* () {
+    const events = yield* parentEvents(threadId);
+    return yield* events.pipe(
+      Stream.filter((event) => event.payload.id === workflowTaskId && matches(event.payload)),
+      Stream.runHead,
+      Effect.map((event) => Option.getOrThrow(event).payload),
+    );
+  });
+
+const agentsRunning = (row: OrchestrationV2Subagent) =>
+  row.workflow?.agents.filter((agent) => agent.state === "running").length ?? 0;
+
 /** Settles a child as its provider would: a final reply, then the run ends. */
 const settleChild = (child: OrchestrationV2Subagent, text: string) =>
   Effect.gen(function* () {
@@ -407,20 +481,55 @@ const settleChild = (child: OrchestrationV2Subagent, text: string) =>
           runId: childRun.id,
           providerInstanceId: childRun.providerInstanceId,
           occurredAt: now,
-          payload: { ...childRun, status: "completed", startedAt: now, completedAt: now },
+          payload: {
+            ...childRun,
+            status: "completed",
+            startedAt: childRun.startedAt ?? now,
+            completedAt: now,
+          },
         },
       ],
     });
   });
 
+/** Starts a child's run as its provider would. */
+const startChild = (child: OrchestrationV2Subagent) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const now = yield* DateTime.now;
+    const childThreadId = child.childThreadId!;
+    const childRun = (yield* orchestrator.getThreadProjection(childThreadId)).runs[0]!;
+    yield* sink.write({
+      commandId: CommandId.make(`command:start:${child.id}`),
+      events: [
+        {
+          id: EventId.make(`event:child-run-start:${child.id}`),
+          type: "run.updated",
+          threadId: childThreadId,
+          runId: childRun.id,
+          providerInstanceId: childRun.providerInstanceId,
+          occurredAt: now,
+          payload: { ...childRun, status: "running", startedAt: now },
+        },
+      ],
+    });
+  });
+
+/** The distinct wakes offered to a parent, once it has had one; the offer follows the row's commit. */
 const wakes = (threadId: ThreadId) =>
-  Effect.map(Offers.pipe(Effect.flatMap(Ref.get)), (all) => [
-    ...new Set(
-      all
-        .filter((offer) => offer.threadId === threadId)
-        .map((offer) => offer.delegatedCompletion?.messageId),
+  Offers.pipe(
+    Effect.flatMap((offers) =>
+      SubscriptionRef.changes(offers).pipe(
+        Stream.map((all) => all.filter((offer) => offer.threadId === threadId)),
+        Stream.filter((offered) => offered.length > 0),
+        Stream.runHead,
+      ),
     ),
-  ]);
+    Effect.map((offered) => [
+      ...new Set(Option.getOrThrow(offered).map((offer) => offer.delegatedCompletion?.messageId)),
+    ]),
+  );
 
 /** A WorkflowRuns instance whose runners die with `scope`, as in a server restart. */
 const workflowRunsIn = (scope: Scope.Scope) =>
@@ -490,9 +599,343 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
   );
 
   it.effect(
+    "lists every phase and agent, with its model and effort, in the run's first update",
+    () =>
+      Effect.gen(function* () {
+        const runs = yield* workflowRunsIn(yield* Effect.scope);
+        const parent = yield* seedParent("plan");
+        const { subagentId } = yield* runs.run(parent.scope, planned);
+
+        const first = yield* rowWhere(parent.threadId, subagentId, () => true);
+        assert.deepEqual(
+          first.workflow?.phases.map((phase) => phase.title),
+          ["draft", "revise · round 1", "review · round 1", "ship"],
+        );
+        assert.deepEqual(
+          first.workflow?.agents.map(({ index, label, phaseIndex, state, ...target }) => ({
+            index,
+            label,
+            phaseIndex,
+            state,
+            target,
+          })),
+          [
+            {
+              index: 0,
+              label: "a",
+              phaseIndex: 0,
+              state: "queued",
+              target: { providerInstanceId: claude, model: "claude-sonnet-5-5", effort: "low" },
+            },
+            {
+              index: 1,
+              label: "b",
+              phaseIndex: 0,
+              state: "queued",
+              target: { providerInstanceId: codex, model: "gpt-5.4" },
+            },
+            {
+              index: 2,
+              label: "writer",
+              phaseIndex: 1,
+              state: "queued",
+              target: { providerInstanceId: codex, model: "gpt-5.4" },
+            },
+            {
+              index: 3,
+              label: "judge",
+              phaseIndex: 2,
+              state: "queued",
+              target: { providerInstanceId: codex, model: "gpt-5.4" },
+            },
+            {
+              index: 4,
+              label: "p",
+              phaseIndex: 3,
+              state: "queued",
+              target: { providerInstanceId: codex, model: "gpt-5.4" },
+            },
+          ],
+        );
+      }),
+  );
+
+  it.effect("times each agent and adds a later round before the stages after it", () =>
+    Effect.gen(function* () {
+      const runs = yield* workflowRunsIn(yield* Effect.scope);
+      const parent = yield* seedParent("timed");
+      const { subagentId } = yield* runs.run(parent.scope, planned);
+      yield* parent.endTurn;
+      const settled = new Set<NodeId>();
+      /** Once the runner delegates the next agents, their runs start 500 ms later and take `ms`. */
+      const settleNext = (count: number, ms: number, text: string) =>
+        Effect.gen(function* () {
+          const children = (yield* childrenOf(
+            parent.threadId,
+            subagentId,
+            settled.size + count,
+          )).filter((child) => !settled.has(child.id));
+          yield* rowWhere(
+            parent.threadId,
+            subagentId,
+            (row) =>
+              row.workflow?.agents.filter(
+                (agent) =>
+                  agent.state === "running" &&
+                  children.some((child) => child.childThreadId === agent.childThreadId),
+              ).length === children.length,
+          );
+          yield* TestClock.adjust(500);
+          for (const child of children) yield* startChild(child);
+          yield* TestClock.adjust(ms);
+          for (const child of children) {
+            settled.add(child.id);
+            yield* settleChild(child, text);
+          }
+        });
+      yield* settleNext(2, 3_000, "Draft.");
+      yield* settleNext(1, 2_000, "Revised.");
+      yield* settleNext(1, 1_000, '```json\n{"ok":false}\n```');
+      const second = yield* rowWhere(parent.threadId, subagentId, (row) =>
+        (row.workflow?.phases ?? []).some((phase) => phase.title === "revise · round 2"),
+      );
+      assert.deepEqual(
+        second.workflow?.agents.map((agent) => [agent.label, agent.phaseIndex, agent.state]),
+        [
+          ["a", 0, "completed"],
+          ["b", 0, "completed"],
+          ["writer", 1, "completed"],
+          ["judge", 2, "completed"],
+          ["writer", 3, "queued"],
+          ["judge", 4, "queued"],
+          ["p", 5, "queued"],
+        ],
+      );
+      yield* settleNext(1, 1_000, "Revised again.");
+      yield* settleNext(1, 1_000, '```json\n{"ok":true}\n```');
+      yield* settleNext(1, 4_000, "Shipped.");
+
+      const row = yield* ended(parent.threadId, subagentId);
+      assert.equal(row?.status, "completed");
+      assert.deepEqual(
+        row?.workflow?.phases.map((phase) => phase.title),
+        [
+          "draft",
+          "revise · round 1",
+          "review · round 1",
+          "revise · round 2",
+          "review · round 2",
+          "ship",
+        ],
+      );
+      assert.deepEqual(
+        row?.workflow?.agents.map((agent) => [
+          agent.label,
+          agent.state,
+          agent.queuedAt,
+          agent.startedAt,
+          agent.completedAt,
+          agent.durationMs,
+        ]),
+        [
+          ["a", "completed", 0, 500, 3_500, 3_000],
+          ["b", "completed", 0, 500, 3_500, 3_000],
+          ["writer", "completed", 3_500, 4_000, 6_000, 2_000],
+          ["judge", "completed", 6_000, 6_500, 7_500, 1_000],
+          ["writer", "completed", 7_500, 8_000, 9_000, 1_000],
+          ["judge", "completed", 9_000, 9_500, 10_500, 1_000],
+          ["p", "completed", 10_500, 11_000, 15_000, 4_000],
+        ],
+      );
+    }),
+  );
+
+  it.effect(
+    "times an agent from its child's run, even one that ended while the server was down",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seedParent("downtime");
+        const before = yield* Scope.make();
+        const { subagentId } = yield* (yield* workflowRunsIn(before)).run(parent.scope, {
+          name: "one",
+          stages: [{ id: "one", agents: [{ id: "a", task: "A." }] }],
+        });
+        yield* parent.endTurn;
+        const [child] = yield* childrenOf(parent.threadId, subagentId, 1);
+        yield* rowWhere(parent.threadId, subagentId, (row) => agentsRunning(row) === 1);
+        const startedAt = yield* Clock.currentTimeMillis;
+        yield* startChild(child!);
+        yield* TestClock.adjust(1_000);
+        yield* Scope.close(before, Exit.void);
+        yield* settleChild(child!, "Done.");
+        yield* TestClock.adjust(9_000);
+
+        yield* (yield* workflowRunsIn(yield* Effect.scope)).start();
+        const [agent] = (yield* ended(parent.threadId, subagentId))?.workflow?.agents ?? [];
+        assert.deepEqual(
+          [agent?.state, agent?.startedAt, agent?.completedAt, agent?.durationMs],
+          ["completed", startedAt, startedAt + 1_000, 1_000],
+        );
+      }),
+  );
+
+  it.effect("shows the model a child actually runs once it starts, not the planned one", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const runs = yield* workflowRunsIn(yield* Effect.scope);
+      const parent = yield* seedParent("actual-model");
+      const { subagentId } = yield* runs.run(parent.scope, {
+        name: "two",
+        stages: [
+          { id: "one", agents: [{ id: "a", task: "A." }] },
+          { id: "two", agents: [{ id: "b", task: "B." }] },
+        ],
+      });
+      yield* parent.endTurn;
+      const [first] = yield* childrenOf(parent.threadId, subagentId, 1);
+      yield* orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make("command:actual-model:switch"),
+        threadId: parent.threadId,
+        modelSelection: {
+          instanceId: claude,
+          model: "claude-sonnet-5-5",
+          options: [{ id: "effort", value: "low" }],
+        },
+      });
+      yield* settleChild(first!, "Done.");
+      const row = yield* rowWhere(
+        parent.threadId,
+        subagentId,
+        (row) => row.workflow?.agents[1]?.state === "running",
+      );
+      const { providerInstanceId, model, effort } = row.workflow!.agents[1]!;
+      assert.deepEqual(
+        { providerInstanceId, model, effort },
+        { providerInstanceId: claude, model: "claude-sonnet-5-5", effort: "low" },
+      );
+    }),
+  );
+
+  it.effect("drops a planned effort once the child runs a model without one", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const runs = yield* workflowRunsIn(yield* Effect.scope);
+      const parent = yield* seedParent("dropped-effort", {
+        ...modelSelection,
+        options: [{ id: "effort", value: "low" }],
+      });
+      const { subagentId } = yield* runs.run(parent.scope, {
+        name: "two",
+        stages: [
+          { id: "one", agents: [{ id: "a", task: "A." }] },
+          { id: "two", agents: [{ id: "b", task: "B." }] },
+        ],
+      });
+      const planned = yield* rowWhere(parent.threadId, subagentId, () => true);
+      assert.equal(planned.workflow?.agents[1]?.effort, "low");
+      yield* parent.endTurn;
+      const [first] = yield* childrenOf(parent.threadId, subagentId, 1);
+      yield* orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make("command:dropped-effort:switch"),
+        threadId: parent.threadId,
+        modelSelection: { instanceId: claude, model: "claude-sonnet-5-5" },
+      });
+      yield* settleChild(first!, "Done.");
+      const row = yield* rowWhere(
+        parent.threadId,
+        subagentId,
+        (row) => row.workflow?.agents[1]?.state === "running",
+      );
+      const { providerInstanceId, model, effort } = row.workflow!.agents[1]!;
+      assert.deepEqual(
+        { providerInstanceId, model, effort },
+        { providerInstanceId: claude, model: "claude-sonnet-5-5", effort: undefined },
+      );
+    }),
+  );
+
+  it.effect("keeps a child's real start when the run times out after it started", () =>
+    Effect.gen(function* () {
+      const runs = yield* workflowRunsIn(yield* Effect.scope);
+      const parent = yield* seedParent("timeout-start");
+      const { subagentId } = yield* runs.run(parent.scope, {
+        name: "slow",
+        timeoutMs: 5_000,
+        stages: [{ id: "one", agents: [{ id: "a", task: "A." }] }],
+      });
+      yield* parent.endTurn;
+      const [child] = yield* childrenOf(parent.threadId, subagentId, 1);
+      yield* rowWhere(parent.threadId, subagentId, (row) => agentsRunning(row) === 1);
+      const requestedAt = yield* Clock.currentTimeMillis;
+      yield* TestClock.adjust(500);
+      yield* startChild(child!);
+      yield* TestClock.adjust(5_000);
+
+      const row = yield* ended(parent.threadId, subagentId);
+      assert.equal(row?.workflowRun?.status, "timed_out");
+      assert.equal(row?.workflow?.agents[0]?.startedAt, requestedAt + 500);
+    }),
+  );
+
+  it.effect("fails a running row an older build recorded instead of resuming it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const parent = yield* seedParent("legacy");
+      const before = yield* Scope.make();
+      const { subagentId } = yield* (yield* workflowRunsIn(before)).run(parent.scope, spec);
+      yield* parent.endTurn;
+      const drafts = yield* childrenOf(parent.threadId, subagentId, 2);
+      yield* Scope.close(before, Exit.void);
+      const row = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+        (task) => task.id === subagentId,
+      )!;
+      const { version: _version, ...legacy } = row.workflowRun!;
+      const oldLayout = {
+        name: "review",
+        phases: [
+          { index: 0, title: "draft" },
+          { index: 1, title: "judge" },
+        ],
+        agents: drafts.map((draft, index) => ({
+          index,
+          label: draft.title!.split(".")[1]!.split("#")[0]!,
+          childThreadId: draft.childThreadId!,
+          state: "running" as const,
+          phaseIndex: 0,
+          attempt: 1,
+        })),
+      };
+      yield* orchestrator.dispatch({
+        type: "workflow_run.update",
+        commandId: CommandId.make("command:legacy:old-layout"),
+        parentThreadId: parent.threadId,
+        taskId: subagentId,
+        workflow: oldLayout,
+        workflowRun: legacy,
+      });
+
+      yield* (yield* workflowRunsIn(yield* Effect.scope)).start();
+      const failed = yield* ended(parent.threadId, subagentId);
+      assert.equal(failed?.status, "failed");
+      assert.deepEqual(failed?.workflow, oldLayout);
+      assert.include(JSON.parse(failed?.result ?? "{}").error, "older T3 build");
+      const children = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.filter(
+        (task) => task.parentNodeId === subagentId,
+      );
+      assert.lengthOf(children, 2);
+      assert.isFalse(children.some((task) => isOrchestrationV2WorkActive(task.status)));
+      assert.lengthOf(yield* wakes(parent.threadId), 1);
+    }),
+  );
+
+  it.effect(
     "keeps every workflow row update within 2 KB on the wire across a 20-agent stage and 3 rounds",
     () =>
       Effect.gen(function* () {
+        // Real epoch times, so each timestamp costs its full width on the wire.
+        yield* TestClock.setTime(1_793_404_800_000);
         const runs = yield* workflowRunsIn(yield* Effect.scope);
         const parent = yield* seedParent("bytes");
         const wide = {
@@ -566,6 +1009,106 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
   );
 
   it.effect(
+    "puts a judge's grown agents in their own round's phase, which reads as not started until they launch",
+    () =>
+      Effect.gen(function* () {
+        const runs = yield* workflowRunsIn(yield* Effect.scope);
+        const parent = yield* seedParent("grow-phase");
+        const { subagentId } = yield* runs.run(parent.scope, {
+          name: "grow-phase",
+          stages: [
+            {
+              id: "loop",
+              repeat: {
+                stages: [
+                  { id: "draft", agents: [{ id: "poet", task: "Write." }] },
+                  {
+                    id: "critique",
+                    agents: [
+                      {
+                        id: "critic",
+                        task: "Judge {{draft}}.",
+                        resultSchema: { type: "object", required: ["ok"] },
+                      },
+                    ],
+                  },
+                ],
+                judge: "critic",
+                until: { path: "ok", equals: true },
+                max: 2,
+                templates: { probe: { task: "Probe {{input.angle}}." } },
+              },
+            },
+          ],
+        });
+        yield* parent.endTurn;
+        const [poet] = yield* childrenOf(parent.threadId, subagentId, 1);
+        yield* settleChild(poet!, "Draft.");
+        const critic = (yield* childrenOf(parent.threadId, subagentId, 2)).find(
+          (child) => child.id !== poet!.id,
+        )!;
+        const addAgents = ["probe-1", "probe-2"].map((key) => ({
+          key,
+          template: "probe",
+          input: { angle: key },
+        }));
+        yield* settleChild(
+          critic,
+          `\`\`\`json\n${JSON.stringify({ ok: false, addAgents, rerun: ["critique"] })}\n\`\`\``,
+        );
+
+        // The row as it stands once both grown agents are recorded, before either launches.
+        const row = yield* (yield* parentEvents(parent.threadId)).pipe(
+          Stream.filter(({ payload }) =>
+            (payload.workflow?.agents ?? []).some((agent) => agent.label === "probe-2"),
+          ),
+          Stream.runHead,
+          Effect.map((event) => Option.getOrThrow(event).payload),
+        );
+        const titles = row.workflow!.phases.map((phase) => phase.title);
+        assert.deepEqual(titles, [
+          "draft · round 1",
+          "critique · round 1",
+          "draft · round 2",
+          "critique · round 2",
+        ]);
+        const grown = row.workflow!.agents.filter((agent) => agent.label.startsWith("probe-"));
+        assert.deepEqual(
+          grown.map((agent) => [agent.label, titles[agent.phaseIndex!], agent.state]),
+          [
+            ["probe-1", "draft · round 2", "queued"],
+            ["probe-2", "draft · round 2", "queued"],
+          ],
+        );
+        const phaseStates = (subagent: OrchestrationV2Subagent) =>
+          deriveWorkflowGroups(projectedSubagentsToRuntime([subagent]))[0]!.phases.map((phase) => [
+            phase.title,
+            phase.state,
+          ]);
+        assert.deepEqual(phaseStates(row), [
+          ["draft · round 1", "done"],
+          ["critique · round 1", "done"],
+          ["draft · round 2", "pending"],
+          ["critique · round 2", "pending"],
+        ]);
+
+        const probes = (yield* childrenOf(parent.threadId, subagentId, 4)).filter((child) =>
+          child.title?.startsWith("draft.probe-"),
+        );
+        assert.deepEqual(probes.map((child) => child.title).toSorted(), [
+          "draft.probe-1#2",
+          "draft.probe-2#2",
+        ]);
+        for (const child of probes) yield* settleChild(child, "Probed.");
+        const last = (yield* childrenOf(parent.threadId, subagentId, 5)).find(
+          (child) => child.title === "critique.critic#2",
+        )!;
+        yield* settleChild(last, '```json\n{"ok":true}\n```');
+        assert.equal((yield* ended(parent.threadId, subagentId))?.status, "completed");
+      }),
+  );
+
+  it.effect(
     "shows a judge's grown agents queued under their phase and round, within 2 KB per update",
     () =>
       Effect.gen(function* () {
@@ -630,16 +1173,16 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
         );
         assert.deepEqual(
           grown.phases.map((phase) => phase.title),
-          ["draft", "critique"],
+          ["draft · round 1", "critique · round 1", "draft · round 2", "critique · round 2"],
         );
-        // Every grown row is there before round 2 starts anything.
-        const rows = grown.agents.filter((agent) => agent.attempt === 2);
+        // Every grown row is there before round 2 starts anything; rerun left the poet out.
+        const round2 = grown.agents.filter((agent) => (agent.phaseIndex ?? 0) >= 2);
         assert.deepEqual(
-          rows.map((row) => row.label),
-          addAgents.map((add) => add.key),
+          round2.map((row) => row.label),
+          [...addAgents.map((add) => add.key), "critic"],
         );
-        for (const row of rows) {
-          assert.deepEqual([row.state, row.phaseIndex, row.attempt], ["queued", 0, 2]);
+        for (const row of round2) {
+          assert.deepEqual([row.state, row.childThreadId], ["queued", undefined]);
         }
 
         const probes = yield* settleNext(17, "Probed.");
