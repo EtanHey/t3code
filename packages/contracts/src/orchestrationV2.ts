@@ -864,7 +864,7 @@ export const OrchestrationV2WorkflowRunState = Schema.Struct({
   exits: Schema.Array(
     Schema.Struct({
       stage: Schema.String,
-      reason: Schema.Literals(["accepted", "exhausted"]),
+      reason: Schema.Literals(["accepted", "exhausted", "dry"]),
       round: NonNegativeInt,
     }),
   ),

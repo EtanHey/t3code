@@ -33,6 +33,8 @@ interface FakeOptions {
 
 interface FakeTask {
   readonly key: string;
+  readonly stage: string;
+  readonly round: number;
   readonly reply: Reply;
   readonly finishAt: number;
   readonly cancelled: Deferred.Deferred<void>;
@@ -116,10 +118,10 @@ const makeFake = (options: FakeOptions) => {
         ) {
           violations.push(`${start.key} restarted after its task was recorded`);
         }
-        for (const launch of persisted.at(-1)?.snapshot.launches ?? []) {
-          const samePhase = launch.stage === start.stage && launch.round === start.round;
-          if (!samePhase && launch.outcome === null) {
-            violations.push(`${start.key} started while ${recordKey(launch)} was live`);
+        for (const task of tasks.values()) {
+          const samePhase = task.stage === start.stage && task.round === start.round;
+          if (!samePhase && task.settled === null) {
+            violations.push(`${start.key} started while ${task.key} was live`);
           }
         }
         const existing = tasks.get(`task:${start.key}`);
@@ -128,6 +130,8 @@ const makeFake = (options: FakeOptions) => {
         const now = yield* Clock.currentTimeMillis;
         tasks.set(`task:${start.key}`, {
           key: start.key,
+          stage: start.stage,
+          round: start.round,
           reply,
           finishAt: now + ("afterMs" in reply ? (reply.afterMs ?? 0) : 0),
           cancelled: yield* Deferred.make<void>(),
@@ -633,6 +637,18 @@ it.effect("rejects bad references and judges before any start", () =>
         ],
       },
       { name: "fb", stages: [{ id: "a", agents: [one("{{feedback}}")] }] },
+      { name: "reserved-input", stages: [{ id: "input", agents: [one("x")] }] },
+      {
+        name: "template-forward",
+        stages: [
+          { id: "loop", repeat: { ...repeat(2), templates: { t: { task: "{{polish}}" } } } },
+          { id: "polish", agents: [one("x")] },
+        ],
+      },
+      {
+        name: "template-repeat",
+        stages: [{ id: "loop", repeat: { ...repeat(2), templates: { t: { task: "{{loop}}" } } } }],
+      },
       { name: "dup-repeat", stages: [draft, { id: "draft", repeat: repeat(2) }] },
       { name: "judge", stages: [draft, { id: "loop", repeat: { ...repeat(2), judge: "writer" } }] },
       {
@@ -661,5 +677,248 @@ it.effect("rejects bad references and judges before any start", () =>
       expect(fake.startCalls).toEqual([]);
       expect(fake.persisted).toEqual([]);
     }
+  }),
+);
+
+/** Draft, probe, then a critic who judges and may grow the next round from two templates. */
+const grow = (max: number, extra: Record<string, unknown> = {}) => ({
+  name: "grow",
+  stages: [
+    {
+      id: "loop",
+      repeat: {
+        stages: [
+          { id: "draft", agents: [{ id: "poet", task: "Write {{feedback}}." }] },
+          { id: "probe", agents: [{ id: "reader", task: "Read {{draft}}." }] },
+          {
+            id: "critique",
+            agents: [{ id: "critic", task: "Judge {{probe}}.", resultSchema: VERDICT }],
+          },
+        ],
+        judge: "critic",
+        until: { path: "verdict", equals: "accept" },
+        max,
+        templates: {
+          rewrite: { task: "Rewrite {{draft.poet}} for {{input.focus}}." },
+          redteam: { task: "Attack {{draft}} on {{input.angle}}." },
+        },
+        ...extra,
+      },
+    },
+    { id: "polish", agents: [{ id: "editor", task: "Polish {{draft}}." }] },
+  ],
+});
+const rewrite = (key: string, focus: string) => ({ key, template: "rewrite", input: { focus } });
+const redteam = (key: string, angle: string) => ({
+  key,
+  template: "redteam",
+  input: { angle },
+  stage: "probe",
+});
+
+/** The critic's structured result by round, rejecting unless told otherwise; others echo. */
+const judged =
+  (byRound: ReadonlyArray<Record<string, unknown>>) =>
+  (start: WorkflowAgentStart): WorkflowAgentOutcome =>
+    start.agent.id === "critic"
+      ? ok("judged", { verdict: "reject", ...byRound[start.round - 1] })
+      : ok(start.key);
+const judging =
+  (byRound: ReadonlyArray<Record<string, unknown>>) => (start: WorkflowAgentStart) => ({
+    outcome: judged(byRound)(start),
+  });
+
+/** Round 1 grows both stages; round 2 repeats a key, adds one, reruns only probe; round 3 accepts. */
+const GROWN = [
+  { addAgents: [rewrite("rw-1", "rhythm"), redteam("rt-1", "cliche")] },
+  { addAgents: [rewrite("rw-1", "again"), redteam("rt-2", "meter")], rerun: ["probe"] },
+  { verdict: "accept" },
+];
+
+const roster = (result: WorkflowResult, round: number) => {
+  const loop = result.stages[0];
+  if (loop === undefined || !("rounds" in loop)) return [];
+  return (loop.rounds[round - 1]?.stages ?? []).flatMap((stage) =>
+    stage.agents.map((agent) => `${stage.id}.${agent.id}:${agent.status}`),
+  );
+};
+
+it.effect(
+  "grows the next round from the judge's addAgents, deduplicated by key across the run",
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFake({ reply: judging(GROWN) });
+
+      const result = yield* runWorkflow(fake.port, grow(4));
+
+      expect(result.status).toBe("completed");
+      expect(result.stages[0]).toMatchObject({ exit: "accepted" });
+      expect(fake.startCalls).toEqual([
+        "draft.poet#1",
+        "probe.reader#1",
+        "critique.critic#1",
+        "draft.poet#2",
+        "draft.rw-1#2",
+        "probe.reader#2",
+        "probe.rt-1#2",
+        "critique.critic#2",
+        "probe.reader#3",
+        "probe.rt-2#3",
+        "critique.critic#3",
+        "polish.editor#1",
+      ]);
+      expect(fake.rendered.get("probe.rt-1#2")).toBe(
+        'Attack {"poet":"draft.poet#2","rw-1":"draft.rw-1#2"} on cliche.',
+      );
+      expect(roster(result, 3)).toEqual([
+        "draft.poet:skipped",
+        "probe.reader:completed",
+        "probe.rt-2:completed",
+        "critique.critic:completed",
+      ]);
+      // Grown rows are recorded with the judge's result, before the next round starts anything.
+      const grown = fake.persisted.find(({ snapshot }) =>
+        snapshot.launches.some((l) => recordKey(l) === "probe.rt-1#2"),
+      )!.snapshot;
+      expect(
+        grown.launches.filter((l) => l.round === 2).map((l) => [recordKey(l), l.taskId]),
+      ).toEqual([
+        ["draft.rw-1#2", null],
+        ["probe.rt-1#2", null],
+      ]);
+      expect(fake.violations).toEqual([]);
+    }),
+);
+
+it.effect("exits after K consecutive dry votes, never on an invalid or missing judge result", () =>
+  Effect.gen(function* () {
+    const dry = makeFake({ reply: judging([{ addAgents: [rewrite("rw-1", "x")] }]) });
+    const dried = yield* runWorkflow(dry.port, grow(4, { dry: 2 }));
+    expect(dried.status).toBe("completed");
+    expect(dried.stages[0]).toMatchObject({ exit: "dry" });
+    expect(dry.created.filter((key) => key.startsWith("critique."))).toEqual([
+      "critique.critic#1",
+      "critique.critic#2",
+      "critique.critic#3",
+    ]);
+
+    // A rerun request is unresolved work, so those rounds never vote dry.
+    const busy = makeFake({ reply: judging([{ rerun: ["draft"] }, { rerun: ["draft"] }]) });
+    expect((yield* runWorkflow(busy.port, grow(2, { dry: 1 }))).status).toBe("failed");
+
+    for (const bad of [
+      { addAgents: [{ key: "x", template: "nope" }] },
+      { addAgents: [{ key: "x", template: "rewrite", stage: "polish" }] },
+      { rerun: ["polish"] },
+    ]) {
+      const invalid = makeFake({ reply: judging([bad]) });
+      expect((yield* runWorkflow(invalid.port, grow(3, { dry: 1 }))).status).toBe("failed");
+      expect(invalid.created).not.toContain("draft.poet#2");
+    }
+    const missing = makeFake({ reply: (start) => ({ outcome: ok(start.key) }) });
+    expect((yield* runWorkflow(missing.port, grow(3, { dry: 1 }))).status).toBe("failed");
+    expect(missing.created).not.toContain("draft.poet#2");
+  }),
+);
+
+it.effect("waits for grown agents before starting the next stage or judge", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      reply: (start) => ({
+        afterMs: start.agent.id === "rw-1" ? 10_000 : 1_000,
+        outcome: judged(GROWN)(start),
+      }),
+    });
+
+    const fiber = yield* Effect.forkChild(runWorkflow(fake.port, grow(4)));
+    yield* TestClock.adjust("1 minute");
+    const result = yield* Fiber.join(fiber);
+
+    expect(result.status).toBe("completed");
+    expect(fake.startCalls.indexOf("probe.reader#2")).toBeGreaterThan(
+      fake.startCalls.indexOf("draft.rw-1#2"),
+    );
+    expect(fake.violations).toEqual([]);
+  }),
+);
+
+it.effect("resumes a grown run without launching an instance twice", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      reply: judging(GROWN),
+      crash: (snapshot) =>
+        snapshot.launches.some((l) => recordKey(l) === "draft.rw-1#2" && l.taskId !== null)
+          ? "instead"
+          : undefined,
+    });
+
+    const result = yield* runOnce(fake, grow(4));
+
+    expect(result.status).toBe("completed");
+    expect(fake.startCalls.filter((key) => key === "draft.rw-1#2")).toHaveLength(2);
+    expect(fake.created.filter((key) => key === "draft.rw-1#2")).toHaveLength(1);
+    expect(new Set(fake.created).size).toBe(fake.created.length);
+    expect(fake.violations).toEqual([]);
+  }),
+);
+
+it.effect("a stop after growth never starts a grown instance, across restart", () =>
+  Effect.gen(function* () {
+    const spec = yield* decodeWorkflowSpec(grow(4));
+    const fake = makeFake({
+      reply: judging(GROWN),
+      crash: (snapshot) =>
+        snapshot.launches.some((l) => recordKey(l) === "draft.rw-1#2") ? "after" : undefined,
+    });
+    expect(Exit.isFailure(yield* Effect.exit(runWorkflow(fake.port, grow(4))))).toBe(true);
+
+    const result = yield* resumeWorkflow(fake.port, spec, { ...fake.last()!, stop: true });
+
+    expect(result.status).toBe("cancelled");
+    expect(fake.startCalls.filter((key) => key.endsWith("#2"))).toEqual([]);
+    expect(
+      fake
+        .last()!
+        .launches.filter((l) => l.round === 2)
+        .map((l) => [recordKey(l), l.outcome?.status]),
+    ).toEqual([["draft.rw-1#2", "cancelled"]]);
+    expect(fake.violations).toEqual([]);
+  }),
+);
+
+it.effect("never grows a round beyond max", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({
+      reply: (start) => ({
+        outcome: judged([1, 2, 3].map((n) => ({ addAgents: [rewrite(`rw-${n}`, "x")] })))(start),
+      }),
+    });
+
+    const result = yield* runWorkflow(fake.port, grow(2));
+
+    expect(result.status).toBe("failed");
+    expect(
+      fake.persisted.every(({ snapshot }) => snapshot.launches.every((l) => l.round <= 2)),
+    ).toBe(true);
+    expect(fake.created.filter((key) => key.endsWith("#3"))).toEqual([]);
+  }),
+);
+
+it.effect("a run that grows survives a crash at, and instead of, every persist", () =>
+  Effect.gen(function* () {
+    const check = (fake: Fake, result: WorkflowResult) => {
+      expect(result.status).toBe("completed");
+      expect(fake.violations).toEqual([]);
+      expect(new Set(fake.created).size).toBe(fake.created.length);
+      for (const { snapshot } of fake.persisted) {
+        expect(decodeSnapshot(JSON.parse(JSON.stringify(snapshot)))).toEqual(snapshot);
+      }
+    };
+    yield* crashSweep(grow(4), judging(GROWN), check);
+    yield* crashSweep(
+      grow(4, { dry: 2 }),
+      judging([{ addAgents: [rewrite("rw-1", "x"), redteam("rt-1", "y")] }]),
+      check,
+    );
   }),
 );

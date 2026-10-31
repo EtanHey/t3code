@@ -27,6 +27,8 @@ export type WorkflowAgent = typeof WorkflowAgent.Type;
 const AgentStage = Schema.Struct({ id: WorkflowId, agents: Schema.NonEmptyArray(WorkflowAgent) });
 type AgentStage = typeof AgentStage.Type;
 
+const RoundCount = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 }));
+
 const RepeatStage = Schema.Struct({
   id: WorkflowId,
   repeat: Schema.Struct({
@@ -36,11 +38,38 @@ const RepeatStage = Schema.Struct({
       path: TrimmedNonEmptyString,
       equals: Schema.Union([Schema.String, Schema.Number, Schema.Boolean, Schema.Null]),
     }),
-    max: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })),
+    max: RoundCount,
     onExhausted: Schema.optional(Schema.Literals(["fail", "pass"])),
+    dry: Schema.optional(RoundCount),
+    templates: Schema.optional(
+      Schema.Record(
+        Schema.String,
+        Schema.Struct({
+          task: WorkflowAgent.fields.task,
+          target: WorkflowAgent.fields.target,
+          resultSchema: WorkflowAgent.fields.resultSchema,
+        }),
+      ),
+    ),
   }),
 });
 type RepeatStage = typeof RepeatStage.Type;
+
+/** What a judge's structured result may ask of the next round, beyond `until`. */
+const Growth = Schema.Struct({
+  addAgents: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        key: WorkflowId,
+        template: Schema.String,
+        input: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+        stage: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+  rerun: Schema.optional(Schema.Array(Schema.String)),
+});
+const decodeGrowth = Schema.decodeUnknownOption(Growth);
 
 export const WorkflowSpec = Schema.Struct({
   name: TrimmedNonEmptyString,
@@ -80,7 +109,7 @@ export const WorkflowSnapshot = Schema.Struct({
   exits: Schema.Array(
     Schema.Struct({
       stage: WorkflowId,
-      reason: Schema.Literals(["accepted", "exhausted"]),
+      reason: Schema.Literals(["accepted", "exhausted", "dry"]),
       round: Schema.Int,
     }),
   ),
@@ -121,7 +150,7 @@ export type WorkflowResult = {
     | StageResult
     | {
         readonly id: string;
-        readonly exit: "accepted" | "exhausted" | null;
+        readonly exit: WorkflowSnapshot["exits"][number]["reason"] | null;
         readonly rounds: ReadonlyArray<{
           readonly round: number;
           readonly stages: ReadonlyArray<StageResult>;
@@ -143,11 +172,18 @@ const invalid = (message: string) =>
 function referenceError(spec: WorkflowSpec): string | null {
   const ids = new Set<string>();
   const repeats = new Set<string>();
-  const order: Array<{ stage: AgentStage; repeat: RepeatStage | null }> = [];
+  const order: Array<{
+    stage: {
+      readonly id: string;
+      readonly agents: ReadonlyArray<Pick<WorkflowAgent, "id" | "task">>;
+    };
+    repeat: RepeatStage | null;
+  }> = [];
   for (const stage of spec.stages) {
     const inner = "agents" in stage ? [stage] : stage.repeat.stages;
     for (const id of [stage.id, ...("agents" in stage ? [] : inner.map((s) => s.id))]) {
-      if (id === "feedback") return `"feedback" is reserved and cannot name a stage.`;
+      if (id === "feedback" || id === "input")
+        return `"${id}" is reserved and cannot name a stage.`;
       if (ids.has(id)) return `Duplicate stage id "${id}".`;
       ids.add(id);
     }
@@ -162,6 +198,14 @@ function referenceError(spec: WorkflowSpec): string | null {
       }
     }
     for (const s of inner) order.push({ stage: s, repeat: "agents" in stage ? null : stage });
+    // Templates check as if after the repeat's last stage: a grown agent may join any of them.
+    if (!("agents" in stage)) {
+      const agents = Object.entries(stage.repeat.templates ?? {}).map(([id, { task }]) => ({
+        id,
+        task,
+      }));
+      order.push({ stage: { id: stage.id, agents }, repeat: stage });
+    }
   }
   const index = new Map(order.map(({ stage }, i) => [stage.id, i]));
   for (const [position, { stage, repeat }] of order.entries()) {
@@ -209,14 +253,62 @@ const asText = (value: unknown) => (typeof value === "string" ? value : JSON.str
 export const agentStages = (spec: WorkflowSpec) =>
   spec.stages.flatMap((stage) => ("agents" in stage ? [stage] : stage.repeat.stages));
 
-function renderTask(spec: WorkflowSpec, state: WorkflowSnapshot, template: string): string {
+const judgedIn = (state: WorkflowSnapshot, stage: RepeatStage, round: number) =>
+  findLaunch(state, stage.repeat.stages.at(-1)?.id ?? "", round, stage.repeat.judge)?.outcome
+    ?.structuredResult;
+
+/** The judge's requests for the next round; null when it names a template or stage not in the repeat. */
+function growthOf(stage: RepeatStage, value: unknown) {
+  const growth = Option.getOrNull(decodeGrowth(value));
+  if (growth === null) return null;
+  const { stages, templates = {} } = stage.repeat;
+  const ids = stages.map((s) => s.id);
+  const adds = (growth.addAgents ?? []).map((add) => ({
+    ...add,
+    stage: add.stage ?? stages[0].id,
+  }));
+  const known =
+    adds.every((add) => ids.includes(add.stage) && Object.hasOwn(templates, add.template)) &&
+    (growth.rerun ?? []).every((id) => ids.includes(id));
+  return known ? { adds, rerun: growth.rerun ?? [] } : null;
+}
+
+const isGrown = (stage: RepeatStage, launch: WorkflowLaunch) =>
+  stage.repeat.stages.some(
+    (s) => s.id === launch.stage && !s.agents.some((agent) => agent.id === launch.agent),
+  );
+
+/** Round 1 and the judge's stage always run; later rounds run what the last judge named, or all. */
+function runsAgain(stage: RepeatStage, state: WorkflowSnapshot, phaseId: string) {
+  if (state.round === 1 || phaseId === stage.repeat.stages.at(-1)?.id) return true;
+  const rerun = growthOf(stage, judgedIn(state, stage, state.round - 1))?.rerun ?? [];
+  return rerun.length === 0 || rerun.includes(phaseId);
+}
+
+/** Consecutive dry votes ending at this round: rounds that grew nothing and asked for no rerun. */
+function dryStreak(stage: RepeatStage, state: WorkflowSnapshot, dryNow: boolean) {
+  const wasDry = (round: number) =>
+    !state.launches.some((l) => l.round === round + 1 && isGrown(stage, l)) &&
+    !growthOf(stage, judgedIn(state, stage, round))?.rerun.length;
+  let streak = dryNow ? 1 : 0;
+  while (streak > 0 && streak < state.round && wasDry(state.round - streak)) streak += 1;
+  return streak;
+}
+
+function renderTask(
+  spec: WorkflowSpec,
+  state: WorkflowSnapshot,
+  template: string,
+  input?: Readonly<Record<string, unknown>>,
+): string {
   return template.replace(REFERENCE, (match, stageRef: string, agentRef?: string) => {
     if (stageRef === "feedback") {
       const stage = spec.stages[state.cursor];
       if (stage === undefined || "agents" in stage) return match;
-      const judges = stage.repeat.stages.at(-1)?.id ?? "";
-      const judge = findLaunch(state, judges, state.round - 1, stage.repeat.judge);
-      return JSON.stringify(judge?.outcome?.structuredResult ?? null);
+      return JSON.stringify(judgedIn(state, stage, state.round - 1) ?? null);
+    }
+    if (stageRef === "input" && input !== undefined) {
+      return agentRef === undefined ? JSON.stringify(input) : asText(input[agentRef] ?? null);
     }
     if (!agentStages(spec).some((stage) => stage.id === stageRef)) return match;
     const latest = new Map<string, unknown>();
@@ -242,6 +334,7 @@ function accepts(until: RepeatStage["repeat"]["until"], value: unknown): boolean
 type Step =
   | { readonly _tag: "finish"; readonly status: typeof WorkflowRunStatus.Type }
   | { readonly _tag: "launch"; readonly stage: string; readonly agent: WorkflowAgent }
+  | { readonly _tag: "start" | "record"; readonly launch: WorkflowLaunch }
   | { readonly _tag: "advance"; readonly state: WorkflowSnapshot }
   | { readonly _tag: "wait" };
 
@@ -257,34 +350,86 @@ function decide(spec: WorkflowSpec, state: WorkflowSnapshot, now: number): Step 
   }
   const stage = spec.stages[state.cursor];
   if (stage === undefined) return finish("completed");
+  const loop = "agents" in stage ? null : stage;
   const phase = "agents" in stage ? stage : stage.repeat.stages[state.phase];
   if (phase === undefined) return finish("failed");
-  const launches = phase.agents.map((agent) => ({
-    agent,
-    launch: findLaunch(state, phase.id, state.round, agent.id),
-  }));
-  const unlaunched = launches.find(({ launch }) => launch === undefined);
-  if (unlaunched !== undefined) return { _tag: "launch", stage: phase.id, agent: unlaunched.agent };
-  if (launches.some(({ launch }) => launch?.outcome === null)) return { _tag: "wait" };
+  if (loop === null || runsAgain(loop, state, phase.id)) {
+    const unlaunched = phase.agents.find(
+      (agent) => findLaunch(state, phase.id, state.round, agent.id) === undefined,
+    );
+    if (unlaunched !== undefined) return { _tag: "launch", stage: phase.id, agent: unlaunched };
+  }
+  // Grown agents, and launches a crash cut off before their task id was recorded.
+  const current = state.launches.filter((l) => l.stage === phase.id && l.round === state.round);
+  const intent = current.find((l) => l.taskId === null && l.outcome === null);
+  if (intent !== undefined) return { _tag: "start", launch: intent };
+  if (current.some((l) => l.outcome === null)) return { _tag: "wait" };
 
   const next = { ...state, cursor: state.cursor + 1, round: 1, phase: 0 };
-  if ("agents" in stage) return advance(next);
-  const { repeat } = stage;
+  if (loop === null) return advance(next);
+  const { repeat } = loop;
   if (state.phase < repeat.stages.length - 1) return advance({ ...state, phase: state.phase + 1 });
-  const exit = (reason: "accepted" | "exhausted") => ({
+  const exit = (reason: WorkflowSnapshot["exits"][number]["reason"]) => ({
     ...next,
-    exits: [...state.exits, { stage: stage.id, reason, round: state.round }],
+    exits: [...state.exits, { stage: loop.id, reason, round: state.round }],
   });
-  const judge = findLaunch(state, phase.id, state.round, repeat.judge);
-  if (accepts(repeat.until, judge?.outcome?.structuredResult)) return advance(exit("accepted"));
-  if (state.round < repeat.max) return advance({ ...state, round: state.round + 1, phase: 0 });
-  return repeat.onExhausted === "pass" ? advance(exit("exhausted")) : finish("failed");
+  const value = judgedIn(state, loop, state.round);
+  if (accepts(repeat.until, value)) return advance(exit("accepted"));
+  // A missing or malformed judge result fails the run; it never counts as a dry vote.
+  const growth = growthOf(loop, value);
+  if (growth === null) return finish("failed");
+  const round = state.round + 1;
+  const recorded = state.launches.filter((l) => l.round === round && isGrown(loop, l));
+  const seen = new Set([
+    ...repeat.stages.flatMap((s) => s.agents.map((agent) => agent.id)),
+    ...state.launches.filter((l) => l.round < round && isGrown(loop, l)).map((l) => l.agent),
+  ]);
+  const grown = growth.adds.filter(({ key }) => {
+    const fresh = !seen.has(key);
+    seen.add(key);
+    return fresh;
+  });
+  const dryNow = grown.length === 0 && growth.rerun.length === 0;
+  if (repeat.dry !== undefined && dryStreak(loop, state, dryNow) >= repeat.dry) {
+    return advance(exit("dry"));
+  }
+  if (state.round === repeat.max) {
+    return repeat.onExhausted === "pass" ? advance(exit("exhausted")) : finish("failed");
+  }
+  // One row per update keeps each within the wire budget; all land before the next round starts.
+  const add = grown[recorded.length];
+  if (add === undefined) return advance({ ...state, round, phase: 0 });
+  return {
+    _tag: "record",
+    launch: {
+      stage: add.stage,
+      round,
+      agent: add.key,
+      taskId: null,
+      cancelRequested: false,
+      outcome: null,
+    },
+  };
 }
 
-const findAgent = (spec: WorkflowSpec, launch: WorkflowLaunch) =>
-  agentStages(spec)
-    .find((stage) => stage.id === launch.stage)
-    ?.agents.find((agent) => agent.id === launch.agent);
+/** A spec agent, or a grown one built from its template and the input its judge gave it. */
+function findAgent(spec: WorkflowSpec, state: WorkflowSnapshot, launch: WorkflowLaunch) {
+  for (const stage of spec.stages) {
+    const phase = ("agents" in stage ? [stage] : stage.repeat.stages).find(
+      (s) => s.id === launch.stage,
+    );
+    if (phase === undefined) continue;
+    const agent = phase.agents.find((a) => a.id === launch.agent);
+    if (agent !== undefined || "agents" in stage) return agent && { agent };
+    const add = growthOf(stage, judgedIn(state, stage, launch.round - 1))?.adds.find(
+      (a) => a.key === launch.agent,
+    );
+    const template = add && stage.repeat.templates?.[add.template];
+    if (add === undefined || template === undefined) return undefined;
+    return { agent: { ...template, id: add.key }, input: add.input ?? {} };
+  }
+  return undefined;
+}
 
 type WorkflowEvent =
   | { readonly _tag: "settled"; readonly key: string; readonly outcome: WorkflowAgentOutcome }
@@ -331,11 +476,12 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
     );
   const startTask = Effect.fn("WorkflowRun.startAgent")(function* (launch: WorkflowLaunch) {
     const key = keyOf(launch);
-    const agent = findAgent(spec, launch);
-    if (agent === undefined) {
+    const found = findAgent(spec, state, launch);
+    if (found === undefined) {
       return yield* update(key, { outcome: { status: "failed", result: "Not in the spec." } });
     }
-    const task = renderTask(spec, state, agent.task);
+    const { agent } = found;
+    const task = renderTask(spec, state, agent.task, found.input);
     const started = yield* port
       .start({ key, stage: launch.stage, round: launch.round, agent, task })
       .pipe(Effect.result);
@@ -355,9 +501,8 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
     );
   }
   for (const launch of state.launches) {
-    if (launch.outcome !== null) continue;
-    if (launch.taskId === null) yield* startTask(launch);
-    else yield* watch(keyOf(launch), launch.taskId);
+    if (launch.outcome === null && launch.taskId !== null)
+      yield* watch(keyOf(launch), launch.taskId);
   }
 
   const apply = (event: WorkflowEvent) => {
@@ -399,6 +544,12 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
         yield* startTask(launch);
         break;
       }
+      case "start":
+        yield* startTask(step.launch);
+        break;
+      case "record":
+        yield* save({ ...state, launches: [...state.launches, step.launch] });
+        break;
       case "advance":
         state = step.state;
         break;
@@ -421,24 +572,34 @@ export const initialSnapshot = (spec: WorkflowSpec, now: number): WorkflowSnapsh
 });
 
 export function workflowResult(spec: WorkflowSpec, state: WorkflowSnapshot): WorkflowResult {
+  const agentResult = (id: string, launch: WorkflowLaunch | undefined): AgentResult => {
+    if (launch === undefined) return { id, status: "skipped", taskId: null, result: null };
+    const { outcome } = launch;
+    return {
+      id,
+      status: outcome?.status ?? "running",
+      taskId: launch.taskId,
+      result: outcome?.result ?? null,
+      ...(outcome?.structuredResult === undefined
+        ? {}
+        : { structuredResult: outcome.structuredResult }),
+    };
+  };
   const agents = (stage: AgentStage, round: number): StageResult => ({
     id: stage.id,
-    agents: stage.agents.map((agent): AgentResult => {
-      const launch = findLaunch(state, stage.id, round, agent.id);
-      if (launch === undefined) {
-        return { id: agent.id, status: "skipped", taskId: null, result: null };
-      }
-      const { outcome } = launch;
-      return {
-        id: agent.id,
-        status: outcome?.status ?? "running",
-        taskId: launch.taskId,
-        result: outcome?.result ?? null,
-        ...(outcome?.structuredResult === undefined
-          ? {}
-          : { structuredResult: outcome.structuredResult }),
-      };
-    }),
+    agents: [
+      ...stage.agents.map((agent) =>
+        agentResult(agent.id, findLaunch(state, stage.id, round, agent.id)),
+      ),
+      ...state.launches
+        .filter(
+          (l) =>
+            l.stage === stage.id &&
+            l.round === round &&
+            !stage.agents.some((agent) => agent.id === l.agent),
+        )
+        .map((l) => agentResult(l.agent, l)),
+    ],
   });
   return {
     name: spec.name,
