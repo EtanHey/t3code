@@ -4,6 +4,7 @@ import {
   CommandId,
   EnvironmentId,
   EventId,
+  isOrchestrationV2WorkActive,
   MessageId,
   NodeId,
   OrchestrationV2DomainEvent,
@@ -17,6 +18,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { restoreSubagentBodies } from "@t3tools/shared/orchestrationV2DedupedBodies";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -426,6 +428,9 @@ const rowWhere = (
     );
   });
 
+const agentsRunning = (row: OrchestrationV2Subagent) =>
+  row.workflow?.agents.filter((agent) => agent.state === "running").length ?? 0;
+
 /** Settles a child as its provider would: a final reply, then the run ends. */
 const settleChild = (child: OrchestrationV2Subagent, text: string) =>
   Effect.gen(function* () {
@@ -467,7 +472,36 @@ const settleChild = (child: OrchestrationV2Subagent, text: string) =>
           runId: childRun.id,
           providerInstanceId: childRun.providerInstanceId,
           occurredAt: now,
-          payload: { ...childRun, status: "completed", startedAt: now, completedAt: now },
+          payload: {
+            ...childRun,
+            status: "completed",
+            startedAt: childRun.startedAt ?? now,
+            completedAt: now,
+          },
+        },
+      ],
+    });
+  });
+
+/** Starts a child's run as its provider would. */
+const startChild = (child: OrchestrationV2Subagent) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const now = yield* DateTime.now;
+    const childThreadId = child.childThreadId!;
+    const childRun = (yield* orchestrator.getThreadProjection(childThreadId)).runs[0]!;
+    yield* sink.write({
+      commandId: CommandId.make(`command:start:${child.id}`),
+      events: [
+        {
+          id: EventId.make(`event:child-run-start:${child.id}`),
+          type: "run.updated",
+          threadId: childThreadId,
+          runId: childRun.id,
+          providerInstanceId: childRun.providerInstanceId,
+          occurredAt: now,
+          payload: { ...childRun, status: "running", startedAt: now },
         },
       ],
     });
@@ -618,7 +652,7 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
       const { subagentId } = yield* runs.run(parent.scope, planned);
       yield* parent.endTurn;
       const settled = new Set<NodeId>();
-      /** Lets `ms` pass once the runner has started the next agents, then settles them. */
+      /** Once the runner delegates the next agents, their runs start 500 ms later and take `ms`. */
       const settleNext = (count: number, ms: number, text: string) =>
         Effect.gen(function* () {
           const children = (yield* childrenOf(
@@ -636,6 +670,8 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
                   children.some((child) => child.childThreadId === agent.childThreadId),
               ).length === children.length,
           );
+          yield* TestClock.adjust(500);
+          for (const child of children) yield* startChild(child);
           yield* TestClock.adjust(ms);
           for (const child of children) {
             settled.add(child.id);
@@ -687,15 +723,133 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
           agent.durationMs,
         ]),
         [
-          ["a", "completed", 0, 0, 3_000, 3_000],
-          ["b", "completed", 0, 0, 3_000, 3_000],
-          ["writer", "completed", 3_000, 3_000, 5_000, 2_000],
-          ["judge", "completed", 5_000, 5_000, 6_000, 1_000],
-          ["writer", "completed", 6_000, 6_000, 7_000, 1_000],
-          ["judge", "completed", 7_000, 7_000, 8_000, 1_000],
-          ["p", "completed", 8_000, 8_000, 12_000, 4_000],
+          ["a", "completed", 0, 500, 3_500, 3_000],
+          ["b", "completed", 0, 500, 3_500, 3_000],
+          ["writer", "completed", 3_500, 4_000, 6_000, 2_000],
+          ["judge", "completed", 6_000, 6_500, 7_500, 1_000],
+          ["writer", "completed", 7_500, 8_000, 9_000, 1_000],
+          ["judge", "completed", 9_000, 9_500, 10_500, 1_000],
+          ["p", "completed", 10_500, 11_000, 15_000, 4_000],
         ],
       );
+    }),
+  );
+
+  it.effect(
+    "times an agent from its child's run, even one that ended while the server was down",
+    () =>
+      Effect.gen(function* () {
+        const parent = yield* seedParent("downtime");
+        const before = yield* Scope.make();
+        const { subagentId } = yield* (yield* workflowRunsIn(before)).run(parent.scope, {
+          name: "one",
+          stages: [{ id: "one", agents: [{ id: "a", task: "A." }] }],
+        });
+        yield* parent.endTurn;
+        const [child] = yield* childrenOf(parent.threadId, subagentId, 1);
+        yield* rowWhere(parent.threadId, subagentId, (row) => agentsRunning(row) === 1);
+        const startedAt = yield* Clock.currentTimeMillis;
+        yield* startChild(child!);
+        yield* TestClock.adjust(1_000);
+        yield* Scope.close(before, Exit.void);
+        yield* settleChild(child!, "Done.");
+        yield* TestClock.adjust(9_000);
+
+        yield* (yield* workflowRunsIn(yield* Effect.scope)).start();
+        const [agent] = (yield* ended(parent.threadId, subagentId))?.workflow?.agents ?? [];
+        assert.deepEqual(
+          [agent?.state, agent?.startedAt, agent?.completedAt, agent?.durationMs],
+          ["completed", startedAt, startedAt + 1_000, 1_000],
+        );
+      }),
+  );
+
+  it.effect("shows the model a child actually runs once it starts, not the planned one", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const runs = yield* workflowRunsIn(yield* Effect.scope);
+      const parent = yield* seedParent("actual-model");
+      const { subagentId } = yield* runs.run(parent.scope, {
+        name: "two",
+        stages: [
+          { id: "one", agents: [{ id: "a", task: "A." }] },
+          { id: "two", agents: [{ id: "b", task: "B." }] },
+        ],
+      });
+      yield* parent.endTurn;
+      const [first] = yield* childrenOf(parent.threadId, subagentId, 1);
+      yield* orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make("command:actual-model:switch"),
+        threadId: parent.threadId,
+        modelSelection: {
+          instanceId: claude,
+          model: "claude-sonnet-5-5",
+          options: [{ id: "effort", value: "low" }],
+        },
+      });
+      yield* settleChild(first!, "Done.");
+      const row = yield* rowWhere(
+        parent.threadId,
+        subagentId,
+        (row) => row.workflow?.agents[1]?.state === "running",
+      );
+      const { providerInstanceId, model, effort } = row.workflow!.agents[1]!;
+      assert.deepEqual(
+        { providerInstanceId, model, effort },
+        { providerInstanceId: claude, model: "claude-sonnet-5-5", effort: "low" },
+      );
+    }),
+  );
+
+  it.effect("fails a running row an older build recorded instead of resuming it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const parent = yield* seedParent("legacy");
+      const before = yield* Scope.make();
+      const { subagentId } = yield* (yield* workflowRunsIn(before)).run(parent.scope, spec);
+      yield* parent.endTurn;
+      const drafts = yield* childrenOf(parent.threadId, subagentId, 2);
+      yield* Scope.close(before, Exit.void);
+      const row = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+        (task) => task.id === subagentId,
+      )!;
+      const { version: _version, ...legacy } = row.workflowRun!;
+      const oldLayout = {
+        name: "review",
+        phases: [
+          { index: 0, title: "draft" },
+          { index: 1, title: "judge" },
+        ],
+        agents: drafts.map((draft, index) => ({
+          index,
+          label: draft.title!.split(".")[1]!.split("#")[0]!,
+          childThreadId: draft.childThreadId!,
+          state: "running" as const,
+          phaseIndex: 0,
+          attempt: 1,
+        })),
+      };
+      yield* orchestrator.dispatch({
+        type: "workflow_run.update",
+        commandId: CommandId.make("command:legacy:old-layout"),
+        parentThreadId: parent.threadId,
+        taskId: subagentId,
+        workflow: oldLayout,
+        workflowRun: legacy,
+      });
+
+      yield* (yield* workflowRunsIn(yield* Effect.scope)).start();
+      const failed = yield* ended(parent.threadId, subagentId);
+      assert.equal(failed?.status, "failed");
+      assert.deepEqual(failed?.workflow, oldLayout);
+      assert.include(JSON.parse(failed?.result ?? "{}").error, "older T3 build");
+      const children = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.filter(
+        (task) => task.parentNodeId === subagentId,
+      );
+      assert.lengthOf(children, 2);
+      assert.isFalse(children.some((task) => isOrchestrationV2WorkActive(task.status)));
+      assert.lengthOf(yield* wakes(parent.threadId), 1);
     }),
   );
 
@@ -703,6 +857,8 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
     "keeps every workflow row update within 2 KB on the wire across a 20-agent stage and 3 rounds",
     () =>
       Effect.gen(function* () {
+        // Real epoch times, so each timestamp costs its full width on the wire.
+        yield* TestClock.setTime(1_793_404_800_000);
         const runs = yield* workflowRunsIn(yield* Effect.scope);
         const parent = yield* seedParent("bytes");
         const wide = {

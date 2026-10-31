@@ -57,6 +57,8 @@ export interface RuntimeSubagent {
   readonly speed?: string | undefined;
   /** A workflow member's own provider, when it reports one. */
   readonly providerInstanceId?: ProviderInstanceId | undefined;
+  /** A planned workflow member its run ended before launching; it never settled. */
+  readonly notStarted?: true | undefined;
   readonly status: RuntimeSubagentStatus;
   readonly activationCount: number;
   readonly usage: SubagentUsage | null;
@@ -134,21 +136,29 @@ function workflowMembersToRuntime(
   workflow: OrchestrationV2SubagentWorkflow,
 ): ReadonlyArray<RuntimeSubagent> {
   return workflow.agents.map((agent) => {
-    const status =
-      (agent.state === "queued" || agent.state === "running") &&
-      isTerminalSubagentStatus(coordinator.status)
+    // Planned, never queued or started: the run ended before it got there.
+    const notStarted =
+      agent.state === "queued" &&
+      agent.queuedAt === undefined &&
+      agent.startedAt === undefined &&
+      isTerminalSubagentStatus(coordinator.status);
+    const status = notStarted
+      ? "cancelled"
+      : (agent.state === "queued" || agent.state === "running") &&
+          isTerminalSubagentStatus(coordinator.status)
         ? coordinator.status
         : agent.state === "queued"
           ? "pending"
           : agent.state;
     const failed = status === "failed";
     const startedAt = isoFromEpochMillis(agent.startedAt);
-    const completedAt = isTerminalSubagentStatus(status)
-      ? (isoFromEpochMillis(agent.completedAt) ??
-        (agent.startedAt !== undefined && agent.durationMs !== undefined
-          ? isoFromEpochMillis(agent.startedAt + agent.durationMs)
-          : coordinator.completedAt))
-      : null;
+    const completedAt =
+      !notStarted && isTerminalSubagentStatus(status)
+        ? (isoFromEpochMillis(agent.completedAt) ??
+          (agent.startedAt !== undefined && agent.durationMs !== undefined
+            ? isoFromEpochMillis(agent.startedAt + agent.durationMs)
+            : coordinator.completedAt))
+        : null;
     return {
       ...coordinator,
       id: `${coordinator.id}:agent:${agent.index}`,
@@ -160,6 +170,7 @@ function workflowMembersToRuntime(
       ...(agent.providerInstanceId === undefined
         ? {}
         : { providerInstanceId: agent.providerInstanceId }),
+      ...(notStarted ? { notStarted } : {}),
       status,
       activationCount: agent.attempt ?? 1,
       usage: workflowUsage(agent),
@@ -280,11 +291,11 @@ export function deriveWorkflowGroups(
         // member has not finished the phase.
         (member) => isActiveSubagentStatus(member.status) || member.status === "idle",
       );
-      const settledCount = phaseMembers.filter((member) =>
-        isTerminalSubagentStatus(member.status),
+      const settledCount = phaseMembers.filter(
+        (member) => !member.notStarted && isTerminalSubagentStatus(member.status),
       ).length;
       const state: "pending" | "running" | "done" = phaseMembers.every(
-        (member) => member.status === "pending",
+        (member) => member.notStarted || member.status === "pending",
       )
         ? "pending"
         : hasActiveMember

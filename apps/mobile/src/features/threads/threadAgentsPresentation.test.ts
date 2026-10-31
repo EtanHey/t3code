@@ -192,6 +192,7 @@ describe("nextWorkflowSelection", () => {
     );
 
     expect(nextWorkflowSelection(stopped, null)).toBe("1");
+    expect(stopped.map((item) => item.tone)).toEqual(["completed", "stopped", "queued"]);
   });
 
   it("keeps one phase open: another replaces it and the open one collapses the card", () => {

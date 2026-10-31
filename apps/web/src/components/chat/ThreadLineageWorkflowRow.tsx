@@ -37,6 +37,7 @@ function phaseElapsed(phase: SubagentWorkflowGroup["phases"][number]) {
 
 function phaseStatusLabel(phase: SubagentWorkflowGroup["phases"][number]) {
   if (phase.state === "running") return "running";
+  if (phase.state === "pending") return "not started";
   if (phase.members.some((member) => member.status === "failed")) return "failed";
   if (
     phase.members.some((member) => member.status === "cancelled" || member.status === "interrupted")
@@ -84,7 +85,7 @@ function WorkflowMemberRow({
         >
           <ThreadRelationshipIcon driver={driver} provider={provider} status={member.status} />
           <span className="min-w-0 flex-1 truncate">{member.title}</span>
-          <span className="sr-only">{member.status}</span>
+          <span className="sr-only">{member.notStarted ? "not started" : member.status}</span>
           {member.startedAt ? (
             <span className="shrink-0 text-2xs font-normal tabular-nums text-muted-foreground">
               <AgentElapsed agent={member} />
@@ -103,6 +104,7 @@ function WorkflowMemberRow({
             driver={driver}
             elapsed={<AgentElapsed agent={member} />}
             status={member.status}
+            statusLabel={member.notStarted ? "not started" : undefined}
             result={member.result ?? member.error}
             progress={member.progress}
           />

@@ -121,7 +121,7 @@ export interface WorkflowRailItem {
 }
 
 function railTone(members: ReadonlyArray<RuntimeSubagent>): WorkflowRailTone {
-  if (members.every((member) => member.status === "pending")) return "queued";
+  if (members.every((member) => member.notStarted || member.status === "pending")) return "queued";
   if (members.some((member) => isActiveSubagentStatus(member.status) || member.status === "idle")) {
     return "working";
   }

@@ -97,7 +97,7 @@ describe("projectedSubagentsToRuntime workflow expansion", () => {
             phases: [],
             agents: [
               member(),
-              member({ index: 2, state: "queued" }),
+              member({ index: 2, state: "queued", queuedAt: Date.UTC(2026, 7, 1, 10, 0, 0) }),
               member({
                 index: 3,
                 state: "completed",
@@ -119,6 +119,35 @@ describe("projectedSubagentsToRuntime workflow expansion", () => {
       expect(members?.[0]?.model).toBeNull();
       expect(members?.[0]?.effort).toBeNull();
       expect(members?.[0]?.speed).toBeUndefined();
+    },
+  );
+});
+
+describe("planned members a run never launched", () => {
+  it.each(["failed", "cancelled"] as const)(
+    "stay not started, unsettled and untimed when the coordinator is %s",
+    (status) => {
+      const [group] = groupsOf([
+        subagent({
+          status,
+          completedAt: at("2026-08-01T10:00:09.000Z"),
+          workflow: {
+            phases: [
+              { index: 0, title: "draft" },
+              { index: 1, title: "ship" },
+            ],
+            agents: [
+              member({ index: 0, phaseIndex: 0, phaseTitle: undefined, state: "failed" }),
+              member({ index: 1, phaseIndex: 1, phaseTitle: undefined, state: "queued" }),
+            ],
+          },
+        }),
+      ]);
+      const ship = group?.phases[1];
+      expect([ship?.state, ship?.settledCount]).toEqual(["pending", 0]);
+      expect(ship?.members[0]?.notStarted).toBe(true);
+      expect(ship?.members[0]?.completedAt).toBeNull();
+      expect(group?.phases[0]?.members[0]?.notStarted).toBeUndefined();
     },
   );
 });

@@ -4,6 +4,7 @@ import {
   type EnvironmentId,
   type ModelSelection,
   NodeId,
+  type OrchestrationV2Run,
   type OrchestrationV2SubagentWorkflow,
   type OrchestrationV2WorkflowAgent,
   type OrchestrationV2WorkflowRunState,
@@ -15,6 +16,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -90,7 +92,48 @@ const outcomeOf = (result: OrchestratorMcpDelegateTaskResult): WorkflowAgentOutc
           : { structuredResult: result.structuredResult }),
       };
 
+/** The row layout this build writes. A row without it is an older build's and is never resumed. */
+const ROW_VERSION = 2;
+
+const LEGACY_ROW = "This run was recorded by an older T3 build, so it cannot be resumed.";
+
 type AgentTarget = Pick<OrchestrationV2WorkflowAgent, "providerInstanceId" | "model" | "effort">;
+
+/** What a launched agent's child has recorded: where it runs, and when its runs started and ended. */
+type ChildFacts = AgentTarget & Pick<OrchestrationV2WorkflowAgent, "startedAt" | "completedAt">;
+
+interface Child {
+  readonly threadId: ThreadId;
+  readonly facts: ChildFacts;
+}
+
+const factsOfAgent = ({
+  providerInstanceId,
+  model,
+  effort,
+  startedAt,
+  completedAt,
+}: OrchestrationV2WorkflowAgent): ChildFacts => ({
+  ...(providerInstanceId === undefined ? {} : { providerInstanceId }),
+  ...(model === undefined ? {} : { model }),
+  ...(effort === undefined ? {} : { effort }),
+  ...(startedAt === undefined ? {} : { startedAt }),
+  ...(completedAt === undefined ? {} : { completedAt }),
+});
+
+/** Read from the child's own run records, never from when the runner noticed a change. */
+const factsOfRuns = (runs: ReadonlyArray<OrchestrationV2Run>): ChildFacts => {
+  const ordered = runs.toSorted((left, right) => left.ordinal - right.ordinal);
+  const first = ordered[0];
+  const last = ordered.at(-1);
+  if (first === undefined || last === undefined) return {};
+  // Until the child's run starts, its request stands in so a live row can show elapsed time.
+  return {
+    ...targetOf(last.modelSelection),
+    startedAt: DateTime.toEpochMillis(first.startedAt ?? first.requestedAt),
+    ...(last.completedAt === null ? {} : { completedAt: DateTime.toEpochMillis(last.completedAt) }),
+  };
+};
 
 const targetOf = (selection: ModelSelection): AgentTarget => {
   const effort =
@@ -105,6 +148,13 @@ const targetOf = (selection: ModelSelection): AgentTarget => {
 
 const targetKey = (stage: string, agent: string) => `${stage}.${agent}`;
 
+const legacyResult = (spec: WorkflowSpec, status: WorkflowResult["status"]): WorkflowResult => ({
+  name: spec.name,
+  status,
+  error: LEGACY_ROW,
+  stages: [],
+});
+
 /**
  * The row lists every agent of every phase so far, launched or not, in phase order (results stay
  * on the child tasks), and keeps the rest of the snapshot as `workflowRun`.
@@ -112,13 +162,13 @@ const targetKey = (stage: string, agent: string) => `${stage}.${agent}`;
 function toRow(
   spec: WorkflowSpec,
   snapshot: WorkflowSnapshot,
-  childThreads: ReadonlyMap<string, ThreadId>,
+  children: ReadonlyMap<string, Child>,
   targets: ReadonlyMap<string, AgentTarget>,
 ): {
   readonly workflow: OrchestrationV2SubagentWorkflow;
   readonly workflowRun: OrchestrationV2WorkflowRunState;
 } {
-  const { launches, ...workflowRun } = snapshot;
+  const { launches, ...state } = snapshot;
   const phases = workflowPhases(spec, snapshot);
   const agents = phases.flatMap(({ stage, round }, phaseIndex) =>
     stage.agents.map((agent) => ({ stage: stage.id, agent: agent.id, round, phaseIndex })),
@@ -138,14 +188,16 @@ function toRow(
           (l) => l.stage === stage && l.round === round && l.agent === agent,
         );
         if (launch === undefined) return { ...planned, state: "queued" as const };
-        const childThreadId = launch.taskId === null ? undefined : childThreads.get(launch.taskId);
+        const child = launch.taskId === null ? undefined : children.get(launch.taskId);
         // A launch the run cancels as it ends stays live here; clients show the run's end for it.
         const live = launch.outcome === null || launch.cancelRequested;
-        const { queuedAt, startedAt } = launch;
-        const completedAt = live ? undefined : launch.completedAt;
+        const { queuedAt } = launch;
+        const { startedAt, completedAt: endedAt, ...target } = child?.facts ?? {};
+        const completedAt = live ? undefined : endedAt;
         return {
           ...planned,
-          ...(childThreadId === undefined ? {} : { childThreadId }),
+          ...target,
+          ...(child === undefined ? {} : { childThreadId: child.threadId }),
           state: live
             ? launch.taskId === null
               ? "queued"
@@ -162,7 +214,7 @@ function toRow(
         };
       }),
     },
-    workflowRun,
+    workflowRun: { ...state, version: ROW_VERSION },
   };
 }
 
@@ -198,12 +250,17 @@ const make = Effect.gen(function* () {
     const live = subagents.flatMap((child) =>
       child.parentNodeId === row.id && isOrchestrationV2WorkActive(child.status) ? [child.id] : [],
     );
-    const childThreads = new Map(
-      subagents.flatMap((child): Array<[string, ThreadId]> =>
-        child.parentNodeId === row.id && child.childThreadId !== null
-          ? [[child.id, child.childThreadId]]
-          : [],
-      ),
+    const workflowRun = row.workflowRun!;
+    const legacy = workflowRun.version !== ROW_VERSION;
+    // An older build's agents index another layout; expanding them would misplace every launch.
+    const recorded = legacy ? [] : (row.workflow?.agents ?? []);
+    const children = new Map(
+      subagents.flatMap((child): Array<[string, Child]> => {
+        if (child.parentNodeId !== row.id || child.childThreadId === null) return [];
+        const agent = recorded.find((agent) => agent.childThreadId === child.childThreadId);
+        const facts = agent === undefined ? {} : factsOfAgent(agent);
+        return [[child.id, { threadId: child.childThreadId, facts }]];
+      }),
     );
     // Children act as the run, so their task ids stay stable across restarts.
     const scope: McpThreadInvocationScope = {
@@ -218,29 +275,27 @@ const make = Effect.gen(function* () {
       capabilities: new Set(["orchestration"]),
       issuedAt: 0,
     };
-    const phases = workflowPhases(spec, row.workflowRun!);
-    const agents = (row.workflow?.agents ?? []).flatMap((agent) => {
+    const phases = workflowPhases(spec, workflowRun);
+    const agents = recorded.flatMap((agent) => {
       const phase = phases[agent.phaseIndex ?? 0];
       return phase === undefined ? [] : [{ agent, stage: phase.stage.id, round: phase.round }];
     });
-    const targets = new Map(
-      agents.map(({ agent: { providerInstanceId, model, effort, label }, stage }) => [
-        targetKey(stage, label),
-        {
-          ...(providerInstanceId === undefined ? {} : { providerInstanceId }),
-          ...(model === undefined ? {} : { model }),
-          ...(effort === undefined ? {} : { effort }),
-        },
-      ]),
-    );
-    return { row, spec, childThreads, live, scope, agents, targets };
+    // A later round's agents are planned with what round 1 ran.
+    const targets = new Map<string, AgentTarget>();
+    for (const { agent, stage } of agents) {
+      const key = targetKey(stage, agent.label);
+      if (targets.has(key)) continue;
+      const { startedAt: _startedAt, completedAt: _completedAt, ...target } = factsOfAgent(agent);
+      targets.set(key, target);
+    }
+    return { row, spec, workflowRun, legacy, children, live, scope, agents, targets };
   });
 
   /** Rebuilds the runner's snapshot; finished launches read their outcome from their child task. */
   const snapshotOf = Effect.fn("WorkflowRuns.snapshotOf")(function* (
     run: Effect.Success<ReturnType<typeof readRun>>,
   ) {
-    const taskIds = new Map([...run.childThreads].map(([taskId, thread]) => [thread, taskId]));
+    const taskIds = new Map([...run.children].map(([taskId, child]) => [child.threadId, taskId]));
     // A queued agent with no queue time is one the run has not launched yet.
     const launched = run.agents.filter(
       ({ agent }) => agent.state !== "queued" || agent.queuedAt !== undefined,
@@ -264,12 +319,11 @@ const make = Effect.gen(function* () {
           cancelRequested: false,
           outcome,
           ...(agent.queuedAt === undefined ? {} : { queuedAt: agent.queuedAt }),
-          ...(agent.startedAt === undefined ? {} : { startedAt: agent.startedAt }),
-          ...(agent.completedAt === undefined ? {} : { completedAt: agent.completedAt }),
         };
       }),
     );
-    return { ...run.row.workflowRun!, launches } satisfies WorkflowSnapshot;
+    const { version: _version, ...state } = run.workflowRun;
+    return { ...state, launches } satisfies WorkflowSnapshot;
   });
 
   const drive = Effect.fn("WorkflowRuns.drive")(function* (
@@ -278,17 +332,34 @@ const make = Effect.gen(function* () {
     taskId: NodeId,
   ) {
     const run = yield* readRun(environmentId, threadId, taskId);
+    const cancelLive = Effect.forEach(
+      run.live,
+      (child) => Effect.ignore(mcp.cancelTask(run.scope, { taskId: child })),
+      { discard: true },
+    );
     // A restart can cut off an ended run's cancels; its recorded end and wake stay as they are.
-    if (run.row.workflowRun?.status !== "running") {
-      return yield* Effect.forEach(
-        run.live,
-        (child) => Effect.ignore(mcp.cancelTask(run.scope, { taskId: child })),
-        { discard: true },
-      );
+    if (run.workflowRun.status !== "running") return yield* cancelLive;
+    const { row, spec, children, scope, targets } = run;
+    if (run.legacy) {
+      yield* cancelLive;
+      return yield* threads
+        .dispatch({
+          type: "workflow_run.update",
+          commandId: yield* commandId("legacy"),
+          parentThreadId: threadId,
+          taskId: row.id,
+          workflowRun: { ...run.workflowRun, status: "failed" },
+          result: encodeJson(legacyResult(spec, "failed")),
+        })
+        .pipe(Effect.asVoid, Effect.mapError(unavailable));
     }
-    if (run.row.runId === null) return;
-    const { row, spec, childThreads, scope, targets } = run;
-    const owner = { taskId: row.id, runId: row.runId! };
+    if (row.runId === null) return;
+    const owner = { taskId: row.id, runId: row.runId };
+    const learn = (childTaskId: string, threadId: ThreadId) =>
+      threads.getThreadRecords(threadId, ["runs"]).pipe(
+        Effect.map(({ runs }) => children.set(childTaskId, { threadId, facts: factsOfRuns(runs) })),
+        Effect.ignore,
+      );
     const port: WorkflowPort = {
       start: ({ key, agent: { id: _id, task: _template, ...options }, task }) =>
         mcp
@@ -301,15 +372,21 @@ const make = Effect.gen(function* () {
             workflow: owner,
           })
           .pipe(
-            Effect.map((started) => {
-              if (started.childThreadId !== null) {
-                childThreads.set(started.taskId, started.childThreadId);
-              }
-              return started.taskId;
-            }),
+            Effect.tap((started) =>
+              started.childThreadId === null
+                ? Effect.void
+                : learn(started.taskId, started.childThreadId),
+            ),
+            Effect.map((started) => started.taskId),
           ),
       await: (childTaskId) =>
-        mcp.awaitTask(scope, NodeId.make(childTaskId)).pipe(Effect.map(outcomeOf)),
+        mcp.awaitTask(scope, NodeId.make(childTaskId)).pipe(
+          Effect.tap(() => {
+            const child = children.get(childTaskId);
+            return child === undefined ? Effect.void : learn(childTaskId, child.threadId);
+          }),
+          Effect.map(outcomeOf),
+        ),
       cancel: (childTaskId) =>
         mcp.cancelTask(scope, { taskId: NodeId.make(childTaskId) }).pipe(Effect.asVoid),
       persist: (snapshot) =>
@@ -320,7 +397,7 @@ const make = Effect.gen(function* () {
               commandId: id,
               parentThreadId: threadId,
               taskId: row.id,
-              ...toRow(spec, snapshot, childThreads, targets),
+              ...toRow(spec, snapshot, children, targets),
               ...(snapshot.status === "running"
                 ? {}
                 : { result: encodeJson(workflowResult(spec, snapshot)) }),
@@ -418,6 +495,7 @@ const make = Effect.gen(function* () {
   ) {
     const scope = yield* requireThreadScope(callerScope, "t3_workflow_status");
     const found = yield* readRun(scope.environmentId, scope.thread.threadId, subagentId);
+    if (found.legacy) return legacyResult(found.spec, found.workflowRun.status);
     return workflowResult(found.spec, yield* snapshotOf(found));
   });
 

@@ -154,13 +154,14 @@ function WorkflowMemberRow(props: {
     threadId === null ? null : scopeThreadRef(props.environmentId, threadId),
   );
   const canOpen = threadId !== null && shell !== null;
-  const presentation = resolveSubagentRowPresentation({
+  const resolved = resolveSubagentRowPresentation({
     title: member.title,
     prompt: "",
     status: member.status,
     result: null,
     childThreadId: threadId,
   });
+  const presentation = member.notStarted ? { ...resolved, statusLabel: "Not started" } : resolved;
   const { detail, error } = workflowMemberDetail(member);
   const metadata = workflowMemberMetadata(member, props.provider);
   const labels = [metadata.model, metadata.effort].filter((value) => value !== null);

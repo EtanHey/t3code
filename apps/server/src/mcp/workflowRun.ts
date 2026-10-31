@@ -64,8 +64,6 @@ const WorkflowLaunch = Schema.Struct({
   cancelRequested: Schema.Boolean,
   outcome: Schema.NullOr(WorkflowAgentOutcome),
   queuedAt: Schema.optional(Schema.Number),
-  startedAt: Schema.optional(Schema.Number),
-  completedAt: Schema.optional(Schema.Number),
 });
 type WorkflowLaunch = typeof WorkflowLaunch.Type;
 
@@ -120,6 +118,7 @@ type StageResult = { readonly id: string; readonly agents: ReadonlyArray<AgentRe
 export type WorkflowResult = {
   readonly name: string;
   readonly status: WorkflowSnapshot["status"];
+  readonly error?: string;
   readonly stages: ReadonlyArray<
     | StageResult
     | {
@@ -363,12 +362,11 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
     const started = yield* port
       .start({ key, stage: launch.stage, round: launch.round, agent, task })
       .pipe(Effect.result);
-    const now = yield* Clock.currentTimeMillis;
     if (started._tag === "Failure") {
       const outcome = { status: "failed", result: started.failure.message } as const;
-      return yield* update(key, { outcome, completedAt: now });
+      return yield* update(key, { outcome });
     }
-    yield* update(key, { taskId: started.success, startedAt: now });
+    yield* update(key, { taskId: started.success });
     yield* watch(key, started.success);
   });
 
@@ -390,9 +388,7 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
     const launch = state.launches.find((l) => keyOf(l) === event.key);
     return launch === undefined || launch.outcome !== null
       ? Effect.void
-      : Effect.flatMap(Clock.currentTimeMillis, (completedAt) =>
-          update(event.key, { outcome: event.outcome, completedAt }),
-        );
+      : update(event.key, { outcome: event.outcome });
   };
 
   while (state.status === "running") {

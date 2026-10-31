@@ -857,6 +857,8 @@ export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChi
 
 /** Where a server-owned workflow run is; its launches are `workflow.agents`. */
 export const OrchestrationV2WorkflowRunState = Schema.Struct({
+  /** The row layout; absent on rows an older build recorded, which are never resumed. */
+  version: Schema.optional(PositiveInt),
   status: Schema.Literals(["running", "completed", "failed", "cancelled", "timed_out"]),
   cursor: NonNegativeInt,
   round: NonNegativeInt,

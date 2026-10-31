@@ -49,6 +49,7 @@ export function SubagentTooltipContent(props: {
   parentProject?: Pick<OrchestrationProjectShell, "workspaceRoot"> | undefined;
   childProject?: Pick<OrchestrationProjectShell, "id" | "title" | "workspaceRoot"> | undefined;
   status: OrchestrationV2TurnItemStatus;
+  statusLabel?: string | undefined;
   result?: string | null | undefined;
   progress?: string | null | undefined;
 }) {
@@ -168,7 +169,7 @@ export function SubagentTooltipContent(props: {
           )}
         >
           <StatusIcon aria-hidden className="size-3 shrink-0" />
-          {props.status.replaceAll("_", " ")}
+          {props.statusLabel ?? props.status.replaceAll("_", " ")}
         </span>
         {props.elapsed}
       </div>
