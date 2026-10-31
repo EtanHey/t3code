@@ -492,9 +492,13 @@ it.effect(
   () => {
     const calls: Array<unknown> = [];
     return Effect.gen(function* () {
+      const agents = [{ id: "a", task: "Draft." }];
       const input = {
         name: "review",
-        stages: [{ id: "draft", agents: [{ id: "a", task: "Draft." }], dependsOn: [] }],
+        stages: [
+          { id: "draft", agents, dependsOn: [] },
+          { id: "loop", repeat: { stages: [{ id: "fix", agents }], judge: "a", max: 2 } },
+        ],
         timeout: 60_000,
       };
       yield* callTool("t3_workflow_run", input).pipe(Effect.ignore);

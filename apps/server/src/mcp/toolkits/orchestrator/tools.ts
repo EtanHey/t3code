@@ -131,11 +131,19 @@ const workflowDependencies = [...dependencies, WorkflowRuns.WorkflowRuns];
 // pass through so the service rejects them: stripping them would run a spec the model did not write.
 const withRest = <S extends Schema.Struct<Schema.Struct.Fields>>(struct: S) =>
   Schema.StructWithRest(struct, [Schema.Record(Schema.String, Schema.Unknown)]);
+// Codex sends the items of an array with no item type as JSON strings, so agents are typed objects.
+const agents = Schema.optional(Schema.Array(Schema.Record(Schema.String, Schema.Unknown)));
 const WorkflowStage = withRest(
   Schema.Struct({
     id: Schema.String,
-    agents: Schema.optional(Schema.Array(Schema.Unknown)),
-    repeat: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+    agents,
+    repeat: Schema.optional(
+      withRest(
+        Schema.Struct({
+          stages: Schema.optional(Schema.Array(withRest(Schema.Struct({ agents })))),
+        }),
+      ),
+    ),
   }),
 ).annotate({ message: "stages[] entries are objects: {id, agents:[…]} or {id, repeat:{…}}" });
 
@@ -143,9 +151,9 @@ const WorkflowRunTool = Tool.make("t3_workflow_run", {
   description: `Run agents in stages; returns now, wakes you when done.
 type Spec={name:string;stages:Stage[]}
 type Stage={id:string;agents:Agent[]}|{id:string;repeat:Loop} // never both; agents run in parallel
-type Agent={id:string;task:string;target?:{model?:string;options?:object}/*omit for yours*/;isolation?:'shared'|'worktree';resultSchema?:JSONSchema}
+type Agent={id:string;task:string;target?:{model?:string;options?:object}/*omit to inherit your model and options*/;isolation?:'shared'|'worktree';resultSchema?:JSONSchema}
 type Loop={stages:{id:string;agents:Agent[]}[]/*rerun in order each round*/;judge:string/*id of an agent in the LAST of these stages*/;until:{path:string/*field of the judge's result, e.g. 'ok'*/;equals:string|number|boolean};max:number/*rounds, 1-10*/;onExhausted?:'fail'|'pass';dry?:number;templates?:{[name:string]:{task:string}}}
-In a task, {{stageId}} inserts all results of an earlier stage, {{stageId.agentId}} one. {{feedback}}: the judge's last result, null in round 1, so a fixer goes before the judge. The judge's result has until's field; with templates it may add addAgents:{template:string;task?:string;input?:object/*{{input.x}} in the template*/;stage?:string}[] (they run next round) and rerun:stageId[]; dry:N ends after N rounds with neither. Say so in its task.`,
+In a task, {{stageId}} inserts an earlier stage's results, {{stageId.agentId}} one agent's. In a loop, a stage not yet run this round gives last round's (null in round 1); so does {{feedback}}, the judge's result. The judge's result has until's field; with templates it may add addAgents:{template:string;task?:string;input?:object/*{{input.x}} in the template*/;stage?:string}[] (they run next round) and rerun:stageId[]; dry:N ends after N rounds with neither. Only a loop's judge adds agents, so round 1 goes inside the loop.`,
   parameters: withRest(
     Schema.Struct({
       name: TrimmedNonEmptyString,

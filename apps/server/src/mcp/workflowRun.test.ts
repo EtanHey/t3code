@@ -734,6 +734,40 @@ it.effect("rejects what it would otherwise drop or leave unresolved, before any 
   }),
 );
 
+it.effect("lets a loop stage read its own loop's later stages as last round's results", () =>
+  Effect.gen(function* () {
+    const fake = makeFake({ reply: verdicts(["reject", "accept"]) });
+    const loop = repeat(2);
+    const [, review] = loop.stages;
+
+    const result = yield* runWorkflow(fake.port, {
+      name: "back-reference",
+      stages: [
+        draft,
+        {
+          id: "loop",
+          repeat: {
+            ...loop,
+            stages: [
+              {
+                id: "revise",
+                agents: [{ id: "writer", task: "Fix {{revise.writer}} per {{review.judge}}." }],
+              },
+              review,
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(result.status).toBe("completed");
+    expect(fake.rendered.get("revise.writer#1")).toBe("Fix null per null.");
+    expect(fake.rendered.get("revise.writer#2")).toBe(
+      'Fix revise.writer#1 per {"verdict":"reject"}.',
+    );
+  }),
+);
+
 it.effect("gives a judge the result schema its until and templates need", () =>
   Effect.gen(function* () {
     const schemas = new Map<string, unknown>();

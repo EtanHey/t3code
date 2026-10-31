@@ -238,7 +238,9 @@ function referenceError(spec: WorkflowSpec): string | null {
           continue;
         }
         if (repeats.has(stageRef)) return `${where}; name one of the repeat's stages instead.`;
-        if (target >= position) return `${where}, which has not run yet.`;
+        // In a loop, a stage that has not run this round reads last round's results (none in round 1).
+        const sameLoop = repeat !== null && order[target]?.repeat === repeat;
+        if (target >= position && !sameLoop) return `${where}, which has not run yet.`;
         const known = order[target]?.stage.agents.some((a) => a.id === agentRef) ?? false;
         if (agentRef !== undefined && !known) return `${where}, which names no agent there.`;
       }
