@@ -3,6 +3,7 @@ import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
+import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import { OrchestratorToolkit } from "./tools.ts";
 
 // Oversized page sizes clamp on decode, so the schema has no `maximum`; Codex also drops
@@ -26,4 +27,21 @@ it("refuses a t3_thread_update whose fields do not fit its action", () => {
   expect(Exit.isSuccess(decode({ action: "rename", title: "New", environmentId: undefined }))).toBe(
     true,
   );
+});
+
+// Ids and trimmed strings decode through a transform; JSON Schema shows only the encoded side.
+it("advertises descriptions written on ids and trimmed strings", () => {
+  type Properties = { readonly [name: string]: { description?: string; properties?: Properties } };
+  const properties = (tool: Tool.Any) =>
+    (advertisedJsonSchema(tool) as { readonly properties: Properties }).properties;
+  const { delegate_task, orchestrator_capabilities, request_secret, t3_thread_list } =
+    OrchestratorToolkit.tools;
+  const delegate = properties(delegate_task);
+  expect(delegate.target?.properties?.providerInstanceId?.description).toContain(
+    "orchestrator_capabilities",
+  );
+  expect(delegate.clientRequestId?.description).toContain("retry the same call");
+  expect(properties(t3_thread_list).environmentId?.description).toContain("Linked environment");
+  expect(properties(request_secret).label?.description).toContain("Card title");
+  expect(properties(orchestrator_capabilities).search?.description).toContain("Match model ids");
 });
