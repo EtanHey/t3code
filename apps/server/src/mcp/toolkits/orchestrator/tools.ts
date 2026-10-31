@@ -127,21 +127,32 @@ const TaskCancelTool = Tool.make("task_cancel", {
 
 const workflowDependencies = [...dependencies, WorkflowRuns.WorkflowRuns];
 
-// Stages advertise only their outline to keep the tool list small; the service decodes the full spec.
-const WorkflowStage = Schema.Struct({
-  id: Schema.String,
-  agents: Schema.optional(Schema.Array(Schema.Unknown)),
-  repeat: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-}).annotate({ message: "stages[] entries are objects: {id, agents:[…]} or {id, repeat:{…}}" });
+// The description types the spec; the schema is an outline the service decodes in full. Unknown keys
+// pass through so the service rejects them: stripping them would run a spec the model did not write.
+const withRest = <S extends Schema.Struct<Schema.Struct.Fields>>(struct: S) =>
+  Schema.StructWithRest(struct, [Schema.Record(Schema.String, Schema.Unknown)]);
+const WorkflowStage = withRest(
+  Schema.Struct({
+    id: Schema.String,
+    agents: Schema.optional(Schema.Array(Schema.Unknown)),
+    repeat: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  }),
+).annotate({ message: "stages[] entries are objects: {id, agents:[…]} or {id, repeat:{…}}" });
 
 const WorkflowRunTool = Tool.make("t3_workflow_run", {
-  description:
-    "Run stages in order; returns now, wakes you when done. Stage: `{id,agents:[{id,task,target?,role?,isolation?,resultSchema?}]}` (parallel) or `{id,repeat:{stages,judge,until:{path,equals},max,onExhausted?,dry?,templates?:{name:{task}}}}`. Its judge may return `addAgents:[{template,task?,input?,key?,stage?}]`, `rerun:[stage]`; `dry:N` ends after N rounds of neither. {{stage}},{{stage.agent}},{{feedback}},{{input.x}} insert output.",
-  parameters: Schema.Struct({
-    name: TrimmedNonEmptyString,
-    stages: Schema.Array(WorkflowStage),
-    timeoutMs: Schema.optional(Schema.Int),
-  }),
+  description: `Run agents in stages; returns now, wakes you when done.
+type Spec={name:string;stages:Stage[]}
+type Stage={id:string;agents:Agent[]}|{id:string;repeat:Loop} // never both; agents run in parallel
+type Agent={id:string;task:string;target?:{model?:string;options?:object}/*omit for yours*/;isolation?:'shared'|'worktree';resultSchema?:JSONSchema}
+type Loop={stages:{id:string;agents:Agent[]}[]/*rerun in order each round*/;judge:string/*id of an agent in the LAST of these stages*/;until:{path:string/*field of the judge's result, e.g. 'ok'*/;equals:string|number|boolean};max:number/*rounds, 1-10*/;onExhausted?:'fail'|'pass';dry?:number;templates?:{[name:string]:{task:string}}}
+In a task, {{stageId}} inserts all results of an earlier stage, {{stageId.agentId}} one. {{feedback}}: the judge's last result, null in round 1, so a fixer goes before the judge. The judge's result has until's field; with templates it may add addAgents:{template:string;task?:string;input?:object/*{{input.x}} in the template*/;stage?:string}[] (they run next round) and rerun:stageId[]; dry:N ends after N rounds with neither. Say so in its task.`,
+  parameters: withRest(
+    Schema.Struct({
+      name: TrimmedNonEmptyString,
+      stages: Schema.Array(WorkflowStage),
+      timeoutMs: Schema.optional(Schema.Int),
+    }),
+  ),
   success: Schema.Struct({
     subagentId: NodeId,
     next: Schema.Literal(ORCHESTRATOR_MCP_RUNNING_TASK_NEXT),

@@ -487,6 +487,22 @@ it.effect("rejects a string workflow stage by naming the stage shape before the 
   }).pipe(Effect.provide(layerRecordingTools(calls)));
 });
 
+it.effect(
+  "passes unknown workflow keys to the service, which rejects them, never strips them",
+  () => {
+    const calls: Array<unknown> = [];
+    return Effect.gen(function* () {
+      const input = {
+        name: "review",
+        stages: [{ id: "draft", agents: [{ id: "a", task: "Draft." }], dependsOn: [] }],
+        timeout: 60_000,
+      };
+      yield* callTool("t3_workflow_run", input).pipe(Effect.ignore);
+      expect(calls).toEqual([input]);
+    }).pipe(Effect.provide(layerRecordingTools(calls)));
+  },
+);
+
 it("advertises workflow stages as objects that need an id", () => {
   const schema = advertisedJsonSchema(OrchestratorToolkit.tools.t3_workflow_run) as {
     properties: { stages: { items?: { type?: string; required?: Array<string> } } };

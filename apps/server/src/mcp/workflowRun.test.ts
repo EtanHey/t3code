@@ -683,6 +683,110 @@ it.effect("rejects bad references and judges before any start", () =>
   }),
 );
 
+it.effect("rejects what it would otherwise drop or leave unresolved, before any start", () =>
+  Effect.gen(function* () {
+    const one = (task: string) => ({ id: "x", task });
+    const bad: Array<[unknown, string]> = [
+      [
+        { name: "both", stages: [{ id: "loop", agents: [one("x")], repeat: repeat(2) }] },
+        "has both agents and repeat",
+      ],
+      [{ name: "key", stages: [{ id: "a", agents: [{ ...one("x"), model: "haiku" }] }] }, "model"],
+      [{ name: "top-key", stages: [{ id: "a", agents: [one("x")] }], timeout: 9 }, "timeout"],
+      [{ name: "stage-key", stages: [{ id: "a", agents: [one("x")], after: "b" }] }, "after"],
+      [
+        {
+          name: "repeat-key",
+          stages: [draft, { id: "loop", repeat: { ...repeat(2), rounds: 3 } }],
+        },
+        "rounds",
+      ],
+      [
+        { name: "wrapper", stages: [draft, { id: "b", agents: [one("{{stage.draft}}")] }] },
+        "{{stage.draft}}",
+      ],
+      [
+        { name: "deep", stages: [draft, { id: "b", agents: [one("{{draft.a.result}}")] }] },
+        "{{draft.a.result}}",
+      ],
+      [
+        {
+          name: "until",
+          stages: [
+            draft,
+            {
+              id: "loop",
+              repeat: { ...repeat(2), until: { path: "review.judge.verdict", equals: "accept" } },
+            },
+          ],
+        },
+        "until.path",
+      ],
+    ];
+
+    for (const [input, message] of bad) {
+      const fake = makeFake({ reply: () => ({ outcome: ok("x") }) });
+      const error = yield* runWorkflow(fake.port, input).pipe(Effect.flip);
+      expect(error.code).toBe("invalid_request");
+      expect(error.message).toContain(message);
+      expect(fake.startCalls).toEqual([]);
+    }
+  }),
+);
+
+it.effect("gives a judge the result schema its until and templates need", () =>
+  Effect.gen(function* () {
+    const schemas = new Map<string, unknown>();
+    const fake = makeFake({
+      reply: verdicts(["accept"]),
+      onStart: (start) => Effect.sync(() => schemas.set(start.key, start.agent.resultSchema)),
+    });
+    const loop = repeat(2);
+    const [revise, review] = loop.stages;
+    const bare = {
+      ...review,
+      agents: [{ id: "judge", task: "Judge {{revise.writer}}." }],
+    };
+
+    const result = yield* runWorkflow(fake.port, {
+      name: "bare-judge",
+      stages: [
+        draft,
+        {
+          id: "loop",
+          repeat: { ...loop, stages: [revise, bare], templates: { fix: { task: "Fix." } } },
+        },
+      ],
+    });
+
+    expect(result.status).toBe("completed");
+    expect(schemas.get("review.judge#1")).toEqual({
+      type: "object",
+      properties: {
+        verdict: { type: "string" },
+        feedback: { type: "string" },
+        addAgents: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              template: { enum: ["fix"] },
+              task: { type: "string" },
+              input: { type: "object" },
+              key: { type: "string" },
+              stage: { enum: ["revise", "review"] },
+            },
+            required: ["template"],
+          },
+        },
+        rerun: { type: "array", items: { enum: ["revise", "review"] } },
+      },
+      required: ["verdict"],
+    });
+    expect(schemas.get("revise.writer#1")).toBeUndefined();
+  }),
+);
+
 /** Draft, probe, then a critic who judges and may grow the next round from two templates. */
 const grow = (max: number, extra: Record<string, unknown> = {}) => ({
   name: "grow",

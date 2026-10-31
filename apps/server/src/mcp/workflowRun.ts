@@ -8,6 +8,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -152,12 +153,29 @@ export const launchKey = (stage: string, round: number, agent: string) =>
   `${stage}.${agent}#${round}`;
 
 const REFERENCE = /\{\{\s*([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?\s*\}\}/g;
+const EXACT_REFERENCE = new RegExp(`^${REFERENCE.source}$`);
+const BRACES = /\{\{([^{}]*)\}\}/g;
 const CANCELLED: WorkflowAgentOutcome = { status: "cancelled", result: null };
 
 const invalid = (message: string) =>
   new OrchestratorMcpFailure({ code: "invalid_request", message });
 
-// Braces that name no stage stay literal, so a task can still show `{{x}}` syntax.
+/** The field `until.path` names, as the parent's judge schema declares it, or null if it cannot tell. */
+function untilError(stage: RepeatStage, judge: WorkflowAgent): string | null {
+  let schema: unknown = judge.resultSchema;
+  for (const segment of stage.repeat.until.path.split(".")) {
+    const properties = isRecord(schema) && isRecord(schema.properties) ? schema.properties : null;
+    if (properties === null) return null;
+    if (!Object.hasOwn(properties, segment)) {
+      const example = Object.keys(properties)[0];
+      return `Repeat "${stage.id}": until.path "${stage.repeat.until.path}" is not a field of judge "${judge.id}"'s resultSchema${example === undefined ? "" : `, such as "${example}"`}.`;
+    }
+    schema = properties[segment];
+  }
+  return null;
+}
+
+// Braces that name nothing in the spec stay literal, so a task can still show `{{x}}` syntax.
 function referenceError(spec: WorkflowSpec): string | null {
   const ids = new Set<string>();
   const repeats = new Set<string>();
@@ -182,9 +200,8 @@ function referenceError(spec: WorkflowSpec): string | null {
       if (judge === undefined) {
         return `Repeat "${stage.id}": judge "${stage.repeat.judge}" must be an agent of its last stage.`;
       }
-      if (judge.resultSchema === undefined) {
-        return `Repeat "${stage.id}": judge "${judge.id}" needs a resultSchema for until.`;
-      }
+      const until = untilError(stage, judge);
+      if (until !== null) return until;
     }
     for (const s of inner) order.push({ stage: s, repeat: "agents" in stage ? null : stage });
     // Templates check as if after the repeat's last stage: a grown agent may join any of them.
@@ -197,21 +214,30 @@ function referenceError(spec: WorkflowSpec): string | null {
     }
   }
   const index = new Map(order.map(({ stage }, i) => [stage.id, i]));
+  const named = new Set([...ids, ...order.flatMap(({ stage }) => stage.agents.map((a) => a.id))]);
   for (const [position, { stage, repeat }] of order.entries()) {
     const agentIds = new Set<string>();
     for (const agent of stage.agents) {
       if (agentIds.has(agent.id)) return `Duplicate agent id "${stage.id}.${agent.id}".`;
       agentIds.add(agent.id);
-      for (const [text, stageRef, agentRef] of agent.task.matchAll(REFERENCE)) {
+      for (const [text, inner = ""] of agent.task.matchAll(BRACES)) {
         const where = `"${stage.id}.${agent.id}" uses ${text}`;
+        const [, stageRef, agentRef] = EXACT_REFERENCE.exec(text) ?? [];
         if (stageRef === "feedback") {
-          if (repeat === null || agentRef !== undefined) return `${where} outside a repeat.`;
+          if (repeat === null) return `${where} outside a repeat.`;
+          if (agentRef !== undefined) return `${where}; use {{feedback}}, the judge's last result.`;
           continue;
         }
-        if (stageRef === undefined) continue;
+        if (stageRef === "input") continue;
+        const target = stageRef === undefined ? undefined : index.get(stageRef);
+        if (stageRef === undefined || target === undefined) {
+          // Braces that mention a spec id yet resolve to nothing would reach the agent verbatim.
+          if (inner.split(".").some((part) => named.has(part.trim()))) {
+            return `${where}, which is not a reference: use {{stage}} or {{stage.agent}}.`;
+          }
+          continue;
+        }
         if (repeats.has(stageRef)) return `${where}; name one of the repeat's stages instead.`;
-        const target = index.get(stageRef);
-        if (target === undefined) continue;
         if (target >= position) return `${where}, which has not run yet.`;
         const known = order[target]?.stage.agents.some((a) => a.id === agentRef) ?? false;
         if (agentRef !== undefined && !known) return `${where}, which names no agent there.`;
@@ -221,10 +247,34 @@ function referenceError(spec: WorkflowSpec): string | null {
   return null;
 }
 
-const decodeSpec = Schema.decodeUnknownEffect(WorkflowSpec);
+// An unknown key is a guess at a field that does not exist; ignoring it would run another spec.
+const STRICT = { onExcessProperty: "error" } as const;
+const decodeSpec = Schema.decodeUnknownEffect(WorkflowSpec, STRICT);
+type StageDecoder = (stage: unknown) => Result.Result<unknown, Schema.SchemaError>;
+const stageDecoders: Record<"agents" | "repeat", StageDecoder> = {
+  agents: Schema.decodeUnknownResult(AgentStage, STRICT),
+  repeat: Schema.decodeUnknownResult(RepeatStage, STRICT),
+};
+
+/** The first stage that is not exactly one variant, judged by its own variant, not the union. */
+function stageError(input: unknown): string | null {
+  const stages = isRecord(input) && Array.isArray(input.stages) ? input.stages : [];
+  for (const [index, stage] of stages.entries()) {
+    if (!isRecord(stage)) continue;
+    const label = `Stage "${String(stage.id)}" (stages[${index}])`;
+    if ("agents" in stage && "repeat" in stage) {
+      return `${label} has both agents and repeat. Give it one: put a loop's agents in repeat.stages.`;
+    }
+    const decoded = stageDecoders["repeat" in stage ? "repeat" : "agents"](stage);
+    if (Result.isFailure(decoded)) return `${label}: ${decoded.failure.message}`;
+  }
+  return null;
+}
 
 /** Decodes a spec and rejects unknown or forward references before anything starts. */
 export const decodeWorkflowSpec = Effect.fn("WorkflowRun.decodeSpec")(function* (input: unknown) {
+  const shape = stageError(input);
+  if (shape !== null) return yield* invalid(shape);
   const spec = yield* decodeSpec(input).pipe(Effect.mapError((error) => invalid(error.message)));
   const error = referenceError(spec);
   if (error !== null) return yield* invalid(error);
@@ -578,6 +628,51 @@ function decide(spec: WorkflowSpec, state: WorkflowSnapshot, now: number): Step 
   return advance({ ...state, round: state.round + 1, phase: 0 });
 }
 
+/**
+ * What the judge is asked to return: the parent's schema, else one with the field `until` reads, plus
+ * the growth contract its templates need. The judge sees it in its task, so it never guesses one.
+ */
+function judgeSchema(stage: RepeatStage, judge: WorkflowAgent): WorkflowAgent["resultSchema"] {
+  const { stages, templates = {}, until } = stage.repeat;
+  const [field = "", ...rest] = until.path.split(".");
+  const leaf = { type: until.equals === null ? "null" : typeof until.equals };
+  const nest = (schema: object, key: string) => ({
+    type: "object",
+    properties: { [key]: schema },
+    required: [key],
+  });
+  const base = judge.resultSchema ?? {
+    type: "object",
+    properties: { [field]: rest.reduceRight(nest, leaf), feedback: { type: "string" } },
+    required: [field],
+  };
+  const names = Object.keys(templates);
+  if (names.length === 0) return base;
+  const ids = stages.map((s) => s.id);
+  const properties = isRecord(base.properties) ? base.properties : {};
+  return {
+    ...base,
+    properties: {
+      addAgents: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            template: { enum: names },
+            task: { type: "string" },
+            input: { type: "object" },
+            key: { type: "string" },
+            stage: { enum: ids },
+          },
+          required: ["template"],
+        },
+      },
+      rerun: { type: "array", items: { enum: ids } },
+      ...properties,
+    },
+  };
+}
+
 /** A spec agent, or a grown one built from its template, with the task and input its judge gave it. */
 function findAgent(spec: WorkflowSpec, state: WorkflowSnapshot, launch: WorkflowLaunch) {
   for (const stage of spec.stages) {
@@ -586,6 +681,13 @@ function findAgent(spec: WorkflowSpec, state: WorkflowSnapshot, launch: Workflow
     );
     if (phase === undefined) continue;
     const agent = phase.agents.find((a) => a.id === launch.agent);
+    if (
+      !("agents" in stage) &&
+      stage.repeat.stages.at(-1) === phase &&
+      agent?.id === stage.repeat.judge
+    ) {
+      return { agent: { ...agent, resultSchema: judgeSchema(stage, agent) } };
+    }
     if (agent !== undefined || "agents" in stage) return agent && { agent };
     const add = growthIn(stage, state, launch.round - 1)?.adds.find((a) => a.key === launch.agent);
     const template = add && stage.repeat.templates?.[add.template];

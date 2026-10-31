@@ -67,13 +67,15 @@ const mergeTaggedObjects = (branches: ReadonlyArray<Json>): JsonObject | undefin
   return { type: "object", properties, required: [tag, ...requiredByAll] };
 };
 
+const isEmptyObject = (value: Json) => Predicate.isObject(value) && Object.keys(value).length === 0;
+
 const compact = (schema: Json, optional: boolean): Json => {
   if (Array.isArray(schema)) return schema.map((item) => compact(item, false));
   if (!Predicate.isObject(schema)) return schema;
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   let result: JsonObject = {};
   for (const [key, value] of Object.entries(schema)) {
-    if (key === "additionalProperties" && value === true) continue;
+    if (key === "additionalProperties" && (value === true || isEmptyObject(value))) continue;
     if (SAFE_INTEGER_BOUNDS[key] === value) continue;
     result[key] =
       key === "properties" && Predicate.isObject(value)
@@ -84,6 +86,17 @@ const compact = (schema: Json, optional: boolean): Json => {
             ]),
           )
         : compact(value, false);
+  }
+  // A `Schema.StructWithRest` rest compacts to an `allOf` branch that only restates the type.
+  if (Array.isArray(result.allOf)) {
+    const type = result.type;
+    const branches = result.allOf.filter(
+      (branch) =>
+        !Predicate.isObject(branch) ||
+        !Object.entries(branch).every(([key, value]) => key === "type" && value === type),
+    );
+    const { allOf: _allOf, ...rest } = result;
+    result = branches.length === 0 ? rest : { ...rest, allOf: branches };
   }
   if (Array.isArray(result.anyOf)) {
     const branches = result.anyOf
