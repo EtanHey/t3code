@@ -689,7 +689,12 @@ function delegatedCompletionWakeDetail(
           return detail;
         }
       }
-      return `${label}. Use task_status with taskId ${taskId} to read the result.`;
+      // A server-run workflow keeps its error on the row it blames.
+      const error =
+        task?.workflowRun === undefined
+          ? undefined
+          : task.workflow?.agents.find((agent) => agent.state === "failed" && agent.result)?.result;
+      return `${label}${error ? `: ${error}` : ""}. Use task_status with taskId ${taskId} to read the result.`;
     })
     .join("\n\n");
 }

@@ -34,6 +34,7 @@ import {
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import {
   agentStages,
+  blamedLaunch,
   decodeWorkflowSpec,
   initialSnapshot,
   phaseAgents,
@@ -169,7 +170,9 @@ function toRow(
   readonly workflow: OrchestrationV2SubagentWorkflow;
   readonly workflowRun: OrchestrationV2WorkflowRunState;
 } {
-  const { launches, ...state } = snapshot;
+  // The error is kept once, on the row it blames, to fit the last update's wire budget.
+  const { launches, error, ...state } = snapshot;
+  const blamed = blamedLaunch(spec, snapshot);
   const phases = workflowPhases(spec, snapshot);
   const agents = phases.flatMap(({ stage, round }, phaseIndex) =>
     phaseAgents(spec, snapshot, stage, round).map((agent) => ({
@@ -202,13 +205,17 @@ function toRow(
           ...base,
           ...target,
           ...(child === undefined ? {} : { childThreadId: child.threadId }),
-          state: live
-            ? launch.taskId === null
-              ? "queued"
-              : "running"
-            : launch.outcome?.status === "completed"
-              ? "completed"
-              : "failed",
+          ...(launch === blamed && error ? { result: error } : {}),
+          state:
+            launch === blamed
+              ? "failed"
+              : live
+                ? launch.taskId === null
+                  ? "queued"
+                  : "running"
+                : launch.outcome?.status === "completed"
+                  ? "completed"
+                  : "failed",
           ...(queuedAt === undefined ? {} : { queuedAt }),
           ...(startedAt === undefined ? {} : { startedAt }),
           ...(completedAt === undefined ? {} : { completedAt }),
@@ -327,7 +334,16 @@ const make = Effect.gen(function* () {
       }),
     );
     const { version: _version, ...state } = run.workflowRun;
-    return { ...state, launches } satisfies WorkflowSnapshot;
+    const error =
+      state.status === "running"
+        ? undefined
+        : run.agents.find(({ agent }) => agent.state === "failed" && agent.result !== undefined)
+            ?.agent.result;
+    return {
+      ...state,
+      ...(error === undefined ? {} : { error }),
+      launches,
+    } satisfies WorkflowSnapshot;
   });
 
   const drive = Effect.fn("WorkflowRuns.drive")(function* (

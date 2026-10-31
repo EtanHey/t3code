@@ -55,21 +55,7 @@ const RepeatStage = Schema.Struct({
 });
 type RepeatStage = typeof RepeatStage.Type;
 
-/** What a judge's structured result may ask of the next round, beyond `until`. */
-const Growth = Schema.Struct({
-  addAgents: Schema.optional(
-    Schema.Array(
-      Schema.Struct({
-        key: WorkflowId,
-        template: Schema.String,
-        input: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-        stage: Schema.optional(Schema.String),
-      }),
-    ),
-  ),
-  rerun: Schema.optional(Schema.Array(Schema.String)),
-});
-const decodeGrowth = Schema.decodeUnknownOption(Growth);
+const isWorkflowId = Schema.is(WorkflowId);
 
 export const WorkflowSpec = Schema.Struct({
   name: TrimmedNonEmptyString,
@@ -106,6 +92,7 @@ export const WorkflowSnapshot = Schema.Struct({
   phase: Schema.Int,
   deadline: Schema.Number,
   stop: Schema.Boolean,
+  error: Schema.optional(Schema.String),
   launches: Schema.Array(WorkflowLaunch),
   exits: Schema.Array(
     Schema.Struct({
@@ -259,21 +246,61 @@ const judgedIn = (state: WorkflowSnapshot, stage: RepeatStage, round: number) =>
   findLaunch(state, stage.repeat.stages.at(-1)?.id ?? "", round, stage.repeat.judge)?.outcome
     ?.structuredResult;
 
-/** The judge's requests for the next round; null when it names a template or stage not in the repeat. */
-function growthOf(stage: RepeatStage, value: unknown) {
-  const growth = Option.getOrNull(decodeGrowth(value));
-  if (growth === null) return null;
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+interface Growth {
+  readonly adds: ReadonlyArray<{
+    readonly key: string;
+    readonly template: string;
+    readonly stage: string;
+    readonly task: string | undefined;
+    readonly input: Readonly<Record<string, unknown>>;
+  }>;
+  readonly rerun: ReadonlyArray<string>;
+}
+
+/**
+ * The judge's requests for the next round, or why they cannot be met. A missing key derives from
+ * the judge's round and the entry's position, so dedup and resume see the same key every time.
+ */
+function parseGrowth(stage: RepeatStage, round: number, value: unknown): Growth | string {
+  if (value === undefined) return "no structured result";
+  if (!isRecord(value)) return "result is not an object";
   const { stages, templates = {} } = stage.repeat;
   const ids = stages.map((s) => s.id);
-  const adds = (growth.addAgents ?? []).map((add) => ({
-    ...add,
-    stage: add.stage ?? stages[0].id,
-  }));
-  const known =
-    adds.every((add) => ids.includes(add.stage) && Object.hasOwn(templates, add.template)) &&
-    (growth.rerun ?? []).every((id) => ids.includes(id));
-  return known ? { adds, rerun: growth.rerun ?? [] } : null;
+  const { addAgents = [], rerun = [] } = value;
+  if (!Array.isArray(addAgents)) return "addAgents must be a list";
+  if (!Array.isArray(rerun)) return "rerun must be a list";
+  const adds: Array<Growth["adds"][number]> = [];
+  for (const [index, add] of addAgents.entries()) {
+    const at = `addAgents[${index}]`;
+    if (!isRecord(add)) return `${at}: not an object`;
+    const { template, task, input = {}, stage: target = ids[0] } = add;
+    if (typeof template !== "string" || !Object.hasOwn(templates, template)) {
+      return `${at}: unknown template ${JSON.stringify(template ?? null)}`;
+    }
+    const key =
+      add.key ?? `${template.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 48)}-${round}-${index}`;
+    if (!isWorkflowId(key)) return `${at}: bad key`;
+    if (typeof target !== "string" || !ids.includes(target)) {
+      return `${at}: unknown stage ${JSON.stringify(target)}`;
+    }
+    if (task !== undefined && (typeof task !== "string" || task.trim() === "")) {
+      return `${at}: task must be text`;
+    }
+    if (!isRecord(input)) return `${at}: input must be an object`;
+    adds.push({ key, template, stage: target, task, input });
+  }
+  const unknown = rerun.find((id) => typeof id !== "string" || !ids.includes(id));
+  if (unknown !== undefined) return `rerun: unknown stage ${JSON.stringify(unknown)}`;
+  return { adds, rerun };
 }
+
+const growthIn = (stage: RepeatStage, state: WorkflowSnapshot, round: number) => {
+  const growth = parseGrowth(stage, round, judgedIn(state, stage, round));
+  return typeof growth === "string" ? null : growth;
+};
 
 const isGrown = (stage: RepeatStage, launch: WorkflowLaunch) =>
   stage.repeat.stages.some(
@@ -283,7 +310,7 @@ const isGrown = (stage: RepeatStage, launch: WorkflowLaunch) =>
 /** Round 1 and the judge's stage always run; later rounds run what the last judge named, or all. */
 function runsAgain(stage: RepeatStage, state: WorkflowSnapshot, phaseId: string, round: number) {
   if (round === 1 || phaseId === stage.repeat.stages.at(-1)?.id) return true;
-  const rerun = growthOf(stage, judgedIn(state, stage, round - 1))?.rerun ?? [];
+  const rerun = growthIn(stage, state, round - 1)?.rerun ?? [];
   return rerun.length === 0 || rerun.includes(phaseId);
 }
 
@@ -332,7 +359,7 @@ export function phaseAgents(
 /** The agents the last judge grew into `round`; keys are unique across the run, so seen keys are
  * every spec agent and every launch outside this round's grown batch. */
 function grownFor(spec: WorkflowSpec, stage: RepeatStage, state: WorkflowSnapshot, round: number) {
-  const growth = growthOf(stage, judgedIn(state, stage, round - 1));
+  const growth = growthIn(stage, state, round - 1);
   const batch = state.launches.filter((l) => l.round === round && isGrown(stage, l));
   const seen = new Set([
     ...agentStages(spec).flatMap((s) => s.agents.map((agent) => agent.id)),
@@ -354,19 +381,24 @@ function dryStreak(
 ) {
   const wasDry = (round: number) =>
     grownFor(spec, stage, state, round + 1).length === 0 &&
-    !growthOf(stage, judgedIn(state, stage, round))?.rerun.length;
+    !growthIn(stage, state, round)?.rerun.length;
   let streak = dryNow ? 1 : 0;
   while (streak > 0 && streak < state.round && wasDry(state.round - streak)) streak += 1;
   return streak;
 }
 
+/** delegate_task's prompt cap, in bytes; a task is measured before it is built. */
+const TASK_BYTES = 120_000;
+
+/** Null when the task would render past TASK_BYTES. `visible` limits the stages it may read. */
 function renderTask(
   spec: WorkflowSpec,
   state: WorkflowSnapshot,
   template: string,
   input?: Readonly<Record<string, unknown>>,
-): string {
-  return template.replace(REFERENCE, (match, stageRef: string, agentRef?: string) => {
+  visible?: ReadonlySet<string>,
+): string | null {
+  const resolve = (match: string, stageRef: string, agentRef?: string) => {
     if (stageRef === "feedback") {
       const stage = spec.stages[state.cursor];
       if (stage === undefined || "agents" in stage) return match;
@@ -375,6 +407,7 @@ function renderTask(
     if (stageRef === "input" && input !== undefined) {
       return agentRef === undefined ? JSON.stringify(input) : asText(input[agentRef] ?? null);
     }
+    if (visible !== undefined && !visible.has(stageRef)) return match;
     if (!agentStages(spec).some((stage) => stage.id === stageRef)) return match;
     const latest = new Map<string, unknown>();
     for (const launch of state.launches) {
@@ -384,7 +417,30 @@ function renderTask(
     }
     if (agentRef !== undefined) return asText(latest.get(agentRef) ?? null);
     return JSON.stringify(Object.fromEntries(latest));
-  });
+  };
+  const values = new Map<string, { readonly text: string; readonly bytes: number }>();
+  let bytes = Buffer.byteLength(template.replace(REFERENCE, ""));
+  if (bytes > TASK_BYTES) return null;
+  for (const [match, stageRef, agentRef] of template.matchAll(REFERENCE)) {
+    let value = values.get(match);
+    if (value === undefined) {
+      const resolved = resolve(match, stageRef!, agentRef);
+      value = { text: resolved, bytes: Buffer.byteLength(resolved) };
+      values.set(match, value);
+    }
+    bytes += value.bytes;
+    if (bytes > TASK_BYTES) return null;
+  }
+  return template.replace(REFERENCE, (match) => values.get(match)!.text);
+}
+
+/** A judge-authored task reads only the repeat's stages and those its judge's own task read. */
+function judgeView(stage: RepeatStage): ReadonlySet<string> {
+  const judge = stage.repeat.stages.at(-1)?.agents.find((a) => a.id === stage.repeat.judge);
+  return new Set([
+    ...stage.repeat.stages.map((s) => s.id),
+    ...[...(judge?.task.matchAll(REFERENCE) ?? [])].map(([, stageRef]) => stageRef!),
+  ]);
 }
 
 function accepts(until: RepeatStage["repeat"]["until"], value: unknown): boolean {
@@ -397,21 +453,65 @@ function accepts(until: RepeatStage["repeat"]["until"], value: unknown): boolean
 }
 
 type Step =
-  | { readonly _tag: "finish"; readonly status: typeof WorkflowRunStatus.Type }
+  | {
+      readonly _tag: "finish";
+      readonly status: typeof WorkflowRunStatus.Type;
+      readonly error?: string;
+    }
   | { readonly _tag: "launch"; readonly stage: string; readonly agent: WorkflowAgent }
   | { readonly _tag: "start" | "record"; readonly launch: WorkflowLaunch }
   | { readonly _tag: "advance"; readonly state: WorkflowSnapshot }
   | { readonly _tag: "wait" };
 
-const finish = (status: typeof WorkflowRunStatus.Type): Step => ({ _tag: "finish", status });
+const finish = (status: typeof WorkflowRunStatus.Type, error?: string): Step => ({
+  _tag: "finish",
+  status,
+  ...(error === undefined ? {} : { error }),
+});
 const advance = (state: WorkflowSnapshot): Step => ({ _tag: "advance", state });
+
+const jsonBytes = (text: string) => Buffer.byteLength(JSON.stringify(text)) - 2;
+
+/** The error rides the run's last row update, so it is cut to a budget of JSON-encoded bytes. */
+const ERROR_BYTES = 200;
+const clip = (text: string) => {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (jsonBytes(flat) <= ERROR_BYTES) return flat;
+  let cut = "";
+  let bytes = jsonBytes("…");
+  for (const char of flat) {
+    bytes += jsonBytes(char);
+    if (bytes > ERROR_BYTES) break;
+    cut += char;
+  }
+  return `${cut}…`;
+};
+
+/** A launch that ended the run by not completing; the run's own cancels at its end never count. */
+const brokenLaunch = (state: WorkflowSnapshot) =>
+  state.launches.find(
+    (l) => l.outcome !== null && l.outcome.status !== "completed" && !l.cancelRequested,
+  );
+
+/** The row a failed run's error belongs to: the agent that failed, else the judge that ended it. */
+export function blamedLaunch(spec: WorkflowSpec, state: WorkflowSnapshot) {
+  if (state.status !== "failed" || state.error === undefined) return undefined;
+  const broken = brokenLaunch(state);
+  if (broken !== undefined) return broken;
+  const stage = spec.stages[state.cursor];
+  if (stage === undefined || "agents" in stage) return undefined;
+  return findLaunch(state, stage.repeat.stages.at(-1)?.id ?? "", state.round, stage.repeat.judge);
+}
 
 /** The TLA model's runner actions, as a pure choice over the persisted state. */
 function decide(spec: WorkflowSpec, state: WorkflowSnapshot, now: number): Step {
   if (state.stop) return finish("cancelled");
   if (now >= state.deadline) return finish("timed_out");
-  if (state.launches.some((l) => l.outcome !== null && l.outcome.status !== "completed")) {
-    return finish("failed");
+  const broken = brokenLaunch(state);
+  if (broken?.outcome) {
+    const { status, result } = broken.outcome;
+    const reason = result?.trim() ? `${status}: ${result}` : status;
+    return finish("failed", clip(`round ${broken.round} ${broken.agent}: ${reason}`));
   }
   const stage = spec.stages[state.cursor];
   if (stage === undefined) return finish("completed");
@@ -460,8 +560,10 @@ function decide(spec: WorkflowSpec, state: WorkflowSnapshot, now: number): Step 
   });
   const value = judgedIn(state, loop, state.round);
   // A missing or malformed judge result fails the run; it never accepts or counts as dry.
-  const growth = growthOf(loop, value);
-  if (growth === null) return finish("failed");
+  const growth = parseGrowth(loop, state.round, value);
+  if (typeof growth === "string") {
+    return finish("failed", clip(`round ${state.round} ${repeat.judge}: ${growth}`));
+  }
   if (accepts(repeat.until, value)) return advance(exit("accepted"));
   const grown = grownFor(spec, loop, state, state.round + 1);
   const dryNow = grown.length === 0 && growth.rerun.length === 0;
@@ -469,12 +571,14 @@ function decide(spec: WorkflowSpec, state: WorkflowSnapshot, now: number): Step 
     return advance(exit("dry"));
   }
   if (state.round === repeat.max) {
-    return repeat.onExhausted === "pass" ? advance(exit("exhausted")) : finish("failed");
+    return repeat.onExhausted === "pass"
+      ? advance(exit("exhausted"))
+      : finish("failed", `${loop.id}: not accepted in ${state.round} rounds`);
   }
   return advance({ ...state, round: state.round + 1, phase: 0 });
 }
 
-/** A spec agent, or a grown one built from its template and the input its judge gave it. */
+/** A spec agent, or a grown one built from its template, with the task and input its judge gave it. */
 function findAgent(spec: WorkflowSpec, state: WorkflowSnapshot, launch: WorkflowLaunch) {
   for (const stage of spec.stages) {
     const phase = ("agents" in stage ? [stage] : stage.repeat.stages).find(
@@ -483,12 +587,14 @@ function findAgent(spec: WorkflowSpec, state: WorkflowSnapshot, launch: Workflow
     if (phase === undefined) continue;
     const agent = phase.agents.find((a) => a.id === launch.agent);
     if (agent !== undefined || "agents" in stage) return agent && { agent };
-    const add = growthOf(stage, judgedIn(state, stage, launch.round - 1))?.adds.find(
-      (a) => a.key === launch.agent,
-    );
+    const add = growthIn(stage, state, launch.round - 1)?.adds.find((a) => a.key === launch.agent);
     const template = add && stage.repeat.templates?.[add.template];
     if (add === undefined || template === undefined) return undefined;
-    return { agent: { ...template, id: add.key }, input: add.input ?? {} };
+    return {
+      agent: { ...template, id: add.key, task: add.task ?? template.task },
+      input: add.input,
+      visible: add.task === undefined ? undefined : judgeView(stage),
+    };
   }
   return undefined;
 }
@@ -543,7 +649,11 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
       return yield* update(key, { outcome: { status: "failed", result: "Not in the spec." } });
     }
     const { agent } = found;
-    const task = renderTask(spec, state, agent.task, found.input);
+    const task = renderTask(spec, state, agent.task, found.input, found.visible);
+    if (task === null) {
+      const result = `Its task renders to more than ${TASK_BYTES} bytes.`;
+      return yield* update(key, { outcome: { status: "failed", result } });
+    }
     const started = yield* port
       .start({ key, stage: launch.stage, round: launch.round, agent, task })
       .pipe(Effect.result);
@@ -587,6 +697,7 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
         yield* save({
           ...state,
           status: step.status,
+          ...(step.error === undefined ? {} : { error: step.error }),
           launches: state.launches.map((l) =>
             l.outcome === null ? { ...l, cancelRequested: true, outcome: CANCELLED } : l,
           ),
@@ -667,6 +778,7 @@ export function workflowResult(spec: WorkflowSpec, state: WorkflowSnapshot): Wor
   return {
     name: spec.name,
     status: state.status,
+    ...(state.error === undefined ? {} : { error: state.error }),
     stages: spec.stages.map((stage) => {
       if ("agents" in stage) return agents(stage, 1);
       const ids = new Set(stage.repeat.stages.map((s) => s.id));
