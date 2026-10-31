@@ -148,23 +148,11 @@ it.effect("passes the staged-loop workflow case only for a real repeat stage", (
     ];
     const decodes = (stages: unknown) =>
       Effect.exit(decodeWorkflowSpec({ name: "notes", stages })).pipe(Effect.map(Exit.isSuccess));
-    const loop = real[1] as { repeat: { stages: Array<{ agents: Array<object> }> } };
-    const noSchema = [
-      real[0],
-      {
-        ...loop,
-        repeat: {
-          ...loop.repeat,
-          stages: [
-            loop.repeat.stages[0],
-            { id: "judge", agents: [agent("opus", "claude-opus-5-5")] },
-          ],
-        },
-      },
-    ];
-    expect([yield* decodes(real), yield* decodes(noSchema)]).toEqual([true, false]);
+    const loop = real[1] as { repeat: object };
+    const judgeObject = [real[0], { ...loop, repeat: { ...loop.repeat, judge: { id: "opus" } } }];
+    expect([yield* decodes(real), yield* decodes(judgeObject)]).toEqual([true, false]);
     expect(failed(staged.expect, run(real))).toEqual([]);
-    // The mock fails a spec the real decoder rejects, such as a judge without a resultSchema.
+    // The mock fails a spec the real decoder rejects, such as a judge given as an object.
     expect(failed(staged.expect, run(real, true))).not.toEqual([]);
     const named = [{ id: "repeat", agents: drafts.map((model, i) => agent(`d${i}`, model)) }];
     expect(failed(staged.expect, run(named))).not.toEqual([]);

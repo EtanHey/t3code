@@ -43,3 +43,17 @@ it("drops JSON noise, merges tagged unions, and keeps null where it is required"
     required: ["beforeRunId", "every"],
   });
 });
+
+it("advertises a struct that keeps unknown keys as the plain struct", () => {
+  const tool = Tool.make("example", {
+    parameters: Schema.StructWithRest(Schema.Struct({ id: Schema.String }), [
+      Schema.Record(Schema.String, Schema.Unknown),
+    ]),
+  });
+
+  expect(advertisedJsonSchema(tool)).toEqual({
+    type: "object",
+    properties: { id: { type: "string" } },
+    required: ["id"],
+  });
+});

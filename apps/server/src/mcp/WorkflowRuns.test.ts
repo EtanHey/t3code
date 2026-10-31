@@ -1269,7 +1269,9 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
       const judged = { ok: false, addAgents: [{ template: "rewiter", task: "Fix line 1." }] };
       yield* settleChild(critic, `\`\`\`json\n${JSON.stringify(judged)}\n\`\`\``);
 
-      const error = 'round 1 critic: addAgents[0]: unknown template "rewiter"';
+      // The critic was delegated with its templates in its resultSchema, so its reply fails there.
+      const error =
+        'round 1 critic: invalid_output: $.addAgents[0].template: not one of ["rewriter"]';
       const row = yield* ended(parent.threadId, subagentId);
       assert.equal(row?.status, "failed");
       assert.equal(JSON.parse(row?.result ?? "{}").error, error);

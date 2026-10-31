@@ -8,6 +8,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -25,14 +26,16 @@ export const WorkflowAgent = Schema.Struct({
 export type WorkflowAgent = typeof WorkflowAgent.Type;
 
 const AgentStage = Schema.Struct({ id: WorkflowId, agents: Schema.NonEmptyArray(WorkflowAgent) });
-type AgentStage = typeof AgentStage.Type;
+// A loop's stage may start empty: the judge grows agents into it.
+const LoopStage = Schema.Struct({ id: WorkflowId, agents: Schema.Array(WorkflowAgent) });
+type AgentStage = typeof LoopStage.Type;
 
 const RoundCount = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 }));
 
 const RepeatStage = Schema.Struct({
   id: WorkflowId,
   repeat: Schema.Struct({
-    stages: Schema.NonEmptyArray(AgentStage),
+    stages: Schema.NonEmptyArray(LoopStage),
     judge: WorkflowId,
     until: Schema.Struct({
       path: TrimmedNonEmptyString,
@@ -152,12 +155,61 @@ export const launchKey = (stage: string, round: number, agent: string) =>
   `${stage}.${agent}#${round}`;
 
 const REFERENCE = /\{\{\s*([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?\s*\}\}/g;
+const EXACT_REFERENCE = new RegExp(`^${REFERENCE.source}$`);
+const BRACES = /\{\{([^{}]*)\}\}/g;
 const CANCELLED: WorkflowAgentOutcome = { status: "cancelled", result: null };
 
 const invalid = (message: string) =>
   new OrchestratorMcpFailure({ code: "invalid_request", message });
 
-// Braces that name no stage stay literal, so a task can still show `{{x}}` syntax.
+/**
+ * Why `until.path` cannot be in the judge's result, or null. Open schemas allow undeclared fields, so
+ * a path is ruled out only by a closed object whose properties and patterns all miss it, or by
+ * starting with one of the loop's own ids
+ * (a `stage.agent.field` guess) that the schema does not declare.
+ */
+function untilError(stage: RepeatStage, judge: WorkflowAgent): string | null {
+  const { path } = stage.repeat.until;
+  const loopIds = new Set([
+    stage.id,
+    ...stage.repeat.stages.flatMap((s) => [s.id, ...s.agents.map((a) => a.id)]),
+  ]);
+  let schema: unknown = judge.resultSchema ?? {};
+  for (const [depth, segment] of path.split(".").entries()) {
+    if (!isRecord(schema)) return null;
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    if (Object.hasOwn(properties, segment)) {
+      schema = properties[segment];
+      continue;
+    }
+    const patterns = isRecord(schema.patternProperties) ? schema.patternProperties : {};
+    let matched: unknown;
+    for (const [pattern, sub] of Object.entries(patterns)) {
+      let regex: RegExp;
+      try {
+        regex = new RegExp(pattern, "u");
+      } catch {
+        return null; // A pattern this engine cannot compile may allow the field; never reject on it.
+      }
+      if (regex.test(segment)) matched ??= sub;
+    }
+    if (matched !== undefined) {
+      schema = matched;
+      continue;
+    }
+    const where = `Repeat "${stage.id}": until.path "${path}"`;
+    if (schema.additionalProperties === false) {
+      return `${where} is not a field judge "${judge.id}"'s resultSchema allows.`;
+    }
+    if (depth === 0 && loopIds.has(segment)) {
+      return `${where} names a stage or agent; it is a field of judge "${judge.id}"'s own result, such as "ok".`;
+    }
+    return null;
+  }
+  return null;
+}
+
+// Braces that name nothing in the spec stay literal, so a task can still show `{{x}}` syntax.
 function referenceError(spec: WorkflowSpec): string | null {
   const ids = new Set<string>();
   const repeats = new Set<string>();
@@ -182,9 +234,8 @@ function referenceError(spec: WorkflowSpec): string | null {
       if (judge === undefined) {
         return `Repeat "${stage.id}": judge "${stage.repeat.judge}" must be an agent of its last stage.`;
       }
-      if (judge.resultSchema === undefined) {
-        return `Repeat "${stage.id}": judge "${judge.id}" needs a resultSchema for until.`;
-      }
+      const until = untilError(stage, judge);
+      if (until !== null) return until;
     }
     for (const s of inner) order.push({ stage: s, repeat: "agents" in stage ? null : stage });
     // Templates check as if after the repeat's last stage: a grown agent may join any of them.
@@ -197,22 +248,33 @@ function referenceError(spec: WorkflowSpec): string | null {
     }
   }
   const index = new Map(order.map(({ stage }, i) => [stage.id, i]));
+  const named = new Set([...ids, ...order.flatMap(({ stage }) => stage.agents.map((a) => a.id))]);
   for (const [position, { stage, repeat }] of order.entries()) {
     const agentIds = new Set<string>();
     for (const agent of stage.agents) {
       if (agentIds.has(agent.id)) return `Duplicate agent id "${stage.id}.${agent.id}".`;
       agentIds.add(agent.id);
-      for (const [text, stageRef, agentRef] of agent.task.matchAll(REFERENCE)) {
+      for (const [text, inner = ""] of agent.task.matchAll(BRACES)) {
         const where = `"${stage.id}.${agent.id}" uses ${text}`;
+        const [, stageRef, agentRef] = EXACT_REFERENCE.exec(text) ?? [];
         if (stageRef === "feedback") {
-          if (repeat === null || agentRef !== undefined) return `${where} outside a repeat.`;
+          if (repeat === null) return `${where} outside a repeat.`;
+          if (agentRef !== undefined) return `${where}; use {{feedback}}, the judge's last result.`;
           continue;
         }
-        if (stageRef === undefined) continue;
+        if (stageRef === "input") continue;
+        const target = stageRef === undefined ? undefined : index.get(stageRef);
+        if (stageRef === undefined || target === undefined) {
+          // Braces that mention a spec id yet resolve to nothing would reach the agent verbatim.
+          if (inner.split(".").some((part) => named.has(part.trim()))) {
+            return `${where}, which is not a reference: use {{stage}} or {{stage.agent}}.`;
+          }
+          continue;
+        }
         if (repeats.has(stageRef)) return `${where}; name one of the repeat's stages instead.`;
-        const target = index.get(stageRef);
-        if (target === undefined) continue;
-        if (target >= position) return `${where}, which has not run yet.`;
+        // In a loop, a stage that has not run this round reads last round's results (none in round 1).
+        const sameLoop = repeat !== null && order[target]?.repeat === repeat;
+        if (target >= position && !sameLoop) return `${where}, which has not run yet.`;
         const known = order[target]?.stage.agents.some((a) => a.id === agentRef) ?? false;
         if (agentRef !== undefined && !known) return `${where}, which names no agent there.`;
       }
@@ -221,10 +283,49 @@ function referenceError(spec: WorkflowSpec): string | null {
   return null;
 }
 
-const decodeSpec = Schema.decodeUnknownEffect(WorkflowSpec);
+// An unknown key is a guess at a field that does not exist; ignoring it would run another spec.
+const STRICT = { onExcessProperty: "error" } as const;
+const decodeSpec = Schema.decodeUnknownEffect(WorkflowSpec, STRICT);
+type StageDecoder = (stage: unknown) => Result.Result<unknown, Schema.SchemaError>;
+const stageDecoders: Record<"agents" | "repeat", StageDecoder> = {
+  agents: Schema.decodeUnknownResult(AgentStage, STRICT),
+  repeat: Schema.decodeUnknownResult(RepeatStage, STRICT),
+};
+
+/** The first stage that is not exactly one variant, judged by its own variant, not the union. */
+function stageError(input: unknown): string | null {
+  const stages = isRecord(input) && Array.isArray(input.stages) ? input.stages : [];
+  for (const [index, stage] of stages.entries()) {
+    if (!isRecord(stage)) continue;
+    const label = `Stage "${String(stage.id)}" (stages[${index}])`;
+    if ("agents" in stage && "repeat" in stage) {
+      return `${label} has both agents and repeat. Give it one: put a loop's agents in repeat.stages.`;
+    }
+    const decoded = stageDecoders["repeat" in stage ? "repeat" : "agents"](stage);
+    if (Result.isFailure(decoded)) return `${label}: ${decoded.failure.message}`;
+  }
+  return null;
+}
+
+/** A loop that names no judge takes its last stage's only agent. */
+function withDefaultJudges(input: unknown): unknown {
+  if (!isRecord(input) || !Array.isArray(input.stages)) return input;
+  const stages = input.stages.map((stage: unknown) => {
+    if (!isRecord(stage) || !isRecord(stage.repeat) || "judge" in stage.repeat) return stage;
+    const last: unknown = Array.isArray(stage.repeat.stages) ? stage.repeat.stages.at(-1) : null;
+    const agents: unknown = isRecord(last) ? last.agents : null;
+    const [only] = Array.isArray(agents) && agents.length === 1 ? agents : [];
+    if (!isRecord(only) || typeof only.id !== "string") return stage;
+    return { ...stage, repeat: { ...stage.repeat, judge: only.id } };
+  });
+  return { ...input, stages };
+}
 
 /** Decodes a spec and rejects unknown or forward references before anything starts. */
-export const decodeWorkflowSpec = Effect.fn("WorkflowRun.decodeSpec")(function* (input: unknown) {
+export const decodeWorkflowSpec = Effect.fn("WorkflowRun.decodeSpec")(function* (raw: unknown) {
+  const input = withDefaultJudges(raw);
+  const shape = stageError(input);
+  if (shape !== null) return yield* invalid(shape);
   const spec = yield* decodeSpec(input).pipe(Effect.mapError((error) => invalid(error.message)));
   const error = referenceError(spec);
   if (error !== null) return yield* invalid(error);
@@ -390,14 +491,20 @@ function dryStreak(
 /** delegate_task's prompt cap, in bytes; a task is measured before it is built. */
 const TASK_BYTES = 120_000;
 
-/** Null when the task would render past TASK_BYTES. `visible` limits the stages it may read. */
+/**
+ * Null when the task would render past TASK_BYTES. `from` is the rendering agent's stage; `visible`
+ * limits the stages it may read.
+ */
 function renderTask(
   spec: WorkflowSpec,
   state: WorkflowSnapshot,
   template: string,
+  from: string,
   input?: Readonly<Record<string, unknown>>,
   visible?: ReadonlySet<string>,
 ): string | null {
+  const loop = spec.stages[state.cursor];
+  const order = loop === undefined || "agents" in loop ? [] : loop.repeat.stages.map((s) => s.id);
   const resolve = (match: string, stageRef: string, agentRef?: string) => {
     if (stageRef === "feedback") {
       const stage = spec.stages[state.cursor];
@@ -409,14 +516,22 @@ function renderTask(
     }
     if (visible !== undefined && !visible.has(stageRef)) return match;
     if (!agentStages(spec).some((stage) => stage.id === stageRef)) return match;
+    const completed = state.launches.filter(
+      (l) => l.stage === stageRef && l.outcome?.status === "completed",
+    );
+    // A same-loop stage that has not run yet this round reads only the last round it ran in, so a
+    // sibling finishing first, or a resume, never changes what this task sees.
+    const ahead = order.includes(from) && order.indexOf(stageRef) >= order.indexOf(from);
+    const before = completed.filter((l) => l.round < state.round).map((l) => l.round);
+    const round = ahead ? Math.max(0, ...before) : undefined;
     const latest = new Map<string, unknown>();
-    for (const launch of state.launches) {
-      if (launch.stage === stageRef && launch.outcome?.status === "completed") {
-        latest.set(launch.agent, valueOf(launch.outcome));
+    for (const launch of completed) {
+      if (round === undefined || launch.round === round) {
+        latest.set(launch.agent, valueOf(launch.outcome!));
       }
     }
     if (agentRef !== undefined) return asText(latest.get(agentRef) ?? null);
-    return JSON.stringify(Object.fromEntries(latest));
+    return latest.size === 0 && ahead ? "null" : JSON.stringify(Object.fromEntries(latest));
   };
   const values = new Map<string, { readonly text: string; readonly bytes: number }>();
   let bytes = Buffer.byteLength(template.replace(REFERENCE, ""));
@@ -578,6 +693,52 @@ function decide(spec: WorkflowSpec, state: WorkflowSnapshot, now: number): Step 
   return advance({ ...state, round: state.round + 1, phase: 0 });
 }
 
+/**
+ * What the judge is asked to return: the parent's schema, else one with the field `until` reads, plus
+ * the growth contract its templates need. The judge sees it in its task, so it never guesses one.
+ */
+function judgeSchema(stage: RepeatStage, judge: WorkflowAgent): WorkflowAgent["resultSchema"] {
+  const { stages, templates = {}, until } = stage.repeat;
+  const [field = "", ...rest] = until.path.split(".");
+  const leaf = { type: until.equals === null ? "null" : typeof until.equals };
+  const nest = (schema: object, key: string) => ({
+    type: "object",
+    properties: { [key]: schema },
+    required: [key],
+  });
+  const base = judge.resultSchema ?? {
+    type: "object",
+    // until's field comes last, so a path through `feedback` keeps its type.
+    properties: { feedback: { type: "string" }, [field]: rest.reduceRight(nest, leaf) },
+    required: [field],
+  };
+  const names = Object.keys(templates);
+  if (names.length === 0) return base;
+  const ids = stages.map((s) => s.id);
+  const properties = isRecord(base.properties) ? base.properties : {};
+  return {
+    ...base,
+    properties: {
+      addAgents: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            template: { enum: names },
+            task: { type: "string" },
+            input: { type: "object" },
+            key: { type: "string" },
+            stage: { enum: ids },
+          },
+          required: ["template"],
+        },
+      },
+      rerun: { type: "array", items: { enum: ids } },
+      ...properties,
+    },
+  };
+}
+
 /** A spec agent, or a grown one built from its template, with the task and input its judge gave it. */
 function findAgent(spec: WorkflowSpec, state: WorkflowSnapshot, launch: WorkflowLaunch) {
   for (const stage of spec.stages) {
@@ -586,6 +747,13 @@ function findAgent(spec: WorkflowSpec, state: WorkflowSnapshot, launch: Workflow
     );
     if (phase === undefined) continue;
     const agent = phase.agents.find((a) => a.id === launch.agent);
+    if (
+      !("agents" in stage) &&
+      stage.repeat.stages.at(-1) === phase &&
+      agent?.id === stage.repeat.judge
+    ) {
+      return { agent: { ...agent, resultSchema: judgeSchema(stage, agent) } };
+    }
     if (agent !== undefined || "agents" in stage) return agent && { agent };
     const add = growthIn(stage, state, launch.round - 1)?.adds.find((a) => a.key === launch.agent);
     const template = add && stage.repeat.templates?.[add.template];
@@ -649,7 +817,7 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
       return yield* update(key, { outcome: { status: "failed", result: "Not in the spec." } });
     }
     const { agent } = found;
-    const task = renderTask(spec, state, agent.task, found.input, found.visible);
+    const task = renderTask(spec, state, agent.task, launch.stage, found.input, found.visible);
     if (task === null) {
       const result = `Its task renders to more than ${TASK_BYTES} bytes.`;
       return yield* update(key, { outcome: { status: "failed", result } });
