@@ -92,6 +92,7 @@ const WorkflowLaunch = Schema.Struct({
   taskId: Schema.NullOr(Schema.String),
   cancelRequested: Schema.Boolean,
   outcome: Schema.NullOr(WorkflowAgentOutcome),
+  queuedAt: Schema.optional(Schema.Number),
 });
 type WorkflowLaunch = typeof WorkflowLaunch.Type;
 
@@ -146,6 +147,7 @@ type StageResult = { readonly id: string; readonly agents: ReadonlyArray<AgentRe
 export type WorkflowResult = {
   readonly name: string;
   readonly status: WorkflowSnapshot["status"];
+  readonly error?: string;
   readonly stages: ReadonlyArray<
     | StageResult
     | {
@@ -279,16 +281,79 @@ const isGrown = (stage: RepeatStage, launch: WorkflowLaunch) =>
   );
 
 /** Round 1 and the judge's stage always run; later rounds run what the last judge named, or all. */
-function runsAgain(stage: RepeatStage, state: WorkflowSnapshot, phaseId: string) {
-  if (state.round === 1 || phaseId === stage.repeat.stages.at(-1)?.id) return true;
-  const rerun = growthOf(stage, judgedIn(state, stage, state.round - 1))?.rerun ?? [];
+function runsAgain(stage: RepeatStage, state: WorkflowSnapshot, phaseId: string, round: number) {
+  if (round === 1 || phaseId === stage.repeat.stages.at(-1)?.id) return true;
+  const rerun = growthOf(stage, judgedIn(state, stage, round - 1))?.rerun ?? [];
   return rerun.length === 0 || rerun.includes(phaseId);
 }
 
+/** Every stage the run shows, in order: a repeat's stages once per round it reached, round 1 up front. */
+export function workflowPhases(
+  spec: WorkflowSpec,
+  state: Pick<WorkflowSnapshot, "cursor" | "round" | "exits">,
+): ReadonlyArray<{ readonly stage: AgentStage; readonly round: number; readonly title: string }> {
+  return spec.stages.flatMap((stage, position) => {
+    if ("agents" in stage) return [{ stage, round: 1, title: stage.id }];
+    const rounds =
+      position === state.cursor
+        ? state.round
+        : (state.exits.find((exit) => exit.stage === stage.id)?.round ?? 1);
+    return Array.from({ length: rounds }, (_, index) =>
+      stage.repeat.stages.map((inner) => ({
+        stage: inner,
+        round: index + 1,
+        title: `${inner.id} · round ${index + 1}`,
+      })),
+    ).flat();
+  });
+}
+
+/** A phase's agents: its spec agents unless the last judge left the stage out, then those grown into it. */
+export function phaseAgents(
+  spec: WorkflowSpec,
+  state: WorkflowSnapshot,
+  stage: AgentStage,
+  round: number,
+): ReadonlyArray<string> {
+  const loop = spec.stages.find(
+    (s): s is RepeatStage =>
+      !("agents" in s) && s.repeat.stages.some((inner) => inner.id === stage.id),
+  );
+  if (loop === undefined) return stage.agents.map((agent) => agent.id);
+  const grown = state.launches.filter(
+    (l) => l.stage === stage.id && l.round === round && isGrown(loop, l),
+  );
+  return [
+    ...(runsAgain(loop, state, stage.id, round) ? stage.agents.map((agent) => agent.id) : []),
+    ...grown.map((l) => l.agent),
+  ];
+}
+
+/** The agents the last judge grew into `round`; keys are unique across the run, so seen keys are
+ * every spec agent and every launch outside this round's grown batch. */
+function grownFor(spec: WorkflowSpec, stage: RepeatStage, state: WorkflowSnapshot, round: number) {
+  const growth = growthOf(stage, judgedIn(state, stage, round - 1));
+  const batch = state.launches.filter((l) => l.round === round && isGrown(stage, l));
+  const seen = new Set([
+    ...agentStages(spec).flatMap((s) => s.agents.map((agent) => agent.id)),
+    ...state.launches.filter((l) => !batch.includes(l)).map((l) => l.agent),
+  ]);
+  return (growth?.adds ?? []).filter(({ key }) => {
+    const fresh = !seen.has(key);
+    seen.add(key);
+    return fresh;
+  });
+}
+
 /** Consecutive dry votes ending at this round: rounds that grew nothing and asked for no rerun. */
-function dryStreak(stage: RepeatStage, state: WorkflowSnapshot, dryNow: boolean) {
+function dryStreak(
+  spec: WorkflowSpec,
+  stage: RepeatStage,
+  state: WorkflowSnapshot,
+  dryNow: boolean,
+) {
   const wasDry = (round: number) =>
-    !state.launches.some((l) => l.round === round + 1 && isGrown(stage, l)) &&
+    grownFor(spec, stage, state, round + 1).length === 0 &&
     !growthOf(stage, judgedIn(state, stage, round))?.rerun.length;
   let streak = dryNow ? 1 : 0;
   while (streak > 0 && streak < state.round && wasDry(state.round - streak)) streak += 1;
@@ -353,7 +418,27 @@ function decide(spec: WorkflowSpec, state: WorkflowSnapshot, now: number): Step 
   const loop = "agents" in stage ? null : stage;
   const phase = "agents" in stage ? stage : stage.repeat.stages[state.phase];
   if (phase === undefined) return finish("failed");
-  if (loop === null || runsAgain(loop, state, phase.id)) {
+  if (loop !== null && state.round > 1) {
+    // One row per update keeps each within the wire budget; all land before the round starts.
+    const recorded = state.launches.filter((l) => l.round === state.round && isGrown(loop, l));
+    const add = grownFor(spec, loop, state, state.round).find(
+      ({ key }) => !recorded.some((l) => l.agent === key),
+    );
+    if (add !== undefined) {
+      return {
+        _tag: "record",
+        launch: {
+          stage: add.stage,
+          round: state.round,
+          agent: add.key,
+          taskId: null,
+          cancelRequested: false,
+          outcome: null,
+        },
+      };
+    }
+  }
+  if (loop === null || runsAgain(loop, state, phase.id, state.round)) {
     const unlaunched = phase.agents.find(
       (agent) => findLaunch(state, phase.id, state.round, agent.id) === undefined,
     );
@@ -378,39 +463,15 @@ function decide(spec: WorkflowSpec, state: WorkflowSnapshot, now: number): Step 
   const growth = growthOf(loop, value);
   if (growth === null) return finish("failed");
   if (accepts(repeat.until, value)) return advance(exit("accepted"));
-  const round = state.round + 1;
-  const recorded = state.launches.filter((l) => l.round === round && isGrown(loop, l));
-  // Keys are unique across the run: every spec agent and every launch before this batch.
-  const seen = new Set([
-    ...agentStages(spec).flatMap((s) => s.agents.map((agent) => agent.id)),
-    ...state.launches.filter((l) => !recorded.includes(l)).map((l) => l.agent),
-  ]);
-  const grown = growth.adds.filter(({ key }) => {
-    const fresh = !seen.has(key);
-    seen.add(key);
-    return fresh;
-  });
+  const grown = grownFor(spec, loop, state, state.round + 1);
   const dryNow = grown.length === 0 && growth.rerun.length === 0;
-  if (repeat.dry !== undefined && dryStreak(loop, state, dryNow) >= repeat.dry) {
+  if (repeat.dry !== undefined && dryStreak(spec, loop, state, dryNow) >= repeat.dry) {
     return advance(exit("dry"));
   }
   if (state.round === repeat.max) {
     return repeat.onExhausted === "pass" ? advance(exit("exhausted")) : finish("failed");
   }
-  // One row per update keeps each within the wire budget; all land before the next round starts.
-  const add = grown[recorded.length];
-  if (add === undefined) return advance({ ...state, round, phase: 0 });
-  return {
-    _tag: "record",
-    launch: {
-      stage: add.stage,
-      round,
-      agent: add.key,
-      taskId: null,
-      cancelRequested: false,
-      outcome: null,
-    },
-  };
+  return advance({ ...state, round: state.round + 1, phase: 0 });
 }
 
 /** A spec agent, or a grown one built from its template and the input its judge gave it. */
@@ -540,6 +601,7 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
           taskId: null,
           cancelRequested: false,
           outcome: null,
+          queuedAt: yield* Clock.currentTimeMillis,
         };
         yield* save({ ...state, launches: [...state.launches, launch] });
         yield* startTask(launch);

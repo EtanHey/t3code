@@ -887,14 +887,15 @@ export function ThreadRelationshipsPanel(props: {
                 member.childThreadId === null
                   ? undefined
                   : subagentsByThreadId.get(member.childThreadId as ThreadId);
-              if (task === undefined) return undefined;
+              const providerInstanceId = task?.providerInstanceId ?? member.providerInstanceId;
+              if (providerInstanceId === undefined) return undefined;
               const taskProvider = providers?.find(
-                (entry) => entry.instanceId === task.providerInstanceId,
+                (entry) => entry.instanceId === providerInstanceId,
               );
               return {
-                providerInstanceId: task.providerInstanceId,
+                providerInstanceId,
                 provider: taskProvider,
-                driver: task.driver,
+                driver: task?.driver ?? taskProvider?.driver,
               };
             };
             return (

@@ -160,11 +160,11 @@ export interface OrchestratorMcpServiceShape {
       readonly workflow?: { readonly taskId: NodeId; readonly runId: RunId };
     },
   ) => Effect.Effect<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure>;
-  /** Fails as `delegateTask` would for this target in the caller's thread, starting nothing. */
+  /** Resolves this target as `delegateTask` would in the caller's thread, starting nothing. */
   readonly checkTarget: (
     scope: McpInvocationScope,
     target: OrchestratorMcpTarget | undefined,
-  ) => Effect.Effect<void, OrchestratorMcpFailure>;
+  ) => Effect.Effect<ModelSelection, OrchestratorMcpFailure>;
   /** Waits, however long, until the task reaches a terminal status. */
   readonly awaitTask: (
     scope: McpInvocationScope,
@@ -2406,7 +2406,12 @@ const make = Effect.gen(function* () {
     }),
     checkTarget: Effect.fn("OrchestratorMcpService.checkTarget")(function* (callerScope, target) {
       const { parent } = yield* loadThreadCaller(callerScope, "delegate_task");
-      yield* resolveTargetRechecking({ parent, target, providers: yield* loadProviders });
+      const resolved = yield* resolveTargetRechecking({
+        parent,
+        target,
+        providers: yield* loadProviders,
+      });
+      return resolved.modelSelection;
     }),
     awaitTask: Effect.fn("OrchestratorMcpService.awaitTask")(function* (callerScope, taskId) {
       const scope = yield* requireThreadScope(callerScope, "task_status");
