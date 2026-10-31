@@ -9,6 +9,7 @@ import {
   NodeId,
   OrchestrationV2DomainEvent,
   type OrchestrationV2Subagent,
+  type ModelSelection,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -25,7 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Ref from "effect/Ref";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -106,7 +107,9 @@ const provider = (instanceId: ProviderInstanceId, driver: string, model: string)
 
 class Offers extends Context.Service<
   Offers,
-  Ref.Ref<ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>>
+  SubscriptionRef.SubscriptionRef<
+    ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+  >
 >()("t3/mcp/WorkflowRuns.test/Offers") {}
 
 const layerDatabase = SqlitePersistence.layerMemory;
@@ -160,7 +163,7 @@ const layerTest = OrchestratorMcpService.layer.pipe(
       Offers.pipe(
         Effect.map((offers) => ({
           offer: (request: ProviderContinuationRequests.ProviderContinuationRequest) =>
-            Ref.update(offers, (seen) => [...seen, request]),
+            SubscriptionRef.update(offers, (seen) => [...seen, request]),
           take: Effect.never,
         })),
       ),
@@ -169,7 +172,9 @@ const layerTest = OrchestratorMcpService.layer.pipe(
   Layer.provideMerge(
     Layer.effect(
       Offers,
-      Ref.make<ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>>([]),
+      SubscriptionRef.make<ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>>(
+        [],
+      ),
     ),
   ),
   Layer.provideMerge(
@@ -248,7 +253,7 @@ const planned = {
 };
 
 /** A Codex parent whose turn is live when it calls t3_workflow_run. */
-const seedParent = (name: string) =>
+const seedParent = (name: string, selection: ModelSelection = modelSelection) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const sink = yield* EventSink.EventSinkV2;
@@ -265,7 +270,7 @@ const seedParent = (name: string) =>
       threadId,
       projectId: ProjectId.make("project:workflow-runs"),
       title: "Parent",
-      modelSelection,
+      modelSelection: selection,
       runtimeMode: "full-access",
       interactionMode: "default",
       branch: null,
@@ -284,7 +289,7 @@ const seedParent = (name: string) =>
         threadId,
         ordinal: 1,
         providerInstanceId: codex,
-        modelSelection,
+        modelSelection: selection,
         providerThreadId,
         userMessageId: MessageId.make(`message:${name}`),
         rootNodeId,
@@ -507,14 +512,20 @@ const startChild = (child: OrchestrationV2Subagent) =>
     });
   });
 
+/** The distinct wakes offered to a parent, once it has had one; the offer follows the row's commit. */
 const wakes = (threadId: ThreadId) =>
-  Effect.map(Offers.pipe(Effect.flatMap(Ref.get)), (all) => [
-    ...new Set(
-      all
-        .filter((offer) => offer.threadId === threadId)
-        .map((offer) => offer.delegatedCompletion?.messageId),
+  Offers.pipe(
+    Effect.flatMap((offers) =>
+      SubscriptionRef.changes(offers).pipe(
+        Stream.map((all) => all.filter((offer) => offer.threadId === threadId)),
+        Stream.filter((offered) => offered.length > 0),
+        Stream.runHead,
+      ),
     ),
-  ]);
+    Effect.map((offered) => [
+      ...new Set(Option.getOrThrow(offered).map((offer) => offer.delegatedCompletion?.messageId)),
+    ]),
+  );
 
 /** A WorkflowRuns instance whose runners die with `scope`, as in a server restart. */
 const workflowRunsIn = (scope: Scope.Scope) =>
@@ -799,6 +810,68 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
         { providerInstanceId, model, effort },
         { providerInstanceId: claude, model: "claude-sonnet-5-5", effort: "low" },
       );
+    }),
+  );
+
+  it.effect("drops a planned effort once the child runs a model without one", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const runs = yield* workflowRunsIn(yield* Effect.scope);
+      const parent = yield* seedParent("dropped-effort", {
+        ...modelSelection,
+        options: [{ id: "effort", value: "low" }],
+      });
+      const { subagentId } = yield* runs.run(parent.scope, {
+        name: "two",
+        stages: [
+          { id: "one", agents: [{ id: "a", task: "A." }] },
+          { id: "two", agents: [{ id: "b", task: "B." }] },
+        ],
+      });
+      const planned = yield* rowWhere(parent.threadId, subagentId, () => true);
+      assert.equal(planned.workflow?.agents[1]?.effort, "low");
+      yield* parent.endTurn;
+      const [first] = yield* childrenOf(parent.threadId, subagentId, 1);
+      yield* orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make("command:dropped-effort:switch"),
+        threadId: parent.threadId,
+        modelSelection: { instanceId: claude, model: "claude-sonnet-5-5" },
+      });
+      yield* settleChild(first!, "Done.");
+      const row = yield* rowWhere(
+        parent.threadId,
+        subagentId,
+        (row) => row.workflow?.agents[1]?.state === "running",
+      );
+      const { providerInstanceId, model, effort } = row.workflow!.agents[1]!;
+      assert.deepEqual(
+        { providerInstanceId, model, effort },
+        { providerInstanceId: claude, model: "claude-sonnet-5-5", effort: undefined },
+      );
+    }),
+  );
+
+  it.effect("keeps a child's real start when the run times out after it started", () =>
+    Effect.gen(function* () {
+      const runs = yield* workflowRunsIn(yield* Effect.scope);
+      const parent = yield* seedParent("timeout-start");
+      const { subagentId } = yield* runs.run(parent.scope, {
+        name: "slow",
+        timeoutMs: 5_000,
+        stages: [{ id: "one", agents: [{ id: "a", task: "A." }] }],
+      });
+      yield* parent.endTurn;
+      const [child] = yield* childrenOf(parent.threadId, subagentId, 1);
+      yield* rowWhere(parent.threadId, subagentId, (row) => agentsRunning(row) === 1);
+      const requestedAt = yield* Clock.currentTimeMillis;
+      yield* TestClock.adjust(500);
+      yield* startChild(child!);
+      yield* TestClock.adjust(5_000);
+
+      const row = yield* ended(parent.threadId, subagentId);
+      assert.equal(row?.workflowRun?.status, "timed_out");
+      assert.equal(row?.workflow?.agents[0]?.startedAt, requestedAt + 500);
     }),
   );
 

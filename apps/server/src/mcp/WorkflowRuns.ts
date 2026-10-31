@@ -178,24 +178,22 @@ function toRow(
       name: spec.name,
       phases: phases.map(({ title }, index) => ({ index, title })),
       agents: agents.map(({ stage, agent, round, phaseIndex }, index) => {
-        const planned = {
-          index,
-          label: agent,
-          phaseIndex,
-          ...targets.get(targetKey(stage, agent)),
-        };
+        const base = { index, label: agent, phaseIndex };
+        const planned = targets.get(targetKey(stage, agent));
         const launch = launches.find(
           (l) => l.stage === stage && l.round === round && l.agent === agent,
         );
-        if (launch === undefined) return { ...planned, state: "queued" as const };
+        if (launch === undefined) return { ...base, ...planned, state: "queued" as const };
         const child = launch.taskId === null ? undefined : children.get(launch.taskId);
         // A launch the run cancels as it ends stays live here; clients show the run's end for it.
         const live = launch.outcome === null || launch.cancelRequested;
         const { queuedAt } = launch;
-        const { startedAt, completedAt: endedAt, ...target } = child?.facts ?? {};
+        const { startedAt, completedAt: endedAt, ...ran } = child?.facts ?? {};
         const completedAt = live ? undefined : endedAt;
+        // What the child ran replaces the plan whole: a model without an effort shows none.
+        const target = ran.providerInstanceId === undefined ? planned : ran;
         return {
-          ...planned,
+          ...base,
           ...target,
           ...(child === undefined ? {} : { childThreadId: child.threadId }),
           state: live
@@ -390,7 +388,16 @@ const make = Effect.gen(function* () {
       cancel: (childTaskId) =>
         mcp.cancelTask(scope, { taskId: NodeId.make(childTaskId) }).pipe(Effect.asVoid),
       persist: (snapshot) =>
-        commandId("update").pipe(
+        // The run's last row is final: read every child's runs once more, so none keeps a stand-in.
+        (snapshot.status === "running"
+          ? Effect.void
+          : Effect.forEach(
+              [...children],
+              ([childTaskId, child]) => learn(childTaskId, child.threadId),
+              { discard: true },
+            )
+        ).pipe(
+          Effect.andThen(commandId("update")),
           Effect.flatMap((id) =>
             threads.dispatch({
               type: "workflow_run.update",
