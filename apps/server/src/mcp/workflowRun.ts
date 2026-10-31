@@ -387,13 +387,18 @@ function dryStreak(
   return streak;
 }
 
+/** delegate_task's prompt cap, in bytes; a task is measured before it is built. */
+const TASK_BYTES = 120_000;
+
+/** Null when the task would render past TASK_BYTES. `visible` limits the stages it may read. */
 function renderTask(
   spec: WorkflowSpec,
   state: WorkflowSnapshot,
   template: string,
   input?: Readonly<Record<string, unknown>>,
-): string {
-  return template.replace(REFERENCE, (match, stageRef: string, agentRef?: string) => {
+  visible?: ReadonlySet<string>,
+): string | null {
+  const resolve = (match: string, stageRef: string, agentRef?: string) => {
     if (stageRef === "feedback") {
       const stage = spec.stages[state.cursor];
       if (stage === undefined || "agents" in stage) return match;
@@ -402,6 +407,7 @@ function renderTask(
     if (stageRef === "input" && input !== undefined) {
       return agentRef === undefined ? JSON.stringify(input) : asText(input[agentRef] ?? null);
     }
+    if (visible !== undefined && !visible.has(stageRef)) return match;
     if (!agentStages(spec).some((stage) => stage.id === stageRef)) return match;
     const latest = new Map<string, unknown>();
     for (const launch of state.launches) {
@@ -411,7 +417,29 @@ function renderTask(
     }
     if (agentRef !== undefined) return asText(latest.get(agentRef) ?? null);
     return JSON.stringify(Object.fromEntries(latest));
-  });
+  };
+  const values = new Map<string, { readonly text: string; readonly bytes: number }>();
+  let bytes = Buffer.byteLength(template.replace(REFERENCE, ""));
+  for (const [match, stageRef, agentRef] of template.matchAll(REFERENCE)) {
+    let value = values.get(match);
+    if (value === undefined) {
+      const resolved = resolve(match, stageRef!, agentRef);
+      value = { text: resolved, bytes: Buffer.byteLength(resolved) };
+      values.set(match, value);
+    }
+    bytes += value.bytes;
+    if (bytes > TASK_BYTES) return null;
+  }
+  return template.replace(REFERENCE, (match) => values.get(match)!.text);
+}
+
+/** A judge-authored task reads only the repeat's stages and those its judge's own task read. */
+function judgeView(stage: RepeatStage): ReadonlySet<string> {
+  const judge = stage.repeat.stages.at(-1)?.agents.find((a) => a.id === stage.repeat.judge);
+  return new Set([
+    ...stage.repeat.stages.map((s) => s.id),
+    ...[...(judge?.task.matchAll(REFERENCE) ?? [])].map(([, stageRef]) => stageRef!),
+  ]);
 }
 
 function accepts(until: RepeatStage["repeat"]["until"], value: unknown): boolean {
@@ -441,9 +469,21 @@ const finish = (status: typeof WorkflowRunStatus.Type, error?: string): Step => 
 });
 const advance = (state: WorkflowSnapshot): Step => ({ _tag: "advance", state });
 
+const jsonBytes = (text: string) => Buffer.byteLength(JSON.stringify(text)) - 2;
+
+/** The error rides the run's last row update, so it is cut to a budget of JSON-encoded bytes. */
+const ERROR_BYTES = 200;
 const clip = (text: string) => {
   const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > 240 ? `${flat.slice(0, 239)}…` : flat;
+  if (jsonBytes(flat) <= ERROR_BYTES) return flat;
+  let cut = "";
+  let bytes = jsonBytes("…");
+  for (const char of flat) {
+    bytes += jsonBytes(char);
+    if (bytes > ERROR_BYTES) break;
+    cut += char;
+  }
+  return `${cut}…`;
 };
 
 /** A launch that ended the run by not completing; the run's own cancels at its end never count. */
@@ -552,6 +592,7 @@ function findAgent(spec: WorkflowSpec, state: WorkflowSnapshot, launch: Workflow
     return {
       agent: { ...template, id: add.key, task: add.task ?? template.task },
       input: add.input,
+      visible: add.task === undefined ? undefined : judgeView(stage),
     };
   }
   return undefined;
@@ -607,7 +648,11 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
       return yield* update(key, { outcome: { status: "failed", result: "Not in the spec." } });
     }
     const { agent } = found;
-    const task = renderTask(spec, state, agent.task, found.input);
+    const task = renderTask(spec, state, agent.task, found.input, found.visible);
+    if (task === null) {
+      const result = `Its task renders to more than ${TASK_BYTES} bytes.`;
+      return yield* update(key, { outcome: { status: "failed", result } });
+    }
     const started = yield* port
       .start({ key, stage: launch.stage, round: launch.round, agent, task })
       .pipe(Effect.result);

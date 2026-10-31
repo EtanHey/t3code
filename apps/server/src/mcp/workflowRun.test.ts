@@ -995,6 +995,62 @@ it.effect("grows from the shapes a judge naturally writes: no key, a task instea
   }),
 );
 
+it.effect(
+  "bounds a judge's task: it sees only what the judge saw, and never renders oversized",
+  () =>
+    Effect.gen(function* () {
+      const seen = {
+        ...haikuLoop,
+        stages: [
+          { id: "brief", agents: [{ id: "writer", task: "Brief." }] },
+          { id: "private", agents: [{ id: "secret", task: "Private." }] },
+          {
+            id: "loop",
+            repeat: {
+              ...haikuLoop.stages[0]!.repeat,
+              stages: [
+                haikuLoop.stages[0]!.repeat.stages[0]!,
+                {
+                  id: "judge",
+                  agents: [
+                    { id: "judge", task: "Judge {{draft}} for {{brief}}.", resultSchema: {} },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      };
+      const task = "{{brief.writer}} {{private.secret}} {{draft.poet}} {{input.x}}";
+      const scoped = makeFake({
+        reply: liveJudging({
+          addAgents: [{ template: "rewriter", task, input: { x: "in" } }],
+          rerun: ["judge"],
+        }),
+      });
+      expect((yield* runWorkflow(scoped.port, seen)).status).toBe("completed");
+      expect(scoped.rendered.get("draft.rewriter-1-0#2")).toBe(
+        "brief.writer#1 {{private.secret}} draft.poet#1 in",
+      );
+
+      // 1,024 references to a 64 KiB result would render 64 MiB.
+      const huge = makeFake({
+        reply: (start) =>
+          start.agent.id === "poet"
+            ? { outcome: ok("X".repeat(65_536)) }
+            : liveJudging({
+                addAgents: [{ template: "rewriter", task: "{{draft.poet}}".repeat(1_024) }],
+              })(start),
+      });
+      const result = yield* runWorkflow(huge.port, haikuLoop);
+      expect(result.status).toBe("failed");
+      expect(result.error).toBe(
+        "round 2 rewriter-1-0: failed: Its task renders to more than 120000 bytes.",
+      );
+      expect(huge.startCalls).not.toContain("draft.rewriter-1-0#2");
+    }),
+);
+
 it.effect("waits for grown agents before starting the next stage or judge", () =>
   Effect.gen(function* () {
     const fake = makeFake({

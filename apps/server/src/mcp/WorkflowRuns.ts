@@ -170,7 +170,8 @@ function toRow(
   readonly workflow: OrchestrationV2SubagentWorkflow;
   readonly workflowRun: OrchestrationV2WorkflowRunState;
 } {
-  const { launches, ...state } = snapshot;
+  // The error is kept once, on the row it blames, to fit the last update's wire budget.
+  const { launches, error, ...state } = snapshot;
   const blamed = blamedLaunch(spec, snapshot);
   const phases = workflowPhases(spec, snapshot);
   const agents = phases.flatMap(({ stage, round }, phaseIndex) =>
@@ -204,7 +205,7 @@ function toRow(
           ...base,
           ...target,
           ...(child === undefined ? {} : { childThreadId: child.threadId }),
-          ...(launch === blamed && snapshot.error ? { result: snapshot.error } : {}),
+          ...(launch === blamed && error ? { result: error } : {}),
           state:
             launch === blamed
               ? "failed"
@@ -333,7 +334,16 @@ const make = Effect.gen(function* () {
       }),
     );
     const { version: _version, ...state } = run.workflowRun;
-    return { ...state, launches } satisfies WorkflowSnapshot;
+    const error =
+      state.status === "running"
+        ? undefined
+        : run.agents.find(({ agent }) => agent.state === "failed" && agent.result !== undefined)
+            ?.agent.result;
+    return {
+      ...state,
+      ...(error === undefined ? {} : { error }),
+      launches,
+    } satisfies WorkflowSnapshot;
   });
 
   const drive = Effect.fn("WorkflowRuns.drive")(function* (

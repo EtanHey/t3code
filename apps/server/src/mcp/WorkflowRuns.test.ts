@@ -1005,6 +1005,33 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
         assert.equal((yield* ended(other.threadId, stopped.subagentId))?.status, "cancelled");
         const cancelled = yield* largestUpdate(other.threadId, stopped.subagentId);
         assert.isAtMost(cancelled.largest, 2048);
+
+        // A judge naming a huge template fails the run with the longest error, in each encoding.
+        for (const char of ["X", '"', "界"]) {
+          const failing = yield* seedParent(`bytes-error-${char.codePointAt(0)}`);
+          const failed = yield* runs.run(failing.scope, wide);
+          yield* failing.endTurn;
+          settled.clear();
+          const settleFailing = (count: number, text: string) =>
+            Effect.gen(function* () {
+              const children = yield* childrenOf(
+                failing.threadId,
+                failed.subagentId,
+                settled.size + count,
+              );
+              for (const child of children.filter((c) => !settled.has(c.id))) {
+                settled.add(child.id);
+                yield* settleChild(child, text);
+              }
+            });
+          yield* settleFailing(20, "Part done.");
+          yield* settleFailing(1, "Revised.");
+          const judged = { ok: false, addAgents: [{ template: char.repeat(1_000) }] };
+          yield* settleFailing(1, `\`\`\`json\n${JSON.stringify(judged)}\n\`\`\``);
+          assert.equal((yield* ended(failing.threadId, failed.subagentId))?.status, "failed");
+          const errored = yield* largestUpdate(failing.threadId, failed.subagentId);
+          assert.isAtMost(errored.largest, 2048, `template of ${char}`);
+        }
       }),
   );
 
@@ -1245,7 +1272,6 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
       const error = 'round 1 critic: addAgents[0]: unknown template "rewiter"';
       const row = yield* ended(parent.threadId, subagentId);
       assert.equal(row?.status, "failed");
-      assert.equal(row?.workflowRun?.error, error);
       assert.equal(JSON.parse(row?.result ?? "{}").error, error);
       assert.equal((yield* runs.status(parent.scope, subagentId)).error, error);
       assert.deepInclude(
