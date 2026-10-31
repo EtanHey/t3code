@@ -100,7 +100,7 @@ type WorkflowAgent = OrchestrationV2SubagentWorkflow["agents"][number];
 
 const workflowRailOf = (
   agents: ReadonlyArray<WorkflowAgent>,
-  status: "running" | "completed" = "running",
+  status: "running" | "completed" | "cancelled" = "running",
 ) =>
   workflowRail(
     deriveWorkflowGroups(
@@ -179,6 +179,19 @@ describe("nextWorkflowSelection", () => {
     expect(nextWorkflowSelection(failed, null)).toBe("0");
     expect(nextWorkflowSelection(done, null)).toBe("1");
     expect(nextWorkflowSelection(workflowRailOf([]), null)).toBeNull();
+  });
+
+  it("opens where a stopped run stopped, not a planned phase it never reached", () => {
+    const stopped = workflowRailOf(
+      [
+        agent(1, 0, "completed", { startedAt: 1_000 }),
+        agent(2, 1, "running", { startedAt: 2_000 }),
+        agent(3, 2, "queued"),
+      ],
+      "cancelled",
+    );
+
+    expect(nextWorkflowSelection(stopped, null)).toBe("1");
   });
 
   it("keeps one phase open: another replaces it and the open one collapses the card", () => {

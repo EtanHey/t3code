@@ -6,6 +6,7 @@ import type {
   OrchestrationV2Subagent,
   OrchestrationV2SubagentWorkflow,
   OrchestrationV2TurnItem,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import { isOrchestrationV2WorkActive, isProviderNativeSubagentThread } from "@t3tools/contracts";
 
@@ -54,6 +55,8 @@ export interface RuntimeSubagent {
   readonly model: string | null;
   readonly effort: string | null;
   readonly speed?: string | undefined;
+  /** A workflow member's own provider, when it reports one. */
+  readonly providerInstanceId?: ProviderInstanceId | undefined;
   readonly status: RuntimeSubagentStatus;
   readonly activationCount: number;
   readonly usage: SubagentUsage | null;
@@ -154,6 +157,9 @@ function workflowMembersToRuntime(
       model: agent.model ?? null,
       effort: agent.effort ?? null,
       ...(agent.speed === undefined ? {} : { speed: agent.speed }),
+      ...(agent.providerInstanceId === undefined
+        ? {}
+        : { providerInstanceId: agent.providerInstanceId }),
       status,
       activationCount: agent.attempt ?? 1,
       usage: workflowUsage(agent),
@@ -277,8 +283,13 @@ export function deriveWorkflowGroups(
       const settledCount = phaseMembers.filter((member) =>
         isTerminalSubagentStatus(member.status),
       ).length;
-      const state: "pending" | "running" | "done" =
-        phaseMembers.length === 0 ? "pending" : hasActiveMember ? "running" : "done";
+      const state: "pending" | "running" | "done" = phaseMembers.every(
+        (member) => member.status === "pending",
+      )
+        ? "pending"
+        : hasActiveMember
+          ? "running"
+          : "done";
       return {
         index: phase.index,
         title: phase.title,

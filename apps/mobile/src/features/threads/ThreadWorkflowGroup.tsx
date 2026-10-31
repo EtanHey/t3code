@@ -49,9 +49,12 @@ export function ThreadWorkflowGroup(props: {
   readonly onOpen: (threadId: ThreadId) => void;
 }) {
   const { group } = props;
-  const provider = useEnvironmentServerConfig(props.environmentId)?.providers.find(
-    (candidate) => candidate.instanceId === props.subagent.providerInstanceId,
-  );
+  const providers = useEnvironmentServerConfig(props.environmentId)?.providers;
+  const providerOf = (member: RuntimeSubagent) =>
+    providers?.find(
+      (candidate) =>
+        candidate.instanceId === (member.providerInstanceId ?? props.subagent.providerInstanceId),
+    );
   const [selected, setSelected] = useState<string | null>(null);
   const rail = workflowRail(group);
   const open = rail.find((item) => item.key === selected);
@@ -129,7 +132,7 @@ export function ThreadWorkflowGroup(props: {
               key={member.id}
               environmentId={props.environmentId}
               member={member}
-              provider={provider}
+              provider={providerOf(member)}
               onOpen={props.onOpen}
             />
           ))

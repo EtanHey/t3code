@@ -2,13 +2,16 @@ import {
   CommandId,
   isOrchestrationV2WorkActive,
   type EnvironmentId,
+  type ModelSelection,
   NodeId,
   type OrchestrationV2SubagentWorkflow,
+  type OrchestrationV2WorkflowAgent,
   type OrchestrationV2WorkflowRunState,
   OrchestratorMcpFailure,
   type OrchestratorMcpDelegateTaskResult,
   type ThreadId,
 } from "@t3tools/contracts";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -38,6 +41,7 @@ import {
   workflowResult,
   type WorkflowSnapshot,
   WorkflowSpec,
+  workflowPhases,
 } from "./workflowRun.ts";
 
 export class WorkflowRuns extends Context.Service<
@@ -86,38 +90,75 @@ const outcomeOf = (result: OrchestratorMcpDelegateTaskResult): WorkflowAgentOutc
           : { structuredResult: result.structuredResult }),
       };
 
-/** The row keeps launches as `workflow.agents` (results stay on the child tasks) and the rest as `workflowRun`. */
+type AgentTarget = Pick<OrchestrationV2WorkflowAgent, "providerInstanceId" | "model" | "effort">;
+
+const targetOf = (selection: ModelSelection): AgentTarget => {
+  const effort =
+    getModelSelectionStringOptionValue(selection, "reasoningEffort") ??
+    getModelSelectionStringOptionValue(selection, "effort");
+  return {
+    providerInstanceId: selection.instanceId,
+    model: selection.model,
+    ...(effort?.trim() ? { effort: effort.trim() } : {}),
+  };
+};
+
+const targetKey = (stage: string, agent: string) => `${stage}.${agent}`;
+
+/**
+ * The row lists every agent of every phase so far, launched or not, in phase order (results stay
+ * on the child tasks), and keeps the rest of the snapshot as `workflowRun`.
+ */
 function toRow(
   spec: WorkflowSpec,
   snapshot: WorkflowSnapshot,
   childThreads: ReadonlyMap<string, ThreadId>,
+  targets: ReadonlyMap<string, AgentTarget>,
 ): {
   readonly workflow: OrchestrationV2SubagentWorkflow;
   readonly workflowRun: OrchestrationV2WorkflowRunState;
 } {
-  const phases = agentStages(spec).map((stage, index) => ({ index, title: stage.id }));
   const { launches, ...workflowRun } = snapshot;
+  const phases = workflowPhases(spec, snapshot);
+  const agents = phases.flatMap(({ stage, round }, phaseIndex) =>
+    stage.agents.map((agent) => ({ stage: stage.id, agent: agent.id, round, phaseIndex })),
+  );
   return {
     workflow: {
       name: spec.name,
-      phases,
-      agents: launches.map((launch, index) => {
-        const childThreadId = launch.taskId === null ? undefined : childThreads.get(launch.taskId);
-        return {
+      phases: phases.map(({ title }, index) => ({ index, title })),
+      agents: agents.map(({ stage, agent, round, phaseIndex }, index) => {
+        const planned = {
           index,
-          label: launch.agent,
+          label: agent,
+          phaseIndex,
+          ...targets.get(targetKey(stage, agent)),
+        };
+        const launch = launches.find(
+          (l) => l.stage === stage && l.round === round && l.agent === agent,
+        );
+        if (launch === undefined) return { ...planned, state: "queued" as const };
+        const childThreadId = launch.taskId === null ? undefined : childThreads.get(launch.taskId);
+        // A launch the run cancels as it ends stays live here; clients show the run's end for it.
+        const live = launch.outcome === null || launch.cancelRequested;
+        const { queuedAt, startedAt } = launch;
+        const completedAt = live ? undefined : launch.completedAt;
+        return {
+          ...planned,
           ...(childThreadId === undefined ? {} : { childThreadId }),
-          // A launch the run cancels as it ends stays live here; clients show the run's end for it.
-          state:
-            launch.outcome === null || launch.cancelRequested
-              ? launch.taskId === null
-                ? "queued"
-                : "running"
-              : launch.outcome.status === "completed"
-                ? "completed"
-                : "failed",
-          phaseIndex: phases.find((phase) => phase.title === launch.stage)?.index ?? 0,
-          attempt: launch.round,
+          state: live
+            ? launch.taskId === null
+              ? "queued"
+              : "running"
+            : launch.outcome?.status === "completed"
+              ? "completed"
+              : "failed",
+          ...(queuedAt === undefined ? {} : { queuedAt }),
+          ...(startedAt === undefined ? {} : { startedAt }),
+          ...(completedAt === undefined ? {} : { completedAt }),
+          ...(startedAt === undefined || completedAt === undefined
+            ? {}
+            : { durationMs: Math.max(0, completedAt - startedAt) }),
         };
       }),
     },
@@ -177,16 +218,34 @@ const make = Effect.gen(function* () {
       capabilities: new Set(["orchestration"]),
       issuedAt: 0,
     };
-    return { row, spec, childThreads, live, scope };
+    const phases = workflowPhases(spec, row.workflowRun!);
+    const agents = (row.workflow?.agents ?? []).flatMap((agent) => {
+      const phase = phases[agent.phaseIndex ?? 0];
+      return phase === undefined ? [] : [{ agent, stage: phase.stage.id, round: phase.round }];
+    });
+    const targets = new Map(
+      agents.map(({ agent: { providerInstanceId, model, effort, label }, stage }) => [
+        targetKey(stage, label),
+        {
+          ...(providerInstanceId === undefined ? {} : { providerInstanceId }),
+          ...(model === undefined ? {} : { model }),
+          ...(effort === undefined ? {} : { effort }),
+        },
+      ]),
+    );
+    return { row, spec, childThreads, live, scope, agents, targets };
   });
 
   /** Rebuilds the runner's snapshot; finished launches read their outcome from their child task. */
   const snapshotOf = Effect.fn("WorkflowRuns.snapshotOf")(function* (
     run: Effect.Success<ReturnType<typeof readRun>>,
   ) {
-    const stages = agentStages(run.spec);
     const taskIds = new Map([...run.childThreads].map(([taskId, thread]) => [thread, taskId]));
-    const launches = yield* Effect.forEach(run.row.workflow?.agents ?? [], (agent) =>
+    // A queued agent with no queue time is one the run has not launched yet.
+    const launched = run.agents.filter(
+      ({ agent }) => agent.state !== "queued" || agent.queuedAt !== undefined,
+    );
+    const launches = yield* Effect.forEach(launched, ({ agent, stage, round }) =>
       Effect.gen(function* () {
         const taskId =
           agent.childThreadId === undefined ? null : (taskIds.get(agent.childThreadId) ?? null);
@@ -198,12 +257,15 @@ const make = Effect.gen(function* () {
               ? { status: "failed", result: null }
               : outcomeOf(yield* mcp.taskStatus(run.scope, NodeId.make(taskId)));
         return {
-          stage: stages[agent.phaseIndex ?? 0]?.id ?? "",
-          round: agent.attempt ?? 1,
+          stage,
+          round,
           agent: agent.label,
           taskId,
           cancelRequested: false,
           outcome,
+          ...(agent.queuedAt === undefined ? {} : { queuedAt: agent.queuedAt }),
+          ...(agent.startedAt === undefined ? {} : { startedAt: agent.startedAt }),
+          ...(agent.completedAt === undefined ? {} : { completedAt: agent.completedAt }),
         };
       }),
     );
@@ -225,7 +287,7 @@ const make = Effect.gen(function* () {
       );
     }
     if (run.row.runId === null) return;
-    const { row, spec, childThreads, scope } = run;
+    const { row, spec, childThreads, scope, targets } = run;
     const owner = { taskId: row.id, runId: row.runId! };
     const port: WorkflowPort = {
       start: ({ key, agent: { id: _id, task: _template, ...options }, task }) =>
@@ -258,7 +320,7 @@ const make = Effect.gen(function* () {
               commandId: id,
               parentThreadId: threadId,
               taskId: row.id,
-              ...toRow(spec, snapshot, childThreads),
+              ...toRow(spec, snapshot, childThreads, targets),
               ...(snapshot.status === "running"
                 ? {}
                 : { result: encodeJson(workflowResult(spec, snapshot)) }),
@@ -288,18 +350,24 @@ const make = Effect.gen(function* () {
   ) {
     const scope = yield* requireThreadScope(callerScope, "t3_workflow_run");
     const spec = yield* decodeWorkflowSpec(input);
-    for (const agent of agentStages(spec).flatMap((stage) => stage.agents)) {
-      if (agent.target?.environmentId !== undefined) {
-        return yield* failure(
-          "invalid_request",
-          `Agent "${agent.id}": workflow agents run here. Omit target.environmentId.`,
-        );
+    const targets = new Map<string, AgentTarget>();
+    for (const stage of agentStages(spec)) {
+      for (const agent of stage.agents) {
+        if (agent.target?.environmentId !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            `Agent "${agent.id}": workflow agents run here. Omit target.environmentId.`,
+          );
+        }
+        const selection = yield* mcp
+          .checkTarget(scope, agent.target)
+          .pipe(
+            Effect.mapError((error) =>
+              failure(error.code, `Agent "${agent.id}": ${error.message}`),
+            ),
+          );
+        targets.set(targetKey(stage.id, agent.id), targetOf(selection));
       }
-      yield* mcp
-        .checkTarget(scope, agent.target)
-        .pipe(
-          Effect.mapError((error) => failure(error.code, `Agent "${agent.id}": ${error.message}`)),
-        );
     }
     const parent = yield* threads
       .getThreadRecords(scope.thread.threadId, ["runs", "providerThreads"])
@@ -331,7 +399,7 @@ const make = Effect.gen(function* () {
         title: spec.name,
         driver,
         modelSelection: parentRun.modelSelection,
-        ...toRow(spec, initialSnapshot(spec, yield* Clock.currentTimeMillis), new Map()),
+        ...toRow(spec, initialSnapshot(spec, yield* Clock.currentTimeMillis), new Map(), targets),
       })
       .pipe(Effect.mapError(unavailable));
     const row = recorded.storedEvents.flatMap(({ event }) =>

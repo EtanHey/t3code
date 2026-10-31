@@ -158,6 +158,37 @@ describe("deriveWorkflowGroups over a dynamic workflow", () => {
     expect(group?.unphasedMembers).toEqual([]);
   });
 
+  it("leaves a phase of only queued members not started, and keeps each member's provider", () => {
+    const codex = ProviderInstanceId.make("codex");
+    const groups = groupsOf([
+      subagent({
+        workflow: {
+          phases: [
+            { index: 0, title: "draft" },
+            { index: 1, title: "ship" },
+          ],
+          agents: [
+            member({ index: 0, phaseIndex: 0, phaseTitle: undefined }),
+            member({
+              index: 1,
+              phaseIndex: 1,
+              phaseTitle: undefined,
+              state: "queued",
+              providerInstanceId: codex,
+              model: "gpt-5.4",
+            }),
+          ],
+        },
+      }),
+    ]);
+    expect(groups[0]?.phases.map((phase) => [phase.title, phase.state])).toEqual([
+      ["draft", "running"],
+      ["ship", "pending"],
+    ]);
+    const queued = groups[0]?.phases[1]?.members[0];
+    expect([queued?.providerInstanceId, queued?.model]).toEqual([codex, "gpt-5.4"]);
+  });
+
   it.each([false, true])("keeps a reported phase title, missing title first=%s", (missingFirst) => {
     const agents = [member({ phaseTitle: "Review" }), member({ index: 2, phaseTitle: undefined })];
     const groups = groupsOf([

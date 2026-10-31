@@ -63,6 +63,9 @@ const WorkflowLaunch = Schema.Struct({
   taskId: Schema.NullOr(Schema.String),
   cancelRequested: Schema.Boolean,
   outcome: Schema.NullOr(WorkflowAgentOutcome),
+  queuedAt: Schema.optional(Schema.Number),
+  startedAt: Schema.optional(Schema.Number),
+  completedAt: Schema.optional(Schema.Number),
 });
 type WorkflowLaunch = typeof WorkflowLaunch.Type;
 
@@ -209,6 +212,27 @@ const asText = (value: unknown) => (typeof value === "string" ? value : JSON.str
 export const agentStages = (spec: WorkflowSpec) =>
   spec.stages.flatMap((stage) => ("agents" in stage ? [stage] : stage.repeat.stages));
 
+/** Every stage the run shows, in order: a repeat's stages once per round it reached, round 1 up front. */
+export function workflowPhases(
+  spec: WorkflowSpec,
+  state: Pick<WorkflowSnapshot, "cursor" | "round" | "exits">,
+): ReadonlyArray<{ readonly stage: AgentStage; readonly round: number; readonly title: string }> {
+  return spec.stages.flatMap((stage, position) => {
+    if ("agents" in stage) return [{ stage, round: 1, title: stage.id }];
+    const rounds =
+      position === state.cursor
+        ? state.round
+        : (state.exits.find((exit) => exit.stage === stage.id)?.round ?? 1);
+    return Array.from({ length: rounds }, (_, index) =>
+      stage.repeat.stages.map((inner) => ({
+        stage: inner,
+        round: index + 1,
+        title: `${inner.id} · round ${index + 1}`,
+      })),
+    ).flat();
+  });
+}
+
 function renderTask(spec: WorkflowSpec, state: WorkflowSnapshot, template: string): string {
   return template.replace(REFERENCE, (match, stageRef: string, agentRef?: string) => {
     if (stageRef === "feedback") {
@@ -339,11 +363,12 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
     const started = yield* port
       .start({ key, stage: launch.stage, round: launch.round, agent, task })
       .pipe(Effect.result);
+    const now = yield* Clock.currentTimeMillis;
     if (started._tag === "Failure") {
       const outcome = { status: "failed", result: started.failure.message } as const;
-      return yield* update(key, { outcome });
+      return yield* update(key, { outcome, completedAt: now });
     }
-    yield* update(key, { taskId: started.success });
+    yield* update(key, { taskId: started.success, startedAt: now });
     yield* watch(key, started.success);
   });
 
@@ -365,7 +390,9 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
     const launch = state.launches.find((l) => keyOf(l) === event.key);
     return launch === undefined || launch.outcome !== null
       ? Effect.void
-      : update(event.key, { outcome: event.outcome });
+      : Effect.flatMap(Clock.currentTimeMillis, (completedAt) =>
+          update(event.key, { outcome: event.outcome, completedAt }),
+        );
   };
 
   while (state.status === "running") {
@@ -394,6 +421,7 @@ export const resumeWorkflow = Effect.fn("WorkflowRun.resume")(function* (
           taskId: null,
           cancelRequested: false,
           outcome: null,
+          queuedAt: yield* Clock.currentTimeMillis,
         };
         yield* save({ ...state, launches: [...state.launches, launch] });
         yield* startTask(launch);

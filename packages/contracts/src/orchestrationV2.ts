@@ -786,6 +786,8 @@ export const OrchestrationV2WorkflowAgent = Schema.Struct({
   state: Schema.Literals(["queued", "running", "completed", "failed"]),
   phaseIndex: Schema.optional(NonNegativeInt),
   phaseTitle: Schema.optional(TrimmedNonEmptyString),
+  /** Set when the agent may run on another provider than its workflow. */
+  providerInstanceId: Schema.optional(ProviderInstanceId),
   model: Schema.optional(TrimmedNonEmptyString),
   effort: Schema.optional(TrimmedNonEmptyString),
   speed: Schema.optional(TrimmedNonEmptyString),
