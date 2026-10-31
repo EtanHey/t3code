@@ -865,6 +865,7 @@ export const OrchestrationV2WorkflowRunState = Schema.Struct({
   phase: NonNegativeInt,
   deadline: NonNegativeInt,
   stop: Schema.Boolean,
+  error: Schema.optional(Schema.String),
   exits: Schema.Array(
     Schema.Struct({
       stage: Schema.String,

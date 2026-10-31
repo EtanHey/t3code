@@ -1201,6 +1201,86 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
       }),
   );
 
+  it.effect("says why a judge's invalid growth failed the run: result, status, wake and row", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const runs = yield* workflowRunsIn(yield* Effect.scope);
+      const parent = yield* seedParent("growth-error");
+      const { subagentId } = yield* runs.run(parent.scope, {
+        name: "grow",
+        stages: [
+          {
+            id: "loop",
+            repeat: {
+              stages: [
+                { id: "draft", agents: [{ id: "poet", task: "Write." }] },
+                {
+                  id: "critique",
+                  agents: [
+                    {
+                      id: "critic",
+                      task: "Judge {{draft}}.",
+                      resultSchema: { type: "object", required: ["ok"] },
+                    },
+                  ],
+                },
+              ],
+              judge: "critic",
+              until: { path: "ok", equals: true },
+              max: 2,
+              templates: { rewriter: { task: "Rewrite {{draft}}." } },
+            },
+          },
+        ],
+      });
+      yield* parent.endTurn;
+      const [poet] = yield* childrenOf(parent.threadId, subagentId, 1);
+      yield* settleChild(poet!, "Draft. ".repeat(3_000));
+      const critic = (yield* childrenOf(parent.threadId, subagentId, 2)).find(
+        (child) => child.id !== poet!.id,
+      )!;
+      const judged = { ok: false, addAgents: [{ template: "rewiter", task: "Fix line 1." }] };
+      yield* settleChild(critic, `\`\`\`json\n${JSON.stringify(judged)}\n\`\`\``);
+
+      const error = 'round 1 critic: addAgents[0]: unknown template "rewiter"';
+      const row = yield* ended(parent.threadId, subagentId);
+      assert.equal(row?.status, "failed");
+      assert.equal(row?.workflowRun?.error, error);
+      assert.equal(JSON.parse(row?.result ?? "{}").error, error);
+      assert.equal((yield* runs.status(parent.scope, subagentId)).error, error);
+      assert.deepInclude(
+        row?.workflow?.agents.find((agent) => agent.label === "critic"),
+        { state: "failed", result: error },
+      );
+      // Delivered as the continuation service would; the long draft keeps the result out of it.
+      yield* wakes(parent.threadId);
+      const offered = (yield* SubscriptionRef.get(yield* Offers)).find(
+        (offer) => offer.threadId === parent.threadId,
+      )!.delegatedCompletion!;
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:growth-error:wake"),
+        threadId: parent.threadId,
+        messageId: offered.messageId,
+        text: "Delegated task completed.",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+        delegatedCompletion: {
+          parentRunId: offered.parentRunId,
+          generation: offered.generation,
+          taskIds: [subagentId],
+        },
+      });
+      const wake = (yield* orchestrator.getThreadProjection(parent.threadId)).messages.find(
+        (message) => message.id === offered.messageId,
+      );
+      assert.notInclude(wake?.text ?? "", row?.result ?? "");
+      assert.include(wake?.text ?? "", error);
+    }),
+  );
+
   it.effect("resumes after a restart without relaunching a child and still wakes once", () =>
     Effect.gen(function* () {
       const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -1253,6 +1333,11 @@ it.layer(layerTest)("t3_workflow_run", (it) => {
       assert.equal(row?.status, "failed");
       const woken = JSON.parse(row?.result ?? "{}");
       assert.equal(woken.stages[1].agents[0].status, "invalid_output");
+      assert.match(woken.error, /^round 1 j: invalid_output: ./);
+      assert.deepInclude(
+        row?.workflow?.agents.find((agent) => agent.label === "j"),
+        { state: "failed", result: woken.error },
+      );
       assert.deepEqual(yield* runs.status(live.scope, subagentId), woken);
 
       // The runner records the judge's outcome, and the server stops before it ends the run.

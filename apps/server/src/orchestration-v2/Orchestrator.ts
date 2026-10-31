@@ -689,7 +689,8 @@ function delegatedCompletionWakeDetail(
           return detail;
         }
       }
-      return `${label}. Use task_status with taskId ${taskId} to read the result.`;
+      const error = task?.workflowRun?.error;
+      return `${label}${error ? `: ${error}` : ""}. Use task_status with taskId ${taskId} to read the result.`;
     })
     .join("\n\n");
 }

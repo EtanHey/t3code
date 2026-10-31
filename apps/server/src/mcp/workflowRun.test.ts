@@ -424,6 +424,7 @@ it.effect("never launches or records a round beyond max", () =>
       "review.judge#2",
     ]);
     expect(fake.persisted.every(({ snapshot }) => snapshot.round <= 2)).toBe(true);
+    expect(result.error).toBe("loop: not accepted in 2 rounds");
     expect(result.stages[1]).toMatchObject({ id: "loop", exit: null });
     expect(result.stages[2]).toMatchObject({ agents: [{ id: "editor", status: "skipped" }] });
   }),
@@ -466,7 +467,9 @@ it.effect("a child whose JSON failed its resultSchema fails the run", () =>
     const worker = makeFake({
       reply: (start) => ({ outcome: start.agent.id === "a" ? invalid : ok(start.key) }),
     });
-    expect((yield* runWorkflow(worker.port, innerLoop(3))).status).toBe("failed");
+    const failedWorker = yield* runWorkflow(worker.port, innerLoop(3));
+    expect(failedWorker.status).toBe("failed");
+    expect(failedWorker.error).toBe("round 1 a: invalid_output: $.verdict: required");
     expect(worker.created).not.toContain("revise.writer#1");
 
     const judge = makeFake({
@@ -806,31 +809,51 @@ it.effect("exits after K consecutive dry votes, never on an invalid or missing j
     const busy = makeFake({ reply: judging([{ rerun: ["draft"] }, { rerun: ["draft"] }]) });
     expect((yield* runWorkflow(busy.port, grow(2, { dry: 1 }))).status).toBe("failed");
 
-    for (const bad of [
-      { addAgents: [{ key: "x", template: "nope" }] },
-      { addAgents: [{ key: "x", template: "rewrite", stage: "polish" }] },
-      { rerun: ["polish"] },
-    ]) {
+    for (const [bad, error] of [
+      [{ addAgents: [{ key: "x", template: "nope" }] }, 'addAgents[0]: unknown template "nope"'],
+      [
+        { addAgents: [{ key: "x", template: "rewrite", stage: "polish" }] },
+        'addAgents[0]: unknown stage "polish"',
+      ],
+      [{ addAgents: [rewrite("ok", "x"), 3] }, "addAgents[1]: not an object"],
+      [{ addAgents: [{ key: "a b", template: "rewrite" }] }, "addAgents[0]: bad key"],
+      [{ addAgents: [{ template: "rewrite", task: 3 }] }, "addAgents[0]: task must be text"],
+      [{ rerun: ["polish"] }, 'rerun: unknown stage "polish"'],
+    ] as const) {
       const invalid = makeFake({ reply: judging([bad]) });
-      expect((yield* runWorkflow(invalid.port, grow(3, { dry: 1 }))).status).toBe("failed");
+      const result = yield* runWorkflow(invalid.port, grow(3, { dry: 1 }));
+      expect({ bad, status: result.status, error: result.error }).toEqual({
+        bad,
+        status: "failed",
+        error: `round 1 critic: ${error}`,
+      });
       expect(invalid.created).not.toContain("draft.poet#2");
     }
     const missing = makeFake({ reply: (start) => ({ outcome: ok(start.key) }) });
-    expect((yield* runWorkflow(missing.port, grow(3, { dry: 1 }))).status).toBe("failed");
+    const unjudged = yield* runWorkflow(missing.port, grow(3, { dry: 1 }));
+    expect(unjudged.status).toBe("failed");
+    expect(unjudged.error).toBe("round 1 critic: no structured result");
     expect(missing.created).not.toContain("draft.poet#2");
   }),
 );
 
 it.effect("an accepting judge whose growth is invalid fails the run instead of passing", () =>
   Effect.gen(function* () {
-    for (const bad of [
-      { verdict: "accept", rerun: ["polish"] },
-      { verdict: "accept", addAgents: [{ key: "x", template: "nope" }] },
-      { verdict: "accept", addAgents: "bad" },
-    ]) {
+    for (const [bad, error] of [
+      [{ verdict: "accept", rerun: ["polish"] }, 'rerun: unknown stage "polish"'],
+      [
+        { verdict: "accept", addAgents: [{ key: "x", template: "nope" }] },
+        'addAgents[0]: unknown template "nope"',
+      ],
+      [{ verdict: "accept", addAgents: "bad" }, "addAgents must be a list"],
+    ] as const) {
       const fake = makeFake({ reply: judging([bad]) });
       const result = yield* runWorkflow(fake.port, grow(3, { dry: 1 }));
-      expect({ bad, status: result.status }).toEqual({ bad, status: "failed" });
+      expect({ bad, status: result.status, error: result.error }).toEqual({
+        bad,
+        status: "failed",
+        error: `round 1 critic: ${error}`,
+      });
       expect(result.stages[0]).toMatchObject({ exit: null });
       expect(fake.created).not.toContain("polish.editor#1");
     }
@@ -841,7 +864,11 @@ it.effect("an accepting judge whose growth is invalid fails the run instead of p
         }),
       });
       const result = yield* runWorkflow(fake.port, grow(3, { dry: 1 }));
-      expect({ raw, status: result.status }).toEqual({ raw, status: "failed" });
+      expect({ raw, status: result.status, error: result.error }).toEqual({
+        raw,
+        status: "failed",
+        error: "round 1 critic: result is not an object",
+      });
     }
   }),
 );
@@ -888,6 +915,83 @@ it.effect("deduplicates grown keys across the whole run, not just the current re
       "draft.gap#2",
     ]);
     expect(fake.violations).toEqual([]);
+  }),
+);
+
+/** The judge result a live Haiku run returned verbatim: no key, a task instead of input. */
+const LIVE_JUDGE = {
+  best: "...",
+  best_score: 6,
+  addAgents: [{ template: "rewriter", task: "Rewrite only line 1 ..." }],
+  rerun: ["draft"],
+  done: false,
+  fix: "...",
+};
+const haikuLoop = {
+  name: "haiku-growing-loop",
+  stages: [
+    {
+      id: "loop",
+      repeat: {
+        stages: [
+          { id: "draft", agents: [{ id: "poet", task: "Write. Notes: {{feedback}}" }] },
+          {
+            id: "judge",
+            agents: [{ id: "judge", task: "Judge {{draft}}.", resultSchema: { type: "object" } }],
+          },
+        ],
+        judge: "judge",
+        until: { path: "done", equals: true },
+        max: 3,
+        templates: { rewriter: { task: "Rewrite {{draft.poet}} to fix {{input.fix}}." } },
+      },
+    },
+  ],
+};
+const liveJudging =
+  (first: unknown) =>
+  (start: WorkflowAgentStart): Reply => ({
+    outcome:
+      start.agent.id === "judge"
+        ? ok("judged", start.round === 1 ? first : { done: true })
+        : ok(start.key),
+  });
+
+it.effect("grows from the shapes a judge naturally writes: no key, a task instead of input", () =>
+  Effect.gen(function* () {
+    const live = makeFake({ reply: liveJudging(LIVE_JUDGE) });
+    const result = yield* runWorkflow(live.port, haikuLoop);
+
+    expect(result.status).toBe("completed");
+    expect(live.startCalls).toEqual([
+      "draft.poet#1",
+      "judge.judge#1",
+      "draft.poet#2",
+      "draft.rewriter-1-0#2",
+      "judge.judge#2",
+    ]);
+    expect(live.rendered.get("draft.rewriter-1-0#2")).toBe("Rewrite only line 1 ...");
+
+    // A task resolves references; without one, the template's task takes the input.
+    const mixed = makeFake({
+      reply: liveJudging({
+        addAgents: [
+          { template: "rewriter", task: "Fix {{draft.poet}} line 2." },
+          { template: "rewriter", input: { fix: "meter" } },
+        ],
+        rerun: ["judge"],
+      }),
+    });
+    expect((yield* runWorkflow(mixed.port, haikuLoop)).status).toBe("completed");
+    expect(mixed.rendered.get("draft.rewriter-1-0#2")).toBe("Fix draft.poet#1 line 2.");
+    expect(mixed.rendered.get("draft.rewriter-1-1#2")).toBe("Rewrite draft.poet#1 to fix meter.");
+
+    yield* crashSweep(haikuLoop, liveJudging(LIVE_JUDGE), (fake, swept) => {
+      expect(swept.status).toBe("completed");
+      expect(fake.violations).toEqual([]);
+      expect(fake.created.filter((key) => key === "draft.rewriter-1-0#2")).toHaveLength(1);
+      expect(new Set(fake.created).size).toBe(fake.created.length);
+    });
   }),
 );
 

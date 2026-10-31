@@ -34,6 +34,7 @@ import {
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import {
   agentStages,
+  blamedLaunch,
   decodeWorkflowSpec,
   initialSnapshot,
   phaseAgents,
@@ -170,6 +171,7 @@ function toRow(
   readonly workflowRun: OrchestrationV2WorkflowRunState;
 } {
   const { launches, ...state } = snapshot;
+  const blamed = blamedLaunch(spec, snapshot);
   const phases = workflowPhases(spec, snapshot);
   const agents = phases.flatMap(({ stage, round }, phaseIndex) =>
     phaseAgents(spec, snapshot, stage, round).map((agent) => ({
@@ -202,13 +204,17 @@ function toRow(
           ...base,
           ...target,
           ...(child === undefined ? {} : { childThreadId: child.threadId }),
-          state: live
-            ? launch.taskId === null
-              ? "queued"
-              : "running"
-            : launch.outcome?.status === "completed"
-              ? "completed"
-              : "failed",
+          ...(launch === blamed && snapshot.error ? { result: snapshot.error } : {}),
+          state:
+            launch === blamed
+              ? "failed"
+              : live
+                ? launch.taskId === null
+                  ? "queued"
+                  : "running"
+                : launch.outcome?.status === "completed"
+                  ? "completed"
+                  : "failed",
           ...(queuedAt === undefined ? {} : { queuedAt }),
           ...(startedAt === undefined ? {} : { startedAt }),
           ...(completedAt === undefined ? {} : { completedAt }),
