@@ -164,7 +164,8 @@ const invalid = (message: string) =>
 
 /**
  * Why `until.path` cannot be in the judge's result, or null. Open schemas allow undeclared fields, so
- * a path is ruled out only by a closed object, or by starting with one of the loop's own ids
+ * a path is ruled out only by a closed object whose properties and patterns all miss it, or by
+ * starting with one of the loop's own ids
  * (a `stage.agent.field` guess) that the schema does not declare.
  */
 function untilError(stage: RepeatStage, judge: WorkflowAgent): string | null {
@@ -179,6 +180,21 @@ function untilError(stage: RepeatStage, judge: WorkflowAgent): string | null {
     const properties = isRecord(schema.properties) ? schema.properties : {};
     if (Object.hasOwn(properties, segment)) {
       schema = properties[segment];
+      continue;
+    }
+    const patterns = isRecord(schema.patternProperties) ? schema.patternProperties : {};
+    let matched: unknown;
+    for (const [pattern, sub] of Object.entries(patterns)) {
+      let regex: RegExp;
+      try {
+        regex = new RegExp(pattern, "u");
+      } catch {
+        return null; // A pattern this engine cannot compile may allow the field; never reject on it.
+      }
+      if (regex.test(segment)) matched ??= sub;
+    }
+    if (matched !== undefined) {
+      schema = matched;
       continue;
     }
     const where = `Repeat "${stage.id}": until.path "${path}"`;

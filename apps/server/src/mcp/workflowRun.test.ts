@@ -997,23 +997,39 @@ it.effect("checks until.path only against what a judge schema actually rules out
         ],
       };
     };
-    // Open schemas allow undeclared fields, so a path outside properties is still reachable.
+    // Open schemas allow undeclared fields, and a closed one still allows what a pattern matches.
     const open = { type: "object", properties: { reason: { type: "string" } }, required: ["ok"] };
-    const accepting = makeFake({
-      reply: (start) => ({
-        outcome:
-          start.agent.id === "judge"
-            ? ok("judged", { ok: true, reason: "accepted" })
-            : ok(start.key),
-      }),
-    });
-    expect((yield* runWorkflow(accepting.port, withJudgeSchema(open))).status).toBe("completed");
-
     const closed = { ...open, required: [], additionalProperties: false };
-    const fake = makeFake({ reply: () => ({ outcome: ok("x") }) });
-    const error = yield* runWorkflow(fake.port, withJudgeSchema(closed)).pipe(Effect.flip);
-    expect(error.message).toContain('until.path "ok"');
-    expect(fake.startCalls).toEqual([]);
+    const allowed = [
+      open,
+      {
+        type: "object",
+        properties: { reason: { type: "string" } },
+        patternProperties: { "^ok$": { type: "boolean" } },
+        additionalProperties: false,
+        required: ["ok"],
+      },
+      { ...closed, patternProperties: { "(": {} } },
+    ];
+    for (const schema of allowed) {
+      const accepting = makeFake({
+        reply: (start) => ({
+          outcome:
+            start.agent.id === "judge"
+              ? ok("judged", { ok: true, reason: "accepted" })
+              : ok(start.key),
+        }),
+      });
+      const { status } = yield* runWorkflow(accepting.port, withJudgeSchema(schema));
+      expect({ schema, status }).toEqual({ schema, status: "completed" });
+    }
+
+    for (const schema of [closed, { ...closed, patternProperties: { "^no$": {} } }]) {
+      const fake = makeFake({ reply: () => ({ outcome: ok("x") }) });
+      const error = yield* runWorkflow(fake.port, withJudgeSchema(schema)).pipe(Effect.flip);
+      expect(error.message).toContain('until.path "ok"');
+      expect(fake.startCalls).toEqual([]);
+    }
   }),
 );
 
