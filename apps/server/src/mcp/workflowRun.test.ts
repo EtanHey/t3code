@@ -1048,6 +1048,21 @@ it.effect(
         "round 2 rewriter-1-0: failed: Its task renders to more than 120000 bytes.",
       );
       expect(huge.startCalls).not.toContain("draft.rewriter-1-0#2");
+
+      // A task with no references, measured in bytes: 40,001 three-byte characters.
+      for (const literal of ["X".repeat(120_001), "界".repeat(40_001)]) {
+        const plain = makeFake({
+          reply: liveJudging({
+            addAgents: [{ template: "rewriter", task: literal }],
+            rerun: ["judge"],
+          }),
+        });
+        const plainResult = yield* runWorkflow(plain.port, haikuLoop);
+        expect(plainResult.error).toBe(
+          "round 2 rewriter-1-0: failed: Its task renders to more than 120000 bytes.",
+        );
+        expect(plain.startCalls).not.toContain("draft.rewriter-1-0#2");
+      }
     }),
 );
 

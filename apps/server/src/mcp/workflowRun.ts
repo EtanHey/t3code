@@ -420,6 +420,7 @@ function renderTask(
   };
   const values = new Map<string, { readonly text: string; readonly bytes: number }>();
   let bytes = Buffer.byteLength(template.replace(REFERENCE, ""));
+  if (bytes > TASK_BYTES) return null;
   for (const [match, stageRef, agentRef] of template.matchAll(REFERENCE)) {
     let value = values.get(match);
     if (value === undefined) {
