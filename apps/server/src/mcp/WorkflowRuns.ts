@@ -288,7 +288,15 @@ const make = Effect.gen(function* () {
   ) {
     const scope = yield* requireThreadScope(callerScope, "t3_workflow_run");
     const spec = yield* decodeWorkflowSpec(input);
-    for (const agent of agentStages(spec).flatMap((stage) => stage.agents)) {
+    const templates = spec.stages.flatMap((stage) =>
+      "agents" in stage
+        ? []
+        : Object.entries(stage.repeat.templates ?? {}).map(([id, template]) => ({
+            ...template,
+            id,
+          })),
+    );
+    for (const agent of [...agentStages(spec).flatMap((stage) => stage.agents), ...templates]) {
       if (agent.target?.environmentId !== undefined) {
         return yield* failure(
           "invalid_request",
