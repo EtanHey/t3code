@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { SortingStrategy } from "@dnd-kit/sortable";
 import { createSidebarSortingStrategy, measureSidebarPinnedGrid } from "./Sidebar.drag";
 import { sidebarListItemId, type SidebarListItem } from "./Sidebar.logic";
+import { createSidebarListMotion } from "./Sidebar.motion";
 
 function mountPinnedGrid(width: number, count: number) {
   const list = document.createElement("ul");
@@ -12,13 +13,27 @@ function mountPinnedGrid(width: number, count: number) {
   header.style.cssText = "height:0;margin-inline:0.125rem";
   const grid = document.createElement("ul");
   grid.className = "sidebar-pinned-grid";
+  grid.dataset.sidebarMotionGroup = "";
   const tiles = Array.from({ length: count }, () => grid.appendChild(document.createElement("li")));
   list.append(header, grid);
   document.body.append(list);
-  return { header, grid, tiles, [Symbol.dispose]: () => list.remove() };
+  return { list, header, grid, tiles, [Symbol.dispose]: () => list.remove() };
 }
 
 describe("pinned grid layout contract", () => {
+  it("does not animate tiles from their old columns after the sidebar resizes", () => {
+    using mounted = mountPinnedGrid(244, 5);
+    const motion = createSidebarListMotion(mounted.list);
+    try {
+      motion.update(false);
+      mounted.list.style.width = "200px";
+      motion.update(true);
+      expect(mounted.tiles.flatMap((tile) => tile.getAnimations())).toHaveLength(0);
+    } finally {
+      motion.dispose();
+    }
+  });
+
   it.each([
     [152, 1],
     [200, 2],

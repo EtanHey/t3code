@@ -14,6 +14,7 @@ function progress(animation: Animation) {
 /** Animates the list's direct children, and the children of any `data-sidebar-motion-group`. */
 export function createSidebarListMotion(parent: HTMLUListElement) {
   let positions: Map<HTMLElement, RowPosition> | null = null;
+  let previousWidth: number | null = null;
   let disposed = false;
   const reducedMotion = parent.ownerDocument.defaultView?.matchMedia(
     "(prefers-reduced-motion: reduce)",
@@ -145,6 +146,9 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
   return {
     update(animate: boolean) {
       if (disposed) return;
+      const width = parent.clientWidth;
+      const widthUnchanged = previousWidth === width;
+      previousWidth = width;
       const next = new Map(
         rows().map((node) => [
           node,
@@ -162,6 +166,7 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
       }
       const shouldAnimate =
         animate &&
+        widthUnchanged &&
         positions !== null &&
         !reducedMotion?.matches &&
         fadeCount <= MAX_FADED_ROWS_PER_UPDATE;

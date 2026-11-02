@@ -1227,7 +1227,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(
                   rowSurfaceClassName,
-                  "flex h-full flex-col justify-center gap-0.5 px-2 ring-1 ring-sidebar-foreground/6 ring-inset",
+                  "flex h-full flex-col justify-center gap-0.5 px-2 ring-inset",
+                  props.isActive
+                    ? "ring-2 ring-primary light:ring-2 light:ring-primary"
+                    : isSelected
+                      ? "ring-2 ring-primary/70 light:ring-2 light:ring-primary/70"
+                      : "ring-1 ring-sidebar-foreground/6",
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -1237,7 +1242,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             }
           >
             {accessibleTitle}
-            {tint ? (
+            {tint && !props.isActive && !isSelected ? (
               <span
                 aria-hidden
                 className={cn(
