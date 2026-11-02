@@ -1696,7 +1696,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     })();
   };
   const restrictBelowPins: Modifier = (args) =>
-    restrictBelowSidebarLabel(args, dragLabelOffsetRef.current);
+    restrictBelowSidebarLabel(
+      args,
+      dragLabelOffsetRef.current,
+      threadListRef.current?.getBoundingClientRect().top,
+    );
   // Pinned tiles reorder across grid columns; list rows stay in their column.
   const dndModifiers =
     dragState?.activeSection === "pinned"
