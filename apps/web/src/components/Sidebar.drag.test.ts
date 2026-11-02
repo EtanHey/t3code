@@ -217,6 +217,44 @@ describe("sidebar collision detection", () => {
       }),
     ).toEqual([]);
   });
+
+  it("picks the pinned tile under the pointer for a full-width card", () => {
+    const rect = (left: number, top: number, width: number, height: number) => ({
+      left,
+      top,
+      width,
+      height,
+      right: left + width,
+      bottom: top + height,
+    });
+    const rects = new Map([
+      ["p1", rect(0, 100, 140, 46)],
+      ["p2", rect(144, 100, 116, 46)],
+      ["card", rect(0, 200, 260, 82)],
+    ]);
+    // The card keeps its column, so its center sits nearer p1 while the pointer is over p2.
+    const collisionRect = rect(0, 82, 260, 82);
+    const detector = createSidebarCollisionDetection(() => true);
+    const collisions = detector({
+      active: {
+        id: "card",
+        data: { current: {} },
+        rect: { current: { initial: rects.get("card")!, translated: collisionRect } },
+      },
+      collisionRect,
+      droppableRects: rects,
+      droppableContainers: [...rects].map(([id, current]) => ({
+        id,
+        key: id,
+        disabled: false,
+        data: { current: {} },
+        node: { current: null },
+        rect: { current },
+      })),
+      pointerCoordinates: { x: 220, y: 120 },
+    });
+    expect(collisions[0]?.id).toBe("p2");
+  });
 });
 
 describe("sidebar drag projection", () => {
@@ -679,6 +717,108 @@ describe("sidebar drag projection", () => {
     );
     expect(result.get(sidebarMarkerId("snoozed-header"))).toEqual({ ...stationary, y: 83 });
     expect(result.get(sidebarMarkerId("settled-header"))?.y).toBe(46);
+  });
+});
+
+describe("pinned grid projection", () => {
+  const grid = { columns: 3, rowHeight: 46, gap: 4, leading: 0, trailing: 8 };
+  const items = [
+    pinnedHeader,
+    thread("p1", "pinned"),
+    thread("p2", "pinned"),
+    thread("p3", "pinned"),
+    thread("p4", "pinned"),
+    divider,
+    thread("a1", "active"),
+    settledHeader,
+    marker("settled-placeholder"),
+  ];
+
+  // Mirrors the CSS grid: full rows split the width, a short last row stretches.
+  function gridPreview(active: string, over: string) {
+    const width = 260;
+    const pinnedKeys = items.flatMap((item) =>
+      item.kind === "thread" && item.section === "pinned" ? [item.key] : [],
+    );
+    const rows = Math.ceil(pinnedKeys.length / grid.columns);
+    let top = 100;
+    const rects = items.map((item) => {
+      const pinnedIndex = item.kind === "thread" ? pinnedKeys.indexOf(item.key) : -1;
+      if (pinnedIndex >= 0) {
+        const row = Math.floor(pinnedIndex / grid.columns);
+        const inRow = Math.min(grid.columns, pinnedKeys.length - row * grid.columns);
+        const cell = (width - (inRow - 1) * grid.gap) / inRow;
+        const left = (pinnedIndex % grid.columns) * (cell + grid.gap);
+        const rowTop = top + grid.leading + row * (grid.rowHeight + grid.gap);
+        const rect = {
+          top: rowTop,
+          height: grid.rowHeight,
+          bottom: rowTop + grid.rowHeight,
+          left,
+          right: left + cell,
+          width: cell,
+        };
+        if (pinnedIndex === pinnedKeys.length - 1) {
+          top += grid.leading + rows * grid.rowHeight + (rows - 1) * grid.gap + grid.trailing + 1;
+        }
+        return rect;
+      }
+      const height =
+        item.kind === "thread"
+          ? item.section === "active"
+            ? 82
+            : 36
+          : item.marker === "settled-header"
+            ? 32
+            : 0;
+      const rect = { top, height, bottom: top + height, left: 0, right: width, width };
+      top += height + 1;
+      return rect;
+    });
+    const strategy = createSidebarSortingStrategy({
+      items,
+      settledOrder: [],
+      settledExpanded: true,
+      pinnedGrid: grid,
+    });
+    const activeIndex = items.findIndex((item) => sidebarListItemId(item) === active);
+    const args = {
+      activeIndex,
+      overIndex: items.findIndex((item) => sidebarListItemId(item) === over),
+      activeNodeRect: rects[activeIndex]!,
+      rects,
+      index: 0,
+    } satisfies Parameters<SortingStrategy>[0];
+    return new Map(
+      items.map((item, index) => [sidebarListItemId(item), strategy({ ...args, index })]),
+    );
+  }
+
+  it("moves pinned peers across columns and stretches a lone last-row tile", () => {
+    const result = gridPreview("p4", "p1");
+    expect(result.get("p4")).toEqual(stationary);
+    expect(result.get("p1")).toEqual({ ...stationary, x: 88 });
+    expect(result.get("p2")).toEqual({ ...stationary, x: 88 });
+    expect(result.get("p3")).toEqual({ ...stationary, x: -176, y: 50, scaleX: 260 / 84 });
+    expect(result.get(sidebarMarkerId("pinned-divider"))).toEqual(stationary);
+    expect(result.get("a1")).toEqual(stationary);
+  });
+
+  it("opens a grid cell for an incoming card and shares the new last row", () => {
+    const result = gridPreview("a1", "p2");
+    expect(result.get("p1")).toEqual(stationary);
+    expect(result.get("p2")).toEqual({ ...stationary, x: 88 });
+    expect(result.get("p3")).toEqual({ ...stationary, x: -176, y: 50, scaleX: 128 / 84 });
+    expect(result.get("p4")).toEqual({ ...stationary, x: 132, scaleX: 128 / 260 });
+    expect(result.get(sidebarMarkerId("pinned-divider"))).toEqual(stationary);
+  });
+
+  it("collapses the grid by a row when a pin leaves", () => {
+    const result = gridPreview("p1", "a1");
+    expect(result.get("p2")).toEqual({ ...stationary, x: -88 });
+    expect(result.get("p3")).toEqual({ ...stationary, x: -88 });
+    expect(result.get("p4")).toEqual({ ...stationary, x: 176, y: -50, scaleX: 84 / 260 });
+    expect(result.get(sidebarMarkerId("pinned-divider"))?.y).toBe(-50);
   });
 });
 

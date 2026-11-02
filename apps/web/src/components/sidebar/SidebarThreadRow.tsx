@@ -102,6 +102,8 @@ import {
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
 import { useThreadShell } from "../../state/entities";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
+import { deriveProjectIdentity } from "../../projectIdentity";
+import { projectIconSwatchClassName } from "../../projectIconColors";
 import { ThreadSearchMatchExcerpt } from "../ThreadSearchMatch";
 import { makeWorkspaceFileDropHandlers } from "../chat/workspaceFileDrop";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
@@ -535,8 +537,9 @@ function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS; className: 
 type SidebarThreadRowProps = {
   thread: SidebarThreadSummary;
   // "folder" is a one-line row inside a boring sidebar project folder;
-  // "folder-multiline" adds the card's branch and PR line under it.
-  variant: "card" | "slim" | "folder" | "folder-multiline";
+  // "folder-multiline" adds the card's branch and PR line under it;
+  // "tile" is a compact cell of the pinned grid.
+  variant: "card" | "slim" | "folder" | "folder-multiline" | "tile";
   navigationParent?: string | undefined;
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
@@ -966,21 +969,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       "bg-sidebar bg-linear-to-b from-sidebar-row-active to-sidebar-row-active text-sidebar-foreground opacity-100 shadow-lg",
   );
   const sortable = props.sortable;
-  const sortableRootProps = sortable
+  const sortableStyle = sortable
     ? {
-        ref: sortable.setNodeRef,
-        style: {
-          transform: CSS.Translate.toString(sortable.transform),
-          transition: sortable.transition,
-          // A zero-height boundary also makes dnd-kit scale the source to
-          // zero. Only projected peers use scaleY as a visibility sentinel.
-          visibility:
-            !sortable.isDragging && sortable.transform?.scaleY === 0
-              ? ("hidden" as const)
-              : undefined,
-        },
-        ...sortable.listeners,
+        transform: CSS.Translate.toString(sortable.transform),
+        transition: sortable.transition,
+        // A zero-height boundary also makes dnd-kit scale the source to
+        // zero. Only projected peers use scaleY as a visibility sentinel.
+        visibility:
+          !sortable.isDragging && sortable.transform?.scaleY === 0
+            ? ("hidden" as const)
+            : undefined,
       }
+    : undefined;
+  const sortableRootProps = sortable
+    ? { ref: sortable.setNodeRef, style: sortableStyle, ...sortable.listeners }
     : {};
   const destinationVerb = sortable?.isDragging
     ? props.dropVerb
@@ -1188,6 +1190,124 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       />
     </span>
   ) : null;
+
+  if (variant === "tile") {
+    const icon = props.project?.projectIcon;
+    const tint =
+      icon && "color" in icon
+        ? icon.color
+        : props.project
+          ? deriveProjectIdentity(props.project.title).color
+          : null;
+    // The drag projection reports a grid cell's new width as scaleX; resize instead of stretching.
+    const projectedWidth =
+      sortable?.transform && !sortable.isDragging && Math.abs(sortable.transform.scaleX - 1) > 0.01
+        ? `${sortable.transform.scaleX * 100}%`
+        : undefined;
+    return (
+      <li
+        data-thread-item={threadKey}
+        {...sortableRootProps}
+        {...(fileDropHandlers ?? {})}
+        style={sortableStyle && { ...sortableStyle, width: projectedWidth }}
+        className={cn("@container/sidebar-tile list-none", sortable?.isDragging && "relative z-20")}
+      >
+        <Tooltip disabled={sortable?.isDragging}>
+          <TooltipTrigger
+            render={
+              <div
+                ref={rowRef}
+                role="treeitem"
+                tabIndex={-1}
+                data-sidebar-row={threadKey}
+                data-sidebar-parent={props.navigationParent}
+                aria-label={accessibility.label}
+                aria-current={accessibility.current}
+                data-testid="sidebar-row-tile"
+                aria-busy={isRegeneratingTitle || undefined}
+                className={cn(
+                  rowSurfaceClassName,
+                  "flex h-full flex-col justify-center gap-0.5 px-2 ring-1 ring-sidebar-foreground/6 ring-inset",
+                )}
+                onClick={handleClick}
+                onDoubleClick={handleDoubleClick}
+                onKeyDown={handleKeyDown}
+                onContextMenu={handleContextMenu}
+              />
+            }
+          >
+            {accessibleTitle}
+            {tint ? (
+              <span
+                aria-hidden
+                className={cn(
+                  "pointer-events-none absolute inset-0 opacity-10 dark:opacity-15",
+                  projectIconSwatchClassName(tint),
+                )}
+              />
+            ) : null}
+            <div className="relative flex h-4 min-w-0 items-center gap-1.5">
+              {props.project ? (
+                <ProjectFavicon project={props.project} className="size-4 shrink-0" />
+              ) : null}
+              {draftIndicator}
+              {props.projectDisplayName ? (
+                <span className="hidden min-w-0 flex-1 truncate text-secondary-label text-xs @min-[9rem]/sidebar-tile:block">
+                  {props.projectDisplayName}
+                </span>
+              ) : null}
+              {sortable?.isDragging ? (
+                dragDestination
+              ) : jumpHintLabel ? (
+                <span className="ml-auto flex shrink-0 items-center">
+                  <JumpHintBadge label={jumpHintLabel} />
+                </span>
+              ) : topStatus ? (
+                <span
+                  className={cn(
+                    "ml-auto inline-flex shrink-0 items-center gap-1 font-medium text-xs",
+                    topStatus.className,
+                  )}
+                >
+                  <TopStatusIcon icon={topStatus.icon} className="size-3.5" />
+                  <span className="hidden @min-[12rem]/sidebar-tile:inline">{topStatus.label}</span>
+                </span>
+              ) : (
+                <span className="ml-auto hidden shrink-0 text-secondary-label text-xs tabular-nums @min-[12rem]/sidebar-tile:inline">
+                  <RelativeTimeLabel timestamp={threadTimeTimestamp(thread)} />
+                </span>
+              )}
+            </div>
+            <div className="relative flex min-h-4 min-w-0 items-center">
+              {isRenaming ? (
+                title
+              ) : (
+                <span
+                  aria-hidden
+                  className={cn(
+                    "min-w-0 flex-1 truncate text-start text-xs leading-4 @min-[12rem]/sidebar-tile:text-sm",
+                    shouldRecede
+                      ? "font-normal text-foreground/75 group-hover/sidebar-row:text-foreground group-focus-visible/sidebar-row:text-foreground"
+                      : "font-medium text-foreground",
+                    isRegeneratingTitle && "opacity-55",
+                  )}
+                  dir={textDirection(thread.title)}
+                >
+                  {thread.title}
+                </span>
+              )}
+            </div>
+            {isRegeneratingTitle ? (
+              <span role="status" className="sr-only">
+                Regenerating title
+              </span>
+            ) : null}
+          </TooltipTrigger>
+          {detailsTooltip}
+        </Tooltip>
+      </li>
+    );
+  }
 
   if (variant !== "card") {
     const multiline = variant === "folder-multiline";
