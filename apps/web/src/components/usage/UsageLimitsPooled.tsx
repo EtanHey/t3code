@@ -48,6 +48,7 @@ import {
 
 import { ensureLocalApi } from "../../localApi";
 import { usePrimarySettings } from "../../hooks/useSettings";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
@@ -589,7 +590,15 @@ function PoolWindowCard({
   );
 }
 
-function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
+function PoolSection({
+  pool,
+  now,
+  animate,
+}: {
+  readonly pool: LimitPool;
+  readonly now: number;
+  readonly animate: boolean;
+}) {
   const {
     attributes,
     listeners,
@@ -598,7 +607,7 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: pool.driver });
+  } = useSortable({ id: pool.driver, ...(animate ? {} : { transition: null }) });
   const color = barColor(pool.driver);
   const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
   const windows = displayLimitWindows(pool);
@@ -669,6 +678,8 @@ export function UsageLimitsPooled({
   readonly onProviderOrderChange: (order: readonly ProviderDriverKind[]) => void;
 }) {
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
+  const [keyboardDrag, setKeyboardDrag] = useState(false);
+  const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
   const collectedPools = collectLimitPools(collectLimitAccounts(presentations), now);
   const order = usageLimitOrder(
@@ -701,6 +712,7 @@ export function UsageLimitsPooled({
           sensors={sensors}
           collisionDetection={closestCenter}
           modifiers={[restrictToVerticalAxis]}
+          onDragStart={({ activatorEvent }) => setKeyboardDrag(activatorEvent.type === "keydown")}
           onDragEnd={({ active, over }) => {
             if (!over || active.id === over.id) return;
             const visibleOrder = pools.map((pool) => pool.driver);
@@ -722,7 +734,7 @@ export function UsageLimitsPooled({
             {pools.map((pool, index) => (
               <Fragment key={pool.driver}>
                 {index === cursorPromptAt ? cursorPrompt : null}
-                <PoolSection pool={pool} now={now} />
+                <PoolSection pool={pool} now={now} animate={!keyboardDrag && !reducedMotion} />
               </Fragment>
             ))}
           </SortableContext>
