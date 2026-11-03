@@ -3304,6 +3304,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                   <ul
                     {...SIDEBAR_TREE_PROPS}
                     ref={attachTreeRef}
+                    data-sidebar-dragging={dragState === null ? undefined : ""}
                     className={cn(
                       "relative flex flex-col gap-px",
                       sidebarListItems.length > 0 && "flex-1",

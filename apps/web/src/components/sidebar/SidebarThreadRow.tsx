@@ -74,6 +74,7 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
+import { SIDEBAR_SORTING_SELECTOR } from "../Sidebar.motion";
 import {
   animateSidebarLayoutChanges,
   hasUnseenCompletion,
@@ -433,8 +434,16 @@ function SnoozeMenuButton(props: {
 
 type SortableThreadRowBag = Pick<
   ReturnType<typeof useSortable>,
-  "listeners" | "setNodeRef" | "transform" | "transition" | "isDragging"
+  "listeners" | "setNodeRef" | "transform" | "transition" | "isDragging" | "isOver"
 >;
+
+// A drag and its drop settle hold hover details, so a popup never covers where a row lands.
+function holdDetailsWhileSorting(open: boolean, details: { event: Event; cancel: () => void }) {
+  const target = details.event?.target;
+  if (open && target instanceof Element && target.closest(SIDEBAR_SORTING_SELECTOR)) {
+    details.cancel();
+  }
+}
 
 export const draftSurfaceClassName = "bg-warning/4 hover:bg-warning/8";
 export const draftPenClassName = "size-3 shrink-0 text-warning-foreground";
@@ -459,7 +468,7 @@ export function SortableThreadRow(
     rowProps.thread.environmentId,
     AuthOrchestrationOperateScope,
   );
-  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+  const { listeners, setNodeRef, transform, transition, isDragging, isOver } = useSortable({
     id: sortableId,
     disabled:
       sortableDisabled || !canOperateThread
@@ -475,6 +484,7 @@ export function SortableThreadRow(
     transform: contextDrag ? null : transform,
     transition: contextDrag && isDragging ? "transform 150ms ease-out" : transition,
     isDragging: isDragging && !contextDrag,
+    isOver: isOver && !isDragging && !contextDrag,
   };
   // The sidebar arranges rows from quiet shells, which hold still while a
   // thread streams; reading the live shell here re-renders only this row.
@@ -969,20 +979,21 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       "bg-sidebar bg-linear-to-b from-sidebar-row-active to-sidebar-row-active text-sidebar-foreground opacity-100 shadow-lg",
   );
   const sortable = props.sortable;
-  const sortableStyle = sortable
-    ? {
-        transform: CSS.Translate.toString(sortable.transform),
-        transition: sortable.transition,
-        // A zero-height boundary also makes dnd-kit scale the source to
-        // zero. Only projected peers use scaleY as a visibility sentinel.
-        visibility:
-          !sortable.isDragging && sortable.transform?.scaleY === 0
-            ? ("hidden" as const)
-            : undefined,
-      }
-    : undefined;
   const sortableRootProps = sortable
-    ? { ref: sortable.setNodeRef, style: sortableStyle, ...sortable.listeners }
+    ? {
+        ref: sortable.setNodeRef,
+        style: {
+          transform: CSS.Translate.toString(sortable.transform),
+          transition: sortable.transition,
+          // A zero-height boundary also makes dnd-kit scale the source to
+          // zero. Only projected peers use scaleY as a visibility sentinel.
+          visibility:
+            !sortable.isDragging && sortable.transform?.scaleY === 0
+              ? ("hidden" as const)
+              : undefined,
+        },
+        ...sortable.listeners,
+      }
     : {};
   const destinationVerb = sortable?.isDragging
     ? props.dropVerb
@@ -1199,20 +1210,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         : props.project
           ? deriveProjectIdentity(props.project.title).color
           : null;
-    // The drag projection reports a grid cell's new width as scaleX; resize instead of stretching.
-    const projectedWidth =
-      sortable?.transform && !sortable.isDragging && Math.abs(sortable.transform.scaleX - 1) > 0.01
-        ? `${sortable.transform.scaleX * 100}%`
-        : undefined;
     return (
       <li
         data-thread-item={threadKey}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
-        style={sortableStyle && { ...sortableStyle, width: projectedWidth }}
         className={cn("@container/sidebar-tile list-none", sortable?.isDragging && "relative z-20")}
       >
-        <Tooltip disabled={sortable?.isDragging}>
+        <Tooltip disabled={sortable?.isDragging} onOpenChange={holdDetailsWhileSorting}>
           <TooltipTrigger
             render={
               <div
@@ -1233,6 +1238,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     : isSelected
                       ? "ring-2 ring-primary/70 light:ring-2 light:ring-primary/70"
                       : "ring-1 ring-sidebar-foreground/6",
+                  // The dragged tile takes this cell on drop; peers shift only then.
+                  sortable?.isOver && "outline-2 -outline-offset-2 outline-dashed outline-primary",
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -1328,7 +1335,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           sortable?.isDragging && "relative z-20",
         )}
       >
-        <Tooltip disabled={sortable?.isDragging}>
+        <Tooltip disabled={sortable?.isDragging} onOpenChange={holdDetailsWhileSorting}>
           <TooltipTrigger
             render={
               <div
@@ -1524,7 +1531,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         sortable?.isDragging && "relative z-20",
       )}
     >
-      <Tooltip disabled={snoozeMenuOpen || sortable?.isDragging}>
+      <Tooltip
+        disabled={snoozeMenuOpen || sortable?.isDragging}
+        onOpenChange={holdDetailsWhileSorting}
+      >
         <TooltipTrigger
           render={
             <div

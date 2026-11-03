@@ -222,7 +222,6 @@ export function createSidebarSortingStrategy(input: {
       else marker(`${name}-placeholder`);
     };
     marker("pinned-header");
-    projected.push(...groups.pinned);
     marker("pinned-divider");
     section("active");
     if (items.some((item) => item.kind === "marker" && item.marker === "working-header")) {
@@ -246,7 +245,14 @@ export function createSidebarSortingStrategy(input: {
       leading: 0,
       trailing: 0,
     };
-    const pinnedRows = Math.ceil(groups.pinned.length / pinnedGrid.columns);
+    // Pins hold their cells until the drop, so the grid keeps its resting rows; only an empty grid
+    // opens one for an incoming pin. Moving peers mid-drag read as a shuffle.
+    const restingPins = items.flatMap((item, index) =>
+      item.kind === "thread" && item.section === "pinned" ? [index] : [],
+    );
+    const pinnedRows = Math.ceil(
+      Math.max(restingPins.length, target.section === "pinned" ? 1 : 0) / pinnedGrid.columns,
+    );
     // The grid hides when empty, so it adds no list gap either.
     const pinnedBlock =
       pinnedRows === 0
@@ -256,10 +262,7 @@ export function createSidebarSortingStrategy(input: {
           (pinnedRows - 1) * pinnedGrid.gap +
           pinnedGrid.trailing +
           1;
-    const isPinnedRow = (item: SidebarListItem) =>
-      item.kind === "thread" && item.section === "pinned";
-    const flow = projected.filter((item) => !isPinnedRow(item));
-    const heights = flow.map((item) => {
+    const heights = projected.map((item) => {
       const index = indices.get(sidebarListItemId(item));
       const rect = index === undefined ? undefined : rects[index];
       const fallback =
@@ -291,27 +294,9 @@ export function createSidebarSortingStrategy(input: {
           )
         : 0;
     const result = items.map(() => hidden);
-    const gridRect = rects[indices.get(sidebarMarkerId("pinned-header")) ?? 0] ?? rects[0];
-    const placePinned = (gridTop: number) => {
-      const { columns, rowHeight, gap, leading } = pinnedGrid;
-      for (const [position, item] of groups.pinned.entries()) {
-        const index = indices.get(sidebarListItemId(item));
-        const rect = index === undefined ? undefined : rects[index];
-        if (index === undefined || !rect) continue;
-        const row = Math.floor(position / columns);
-        const inRow = Math.min(columns, groups.pinned.length - row * columns);
-        const width = (gridRect.width - (inRow - 1) * gap) / inRow;
-        const left = gridRect.left + (position - row * columns) * (width + gap);
-        result[index] = {
-          x: left - rect.left,
-          y: gridTop + leading + row * (rowHeight + gap) - rect.top,
-          scaleX: rect.width > 0 ? width / rect.width : 1,
-          scaleY: 1,
-        };
-      }
-    };
+    const firstPin = rects[restingPins[0] ?? -1];
     let top = rects[0].top;
-    for (const [flowIndex, item] of flow.entries()) {
+    for (const [flowIndex, item] of projected.entries()) {
       if (isShelfHeader(item)) {
         top += shelfSpace;
         shelfSpace = 0;
@@ -321,7 +306,8 @@ export function createSidebarSortingStrategy(input: {
       if (index !== undefined && rect) result[index] = { ...stationary, y: top - rect.top };
       top += heights[flowIndex]! + 1;
       if (item.kind === "marker" && item.marker === "pinned-header") {
-        placePinned(top);
+        const y = firstPin ? top + pinnedGrid.leading - firstPin.top : 0;
+        for (const pin of restingPins) result[pin] = { ...stationary, y };
         top += pinnedBlock;
       }
     }

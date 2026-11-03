@@ -1,6 +1,6 @@
 import "../index.css";
 
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { SortingStrategy } from "@dnd-kit/sortable";
 import { createSidebarSortingStrategy, measureSidebarPinnedGrid } from "./Sidebar.drag";
 import { sidebarListItemId, type SidebarListItem } from "./Sidebar.logic";
@@ -29,6 +29,38 @@ describe("pinned grid layout contract", () => {
       mounted.list.style.width = "200px";
       motion.update(true);
       expect(mounted.tiles.flatMap((tile) => tile.getAnimations())).toHaveLength(0);
+    } finally {
+      motion.dispose();
+    }
+  });
+
+  // Pinning remounts a card as a tile; it should travel from the card, not appear from nowhere.
+  it.each(["menu", "drop"] as const)("lands a %s pin where its card was", async (path) => {
+    using mounted = mountPinnedGrid(244, 2);
+    const card = document.createElement("li");
+    card.dataset.threadItem = "t";
+    card.style.height = "82px";
+    mounted.list.append(card);
+    const motion = createSidebarListMotion(mounted.list);
+    try {
+      motion.update(false);
+      const from = card.getBoundingClientRect();
+      if (path === "drop") motion.release();
+      card.remove();
+      const tile = mounted.grid.appendChild(document.createElement("li"));
+      tile.dataset.threadItem = "t";
+      motion.update(true);
+      const animations = tile.getAnimations();
+      expect(animations).toHaveLength(1);
+      animations[0]!.pause();
+      const start = tile.getBoundingClientRect();
+      expect(start.left + start.width / 2).toBeCloseTo(from.left + from.width / 2, 0);
+      expect(start.top + start.height / 2).toBeCloseTo(from.top + from.height / 2, 0);
+      // Hover details stay held until the drop lands.
+      const settling = () => mounted.list.hasAttribute("data-sidebar-settling");
+      expect(settling()).toBe(path === "drop");
+      for (const animation of mounted.list.getAnimations({ subtree: true })) animation.finish();
+      await vi.waitFor(() => expect(settling()).toBe(false));
     } finally {
       motion.dispose();
     }
