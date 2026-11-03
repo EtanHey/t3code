@@ -605,8 +605,11 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
   return (
     <section
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cn("relative flex flex-col gap-3", isDragging && "z-10 bg-background opacity-80")}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className={cn(
+        "relative flex flex-col gap-3",
+        isDragging && "z-10 rounded-lg bg-background shadow-lg",
+      )}
     >
       <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
         <Tooltip>
