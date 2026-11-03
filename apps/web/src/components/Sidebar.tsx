@@ -1738,7 +1738,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     contextDragKeyRef.current = null;
     endThreadContextDrag();
     if (started) {
-      listMotionRef.current?.release();
+      listMotionRef.current?.release(dragState?.activeKey);
       setDragState(null);
     }
   };

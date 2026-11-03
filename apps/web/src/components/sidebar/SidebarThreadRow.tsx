@@ -982,6 +982,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const sortableRootProps = sortable
     ? {
         ref: sortable.setNodeRef,
+        "data-sidebar-drag-source": sortable.isDragging ? "" : undefined,
         style: {
           transform: CSS.Translate.toString(sortable.transform),
           transition: sortable.transition,

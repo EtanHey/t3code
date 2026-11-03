@@ -2,6 +2,7 @@ const motionTiming = { duration: 150, easing: "ease-out" };
 // A drop lands every reordered row in one move; longer than list motion so a cross-row path reads.
 const settleTiming = { duration: 200, easing: "cubic-bezier(0.23, 1, 0.32, 1)" };
 const SETTLING_ATTRIBUTE = "data-sidebar-settling";
+const LEAD_ATTRIBUTE = "data-sidebar-motion-lead";
 /** Matches a list that is dragging (Sidebar sets the attribute) or landing a drop. */
 export const SIDEBAR_SORTING_SELECTOR = `[data-sidebar-dragging], [${SETTLING_ATTRIBUTE}]`;
 const rowTravel = (height: number) => Math.min(height, 40);
@@ -9,8 +10,8 @@ const rowTravel = (height: number) => Math.min(height, 40);
 const MAX_FADED_ROWS_PER_UPDATE = 40;
 
 type RowPosition = { top: number; left: number; width: number; height: number };
-const centerDelta = (from: RowPosition, to: RowPosition) => ({
-  x: from.left + from.width / 2 - (to.left + to.width / 2),
+const centerDelta = (from: RowPosition, to: RowPosition, listWidth: number) => ({
+  x: Math.max(0, Math.min(from.left + (from.width - to.width) / 2, listWidth - to.width)) - to.left,
   y: from.top + from.height / 2 - (to.top + to.height / 2),
 });
 // Pinning or unpinning remounts a row as a tile or card; its thread key carries it across.
@@ -36,6 +37,7 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
   let released: {
     nodes: Map<HTMLElement, RowPosition>;
     threads: Map<string, RowPosition>;
+    activeKey: string | undefined;
   } | null = null;
   let settleGeneration = 0;
 
@@ -132,6 +134,7 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
   const cancel = (node: HTMLElement) => {
     running.get(node)?.animation.cancel();
     running.delete(node);
+    node.removeAttribute(LEAD_ATTRIBUTE);
   };
   const suspend = () => {
     for (const node of running.keys()) cancel(node);
@@ -141,11 +144,19 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
     settleGeneration++;
     parent.removeAttribute(SETTLING_ATTRIBUTE);
   };
-  const move = (node: HTMLElement, offset: number, offsetX: number, timing = motionTiming) => {
+  const move = (
+    node: HTMLElement,
+    offset: number,
+    offsetX: number,
+    timing = motionTiming,
+    lead = false,
+  ) => {
+    const isLead = lead || node.hasAttribute(LEAD_ATTRIBUTE);
     cancel(node);
     const entry = entering.get(node);
     if (entry) entry.travel = 0;
     if (offset === 0 && offsetX === 0 && !entry) return undefined;
+    if (isLead) node.setAttribute(LEAD_ATTRIBUTE, "");
     const animation = node.animate(
       [{ transform: `translate(${offsetX}px, ${offset}px)` }, { transform: "translate(0px, 0px)" }],
       timing,
@@ -154,7 +165,10 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
     animation.addEventListener(
       "finish",
       () => {
-        if (running.get(node)?.animation === animation) running.delete(node);
+        if (running.get(node)?.animation === animation) {
+          running.delete(node);
+          node.removeAttribute(LEAD_ATTRIBUTE);
+        }
       },
       { once: true },
     );
@@ -192,6 +206,8 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
       const movedDeltaX = new Map<HTMLElement, number>();
       const remounted = new Map<string, RowPosition>();
       const nextOrder = [...next.keys()];
+      const nextThreadKeys = new Set(nextOrder.map(threadKeyOf));
+      const landing: Animation[] = [];
       const oldOrder = positions === null ? [] : [...positions.keys()];
       const ridingDelta = (
         order: readonly HTMLElement[],
@@ -221,12 +237,13 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
         for (const [node, position] of positions!) {
           if (next.has(node)) continue;
           const key = threadKeyOf(node);
-          if (key !== undefined) {
+          if (key !== undefined && nextThreadKeys.has(key)) {
             remounted.set(key, {
               ...position,
               top: position.top + remainingOffset(node),
               left: position.left + remainingOffsetX(node),
             });
+            continue;
           }
           const delta = ridingDelta(oldOrder, oldOrder.indexOf(node), (n) => next.has(n));
           fadeOut(node, position, delta === undefined ? rowTravel(position.height) : -delta);
@@ -249,8 +266,9 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
             const key = threadKeyOf(node);
             const from = key === undefined ? undefined : remounted.get(key);
             if (from !== undefined && position.height > 0) {
-              const delta = centerDelta(from, position);
-              move(node, delta.y, delta.x);
+              const delta = centerDelta(from, position, width);
+              const animation = move(node, delta.y, delta.x, motionTiming, true);
+              if (animation) landing.push(animation);
             } else if (position.height > 0) {
               const delta = ridingDelta(nextOrder, index, (n) => positions!.has(n));
               const travel = delta === undefined ? -rowTravel(position.height) : delta;
@@ -279,7 +297,6 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
         }
       }
       if (released !== null) {
-        const landing: Animation[] = [];
         if (!reducedMotion?.matches) {
           for (const [node, position] of next) {
             const key = threadKeyOf(node);
@@ -287,23 +304,29 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
               released.nodes.get(node) ??
               (key === undefined ? undefined : released.threads.get(key));
             if (origin === undefined) continue;
-            const delta = centerDelta(origin, position);
-            const animation = move(node, delta.y, delta.x, settleTiming);
+            const delta = centerDelta(origin, position, width);
+            const animation = move(
+              node,
+              delta.y,
+              delta.x,
+              settleTiming,
+              key !== undefined && key === released.activeKey,
+            );
             if (animation) landing.push(animation);
           }
         }
         released = null;
-        if (landing.length > 0) {
-          const generation = ++settleGeneration;
-          parent.setAttribute(SETTLING_ATTRIBUTE, "");
-          void Promise.allSettled(landing.map((animation) => animation.finished)).then(() => {
-            if (generation === settleGeneration) parent.removeAttribute(SETTLING_ATTRIBUTE);
-          });
-        }
+      }
+      if (landing.length > 0) {
+        const generation = ++settleGeneration;
+        parent.setAttribute(SETTLING_ATTRIBUTE, "");
+        void Promise.allSettled(landing.map((animation) => animation.finished)).then(() => {
+          if (generation === settleGeneration) parent.removeAttribute(SETTLING_ATTRIBUTE);
+        });
       }
       positions = next;
     },
-    release() {
+    release(activeKey?: string) {
       suspend();
       const origin = parent.getBoundingClientRect();
       const nodes = new Map<HTMLElement, RowPosition>();
@@ -320,7 +343,7 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
         const key = threadKeyOf(node);
         if (key !== undefined) threads.set(key, position);
       }
-      released = { nodes, threads };
+      released = { nodes, threads, activeKey };
     },
     suspend,
     dispose() {

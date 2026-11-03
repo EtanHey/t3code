@@ -39,6 +39,7 @@ describe("pinned grid layout contract", () => {
     using mounted = mountPinnedGrid(244, 2);
     const card = document.createElement("li");
     card.dataset.threadItem = "t";
+    card.textContent = "Thread identity";
     card.style.height = "82px";
     mounted.list.append(card);
     const motion = createSidebarListMotion(mounted.list);
@@ -49,16 +50,18 @@ describe("pinned grid layout contract", () => {
       card.remove();
       const tile = mounted.grid.appendChild(document.createElement("li"));
       tile.dataset.threadItem = "t";
+      tile.textContent = "Thread identity";
       motion.update(true);
+      expect(mounted.list.textContent).toBe("Thread identity");
       const animations = tile.getAnimations();
       expect(animations).toHaveLength(1);
       animations[0]!.pause();
       const start = tile.getBoundingClientRect();
       expect(start.left + start.width / 2).toBeCloseTo(from.left + from.width / 2, 0);
       expect(start.top + start.height / 2).toBeCloseTo(from.top + from.height / 2, 0);
-      // Hover details stay held until the drop lands.
+      // Menu pinning and dropping both hold hover details until the row lands.
       const settling = () => mounted.list.hasAttribute("data-sidebar-settling");
-      expect(settling()).toBe(path === "drop");
+      expect(settling()).toBe(true);
       for (const animation of mounted.list.getAnimations({ subtree: true })) animation.finish();
       await vi.waitFor(() => expect(settling()).toBe(false));
     } finally {
