@@ -40,7 +40,7 @@ import {
 import type * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Exit from "effect/Exit";
@@ -355,9 +355,9 @@ const rule = (action: string, effect: Rule["effect"]): Rule => ({ action, resour
 export const t3McpServerName = Effect.fn("t3McpServerName")(function* (threadId: string) {
   const name = `t3-code-${threadId.replaceAll(/[^a-zA-Z0-9_-]/g, "_")}`;
   if (name.length <= 64) return name;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const digest = yield* crypto
-    .digest("SHA-256", new TextEncoder().encode(threadId))
+    .digest(Digest.sha256, new TextEncoder().encode(threadId))
     .pipe(Effect.orDie);
   return `t3-code-${Hex.encode(digest).slice(0, 16)}`;
 });
@@ -630,14 +630,8 @@ const commandOf = (text: string) => {
   return match === null ? undefined : { name: match[1]!, text: match[2] ?? "" };
 };
 
-const SKILL_MENTION = new RegExp(SKILL_MENTION_PATTERN.source, "u");
-
-const skillsNamed = (text: string, known: ReadonlySet<string>) => [
-  ...new Set(
-    [...text.matchAll(SKILL_MENTION_PATTERN)].flatMap((match) =>
-      known.has(match[2] ?? "") ? [match[2]!] : [],
-    ),
-  ),
+const skillMentions = (text: string) => [
+  ...new Set([...text.matchAll(SKILL_MENTION_PATTERN)].flatMap((match) => match[2] ?? [])),
 ];
 
 const turnTokenUsage = (turn: ActiveTurn, status: OrchestrationV2ProviderTurn["status"]) => {
@@ -676,10 +670,10 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const fileSystem = yield* FileSystem.FileSystem;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const driver = OPENCODE_PROVIDER;
   const mcpServerNameFor = (threadId: string) =>
-    t3McpServerName(threadId).pipe(Effect.provideService(Crypto.Crypto, crypto));
+    t3McpServerName(threadId).pipe(Effect.provideService(Digest.Digest, crypto));
 
   const borrow = Effect.gen(function* () {
     const lent = yield* Deferred.make<
@@ -2935,12 +2929,19 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       );
     });
 
-    // The API accepts one message type; boundaries require both user and synthetic messages.
-    const userMessages = (sessionId: string) =>
-      OpenCode2Client.paginate(
-        { sessionID: Session.ID.make(sessionId), limit: 100 },
-        client.message.list,
-      ).pipe(
+    // Rollback must validate full history before native mutation; forks only need prompts.
+    const userMessages = (sessionId: string, types?: ReadonlyArray<"user" | "synthetic">) =>
+      Stream.fromIterable(types ?? [undefined]).pipe(
+        Stream.flatMap((type) =>
+          OpenCode2Client.paginate(
+            {
+              sessionID: Session.ID.make(sessionId),
+              limit: 100,
+              ...(type === undefined ? {} : { type }),
+            },
+            client.message.list,
+          ),
+        ),
         Stream.runCollect,
         Effect.map(
           (messages) =>
@@ -3315,6 +3316,27 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       yield* stopStrays(state);
     });
 
+    const listSkills = (location: { readonly directory: string }) =>
+      client.skill.list({ location }).pipe(
+        Effect.timeout(INVENTORY_TIMEOUT),
+        Effect.map((list) => new Set<string>(list.data.map((skill) => skill.id))),
+        Effect.orElseSucceed(() => new Set<string>()),
+      );
+
+    // A directory OpenCode is still scanning lists none or some of its skills.
+    // OpenCode 2.2.5 answers its model list only once the scan has ended (observed, not documented).
+    const skillsMentioned = Effect.fnUntraced(function* (
+      location: { readonly directory: string },
+      mentions: ReadonlyArray<string>,
+    ) {
+      const known = yield* listSkills(location);
+      if (mentions.some((name) => !known.has(name))) {
+        yield* readModels(location.directory);
+        for (const name of yield* listSkills(location)) known.add(name);
+      }
+      return mentions.filter((name) => known.has(name));
+    });
+
     const submit = Effect.fnUntraced(function* (
       sessionId: string,
       turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -3350,16 +3372,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           return yield* client.session.command({ sessionID, ...command });
         }
       }
-      const skills = SKILL_MENTION.test(text)
-        ? skillsNamed(
-            text,
-            yield* client.skill.list({ location }).pipe(
-              Effect.timeout(INVENTORY_TIMEOUT),
-              Effect.map((list) => new Set(list.data.map((skill) => skill.id))),
-              Effect.orElseSucceed(() => new Set<string>()),
-            ),
-          )
-        : [];
+      const mentions = skillMentions(text);
+      const skills = mentions.length === 0 ? [] : yield* skillsMentioned(location, mentions);
       const files = yield* promptFiles(turnInput.message.attachments);
       const messageText = yield* promptText(turnInput);
       if (!sending()) return;
@@ -4018,7 +4032,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                   forkInput.sourceProviderTurns ?? [],
                   source.id,
                   selected,
-                  yield* userMessages(sourceId),
+                  yield* userMessages(sourceId, ["user", "synthetic"]),
                 );
           const forked = yield* client.session.fork({
             sessionID: Session.ID.make(sourceId),

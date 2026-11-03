@@ -2298,6 +2298,76 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("sends a $skill that appears once OpenCode finishes scanning the directory", () =>
+    Effect.gen(function* () {
+      const prompts: Array<unknown> = [];
+      const greet = {
+        id: "greet",
+        name: "greet",
+        path: `${WORK}/.opencode/skills/greet/SKILL.md`,
+        content: "Say hello.",
+      };
+      const { runtime, thread } = yield* resumed(
+        [
+          out("skill.list", { "location[directory]": WORK }),
+          reply("skill.list", { location: { directory: WORK }, data: [] }),
+          // OpenCode answers the model list only once the directory scan has ended.
+          ...directoryModels(WORK),
+          out("skill.list", { "location[directory]": WORK }),
+          reply("skill.list", { location: { directory: WORK }, data: [greet] }),
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ],
+        { onPrompt: (input) => prompts.push(input) },
+      );
+      const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+      const started = yield* runtime
+        .startTurn({
+          ...turnInput(thread),
+          message: { ...turnInput(thread).message, text: "$greet again please" },
+        })
+        .pipe(Effect.exit);
+      assert.deepInclude(prompts[0], { skills: [{ id: "greet" }] });
+      assert.isTrue(Exit.isSuccess(started));
+      assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "keeps a $skill found on the first read when the reread after the scan comes back empty",
+    () =>
+      Effect.gen(function* () {
+        const prompts: Array<unknown> = [];
+        const greet = {
+          id: "greet",
+          name: "greet",
+          path: `${WORK}/.opencode/skills/greet/SKILL.md`,
+          content: "Say hello.",
+        };
+        const { runtime, thread } = yield* resumed(
+          [
+            out("skill.list", { "location[directory]": WORK }),
+            reply("skill.list", { location: { directory: WORK }, data: [greet] }),
+            ...directoryModels(WORK),
+            out("skill.list", { "location[directory]": WORK }),
+            reply("skill.list", { location: { directory: WORK }, data: [] }),
+            out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+            promptAccepted,
+            event("session.execution.succeeded", { sessionID: SESSION }),
+          ],
+          { onPrompt: (input) => prompts.push(input) },
+        );
+        const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+        yield* runtime.startTurn({
+          ...turnInput(thread),
+          message: { ...turnInput(thread).message, text: "$greet then echo $HOME" },
+        });
+        assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+        assert.deepInclude(prompts[0], { skills: [{ id: "greet" }] });
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps a turn still running after a reconnect open for its next events", () =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed([
@@ -3333,6 +3403,55 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("rejects unreadable rollback history before cutting the native session", () =>
+    Effect.gen(function* () {
+      const { runtime, thread } = yield* resumed([
+        out("message.list", { sessionID: SESSION, limit: "100", type: undefined }),
+        reply("message.list", {
+          data: [
+            { id: "msg_kept", time: { created: 1 }, text: "first", type: "user" },
+            {
+              id: "msg_compaction",
+              time: { created: 2 },
+              type: "compaction",
+              status: "completed",
+              reason: "auto",
+              summary: "First turn summary",
+            },
+            { id: "msg_dropped", time: { created: 3 }, text: "second", type: "user" },
+          ],
+          cursor: {},
+        }),
+      ]);
+      const now = yield* DateTime.now;
+      const turns = ["msg_kept", "msg_dropped"].map((nativeId, index) => ({
+        id: ProviderTurnId.make(`provider-turn:rollback-history:${index}`),
+        providerThreadId: thread.id,
+        nodeId: NodeId.make(`node:rollback-history:${index}`),
+        runAttemptId: RunAttemptId.make(`attempt:rollback-history:${index}`),
+        nativeTurnRef: { driver: OPENCODE_PROVIDER, nativeId, strength: "weak" as const },
+        ordinal: index + 1,
+        status: "completed" as const,
+        startedAt: now,
+        completedAt: now,
+      }));
+      const failure = yield* runtime
+        .rollbackThread({
+          providerThread: thread,
+          target: {
+            type: "provider_turn",
+            checkpointId: CheckpointId.make("checkpoint:rollback-history"),
+            appRunOrdinal: 1,
+            providerTurn: turns[0]!,
+          },
+          providerThreadTurns: turns,
+        })
+        .pipe(Effect.flip);
+      assert.equal(failure._tag, "ProviderAdapterRollbackThreadError");
+      assert.include(Cause.pretty(Cause.fail(failure)), '["recent"]');
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("clears a staged revert whose commit failed, before the next prompt too", () =>
     Effect.gen(function* () {
       const kept = "msg_t3_turn_run-attempt:kept:1";
@@ -4120,8 +4239,22 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     Effect.gen(function* () {
       const FORK = "ses_f1484db83ffeLGtrRCFimo1H0e";
       const { runtime, thread, first, second } = yield* continued([
-        out("message.list", "<any>"),
-        reply("message.list", continuedHistory),
+        out("message.list", { sessionID: SESSION, limit: "100", type: "user" }),
+        reply("message.list", { data: [continuedHistory.data[1]], cursor: {} }),
+        out("message.list", { sessionID: SESSION, limit: "100", type: "synthetic" }),
+        reply("message.list", {
+          data: [
+            { id: "msg_later_report", time: { created: 3 }, text: "later", type: "synthetic" },
+          ],
+          cursor: { next: "synthetic-page-2" },
+        }),
+        out("message.list", {
+          sessionID: SESSION,
+          limit: "100",
+          type: "synthetic",
+          cursor: "synthetic-page-2",
+        }),
+        reply("message.list", { data: [continuedHistory.data[0]], cursor: {} }),
         out("session.fork", { sessionID: SESSION, before: "msg_report" }),
         replyData("session.fork", sessionInfo({ id: FORK })),
         out("session.update", { sessionID: FORK, permissions: "<any>" }),
