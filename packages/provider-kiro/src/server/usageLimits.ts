@@ -23,6 +23,8 @@ const KiroAccountUsage = Schema.Struct({
         billingCycleReset: Schema.optional(Schema.String),
         overagesEnabled: Schema.optional(Schema.Boolean),
         usageBreakdowns: Schema.optional(Schema.Array(Schema.Unknown)),
+        bonusCredits: Schema.optional(Schema.Array(Schema.Unknown)),
+        addOnCredits: Schema.optional(Schema.Array(Schema.Unknown)),
       }),
     ),
   ),
@@ -70,6 +72,13 @@ export function kiroUsageLimits(result: unknown, checkedAt: string): ServerProvi
     });
   }
   const { data } = usage;
+  if (data.bonusCredits?.length || data.addOnCredits?.length) {
+    return makeUnavailableUsageLimits({
+      checkedAt,
+      reason: "unsupported",
+      message: "Kiro bonus and add-on credit balances are not supported yet.",
+    });
+  }
   const resetsAt = kiroResetsAt(data.billingCycleReset);
   const windows = new Map<string, ServerProviderUsageWindow>();
   let unlimited = false;
@@ -84,7 +93,8 @@ export function kiroUsageLimits(result: unknown, checkedAt: string): ServerProvi
     }
     if (windows.has(id)) continue;
     const label = breakdown.displayName?.trim() || breakdown.resourceType.trim();
-    const overage = data.overagesEnabled === true && breakdown.used > breakdown.limit;
+    const overage =
+      id === "credit" && data.overagesEnabled === true && breakdown.used > breakdown.limit;
     windows.set(id, {
       id,
       // Kiro's allowances renew with the billing cycle.

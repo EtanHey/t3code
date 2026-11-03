@@ -173,7 +173,8 @@ or endpoint configurations do not report subscription limits.
 Kiro reports how much of the plan's monthly credits the signed-in account has used, and the day its
 billing cycle resets. Past the allowance with overages on, the allowance shows 0% left and is marked
 **overage**, since Kiro keeps working at its overage rate. Plans that an organization manages
-without sharing usage show no bar.
+without sharing usage show no bar. Accounts with bonus or add-on credit balances also show no bar
+until those balances can be read, so the base allowance is not mistaken for the total available.
 
 API-key accounts may not report subscription limits. This also applies to Claude connections
 using a proxy through `ANTHROPIC_AUTH_TOKEN`.

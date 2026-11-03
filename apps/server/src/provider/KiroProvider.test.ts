@@ -597,11 +597,11 @@ describe("KiroProvider", () => {
             data: {
               ...KIRO_ACCOUNT_USAGE.data,
               billingCycleReset: "Unknown",
-              overagesEnabled: false,
+              overagesEnabled: true,
               usageBreakdowns: [
                 { ...credits, used: 2500, limit: 10000 },
                 // A resource Kiro may add later keeps its own bar under Kiro's name.
-                { resourceType: "AGENT_TASK", displayName: "Agent tasks", used: 3, limit: 4 },
+                { resourceType: "AGENT_TASK", displayName: "Agent tasks", used: 5, limit: 4 },
                 {
                   resourceType: "SPEC",
                   displayName: "Specs",
@@ -617,8 +617,8 @@ describe("KiroProvider", () => {
         },
       });
       assert.deepEqual(snapshot.usageLimits?.windows, [
-        { id: "agent_task", kind: "monthly", label: "Agent tasks", usedPercent: 75 },
-        { id: "credit", kind: "monthly", label: "Credits", usedPercent: 25 },
+        { id: "agent_task", kind: "monthly", label: "Agent tasks", usedPercent: 100 },
+        { id: "credit", kind: "monthly", label: "Credits", usedPercent: 25, overagesEnabled: true },
       ]);
       assert.isUndefined(snapshot.usageLimits?.unavailable);
     }),
@@ -640,6 +640,13 @@ describe("KiroProvider", () => {
         ],
       };
       const cases: ReadonlyArray<readonly [AcpReply, "probeFailed" | "unsupported"]> = [
+        ...["bonusCredits", "addOnCredits"].map(
+          (field) =>
+            [
+              { result: { success: true, data: { ...KIRO_FREE_USAGE.data, [field]: [{}] } } },
+              "unsupported",
+            ] as const,
+        ),
         [{ error: { code: -32603, message: "Internal error" } }, "probeFailed"],
         [
           { result: { success: false, message: "Failed to retrieve usage information" } },
