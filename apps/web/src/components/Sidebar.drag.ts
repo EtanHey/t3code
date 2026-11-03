@@ -50,7 +50,7 @@ export function createSidebarCollisionDetection(
     let droppableRects = args.droppableRects;
     const grid = options.pinnedGrid;
     const header = args.droppableRects.get(sidebarMarkerId("pinned-header"));
-    if (grid && header && pins.some((item) => item.key === args.active.id)) {
+    if (grid && header && pins.length > 0) {
       droppableRects = new Map(args.droppableRects);
       for (const [index, pin] of pins.entries()) {
         const cell = sidebarPinnedGridCell(grid, index, pins.length);
@@ -166,7 +166,11 @@ export function measureSidebarPinnedGrid(
     : 1;
   const px = (value: string) => (Number.parseFloat(value) || 0) * scale;
   return {
-    width: grid.getBoundingClientRect().width,
+    width:
+      grid.getBoundingClientRect().width ||
+      (grid.parentElement?.getBoundingClientRect().width ?? 0) -
+        px(style.marginLeft) -
+        px(style.marginRight),
     labelHeight,
     columns: Number.isFinite(columns) && columns > 0 ? columns : 1,
     rowHeight: rowHeight * scale,
@@ -290,13 +294,16 @@ export function createSidebarSortingStrategy(input: {
       leading: 0,
       trailing: 0,
     };
-    // Pins hold their cells until the drop, so the grid keeps its resting rows; only an empty grid
-    // opens one for an incoming pin. Moving peers mid-drag read as a shuffle.
+    // An outgoing pin leaves its cell; an incoming pin reserves its destination row.
     const restingPins = items.flatMap((item, index) =>
       item.kind === "thread" && item.section === "pinned" ? [index] : [],
     );
     const pinnedRows = Math.ceil(
-      Math.max(restingPins.length, target.section === "pinned" ? 1 : 0) / pinnedGrid.columns,
+      Math.max(
+        restingPins.length,
+        target.section === "pinned" ? groups.pinned.length : 0,
+        input.pinnedGrid && restingPins.length === 0 ? 1 : 0,
+      ) / pinnedGrid.columns,
     );
     // The grid hides when empty, so it adds no list gap either.
     const pinnedBlock =
@@ -353,10 +360,10 @@ export function createSidebarSortingStrategy(input: {
       if (item.kind === "marker" && item.marker === "pinned-header") {
         const y = firstPin ? top + pinnedGrid.leading - firstPin.top : 0;
         for (const pin of restingPins) result[pin] = { ...stationary, y };
-        if (input.pinnedGrid && active.section === "pinned" && target.section === "pinned") {
+        if (input.pinnedGrid && target.section === "pinned") {
           for (const [position, pin] of groups.pinned.entries()) {
             const pinIndex = indices.get(pin.key);
-            if (pinIndex === undefined) continue;
+            if (pinIndex === undefined || pinIndex === activeIndex) continue;
             const from = sidebarPinnedGridCell(
               input.pinnedGrid,
               restingPins.indexOf(pinIndex),

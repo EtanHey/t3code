@@ -860,15 +860,35 @@ describe("pinned grid projection", () => {
   it.each([
     ["a1", "p2", "a card comes in"],
     ["p1", "a1", "a pin leaves"],
-  ])("holds every pin in its cell while %s hovers %s (%s)", (active, over) => {
+  ])("projects pinned cells while %s hovers %s (%s)", (active, over) => {
     const result = gridPreview(active, over);
-    for (const key of ["p1", "p2", "p3", "p4"]) expect(result.get(key), key).toEqual(stationary);
+    const expected =
+      active === "a1"
+        ? [
+            stationary,
+            { ...stationary, x: 88 },
+            { ...stationary, x: -176, y: 50, scaleX: 128 / 84 },
+            { ...stationary, x: 132, scaleX: 128 / 260 },
+          ]
+        : [stationary, stationary, stationary, stationary];
+    for (const [index, key] of ["p1", "p2", "p3", "p4"].entries())
+      expect(result.get(key), key).toEqual(expected[index]);
     expect(result.get(sidebarMarkerId("pinned-divider"))).toEqual(stationary);
   });
 });
 
-it("opens one grid row for a first pin", () => {
-  const items = [pinnedHeader, divider, thread("a1", "active"), thread("a2", "active")];
+it.each([
+  [0, sidebarMarkerId("pinned-divider")],
+  [0, "a2"],
+  [3, sidebarMarkerId("pinned-divider")],
+] as const)("opens a grid row with %i pins over %s", (count, over) => {
+  const items = [
+    pinnedHeader,
+    ...Array.from({ length: count }, (_, index) => thread(`p${index}`, "pinned")),
+    divider,
+    thread("a1", "active"),
+    thread("a2", "active"),
+  ];
   const strategy = createSidebarSortingStrategy({
     items,
     settledOrder: [],
@@ -883,9 +903,12 @@ it("opens one grid row for a first pin", () => {
       labelHeight: 0,
     },
   });
-  const args = layout(items, "a2", sidebarMarkerId("pinned-divider"));
-  expect(strategy({ ...args, index: 1 })?.y).toBe(46 + 8 + 1);
-  expect(strategy({ ...args, index: 2 })?.y).toBe(46 + 8 + 1);
+  const args = layout(items, "a2", over);
+  const nextRows = Math.ceil((count + 1) / 3);
+  const previousHeight = count * 83;
+  const displacement = nextRows * 50 + 5 - previousHeight;
+  expect(strategy({ ...args, index: count + 1 })?.y).toBe(displacement);
+  expect(strategy({ ...args, index: count + 2 })?.y).toBe(displacement);
 });
 
 describe("lifted card clearance", () => {

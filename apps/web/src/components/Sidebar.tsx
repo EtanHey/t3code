@@ -1074,6 +1074,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     readonly pinnedGrid: SidebarPinnedGrid | undefined;
     readonly pinnedTargetIndex: number | null;
     readonly grabOffsetX: number;
+    readonly sourceWidth: number;
   } | null>(null);
   const dragSensorRef = useRef<SidebarPointerSensor | null>(null);
   const contextDragKeyRef = useRef<string | null>(null);
@@ -1934,6 +1935,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           ? event.activatorEvent.clientX -
             (event.active.rect.current.initial?.left ?? event.activatorEvent.clientX)
           : 0,
+      sourceWidth: event.active.rect.current.initial?.width ?? listRect?.width ?? 0,
       occurredAt: new Date().toISOString(),
       activationY:
         event.activatorEvent instanceof PointerEvent ? event.activatorEvent.clientY : null,
@@ -2072,18 +2074,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const dragActivationY = dragState?.activationY;
   const pinnedDragPreview = (() => {
     const grid = dragState?.pinnedGrid;
-    if (
-      !grid ||
-      dragState.activeSection !== "pinned" ||
-      dragState.targetSection !== "pinned" ||
-      dragState.pinnedTargetIndex === null
-    )
+    if (!grid || dragState.targetSection !== "pinned" || dragState.pinnedTargetIndex === null)
       return undefined;
     const from = pinnedKeys.indexOf(dragState.activeKey);
-    if (from < 0 || dragState.pinnedTargetIndex < 0) return undefined;
+    if (dragState.pinnedTargetIndex < 0) return undefined;
+    const sourceWidth =
+      from < 0 ? dragState.sourceWidth : sidebarPinnedGridCell(grid, from, pinnedKeys.length).width;
+    if (sourceWidth <= 0) return undefined;
     const widthRatio =
-      sidebarPinnedGridCell(grid, dragState.pinnedTargetIndex, pinnedKeys.length).width /
-      sidebarPinnedGridCell(grid, from, pinnedKeys.length).width;
+      sidebarPinnedGridCell(
+        grid,
+        dragState.pinnedTargetIndex,
+        pinnedKeys.length + (from < 0 ? 1 : 0),
+      ).width / sourceWidth;
     return { widthRatio, offsetX: dragState.grabOffsetX * (1 - widthRatio) };
   })();
   const dndCollisionDetection = (() => {
@@ -3361,7 +3364,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           ? folderRowsMultiline
                             ? "folder-multiline"
                             : "folder"
-                          : section === "pinned"
+                          : section === "pinned" ||
+                              (threadKey === draggedThreadKey && dragTargetSection === "pinned")
                             ? "tile"
                             : isCard
                               ? "card"

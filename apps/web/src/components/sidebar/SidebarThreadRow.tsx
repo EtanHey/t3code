@@ -991,13 +991,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         "data-sidebar-drag-source": sortable.isDragging ? "" : undefined,
         style: {
           transform: CSS.Translate.toString(sortable.transform),
-          transition: sortable.transition,
-          width:
-            variant === "tile" &&
-            sortable.transform &&
-            Math.abs(sortable.transform.scaleX - 1) > 0.001
-              ? `${sortable.transform.scaleX * 100}%`
-              : undefined,
+          transition:
+            variant === "tile" && sortable.transition
+              ? `${sortable.transition}, ${sortable.transition.replace("transform", "width")}`
+              : sortable.transition,
+          width: variant === "tile" ? `${(sortable.transform?.scaleX ?? 1) * 100}%` : undefined,
           // A zero-height boundary also makes dnd-kit scale the source to
           // zero. Only projected peers use scaleY as a visibility sentinel.
           visibility:
@@ -1221,7 +1219,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         data-thread-item={threadKey}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
-        className={cn("@container/sidebar-tile list-none", sortable?.isDragging && "relative z-20")}
+        className={cn(
+          "@container/sidebar-tile list-none motion-reduce:transition-none!",
+          sortable?.isDragging && "relative z-20 h-[2.875rem]",
+        )}
       >
         <Tooltip disabled={sortable?.isDragging} onOpenChange={holdDetailsWhileSorting}>
           <TooltipTrigger
