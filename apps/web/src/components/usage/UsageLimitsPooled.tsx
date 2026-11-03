@@ -37,7 +37,6 @@ import { AlertTriangleIcon, ExternalLinkIcon, GripVerticalIcon, TicketIcon } fro
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
   createContext,
-  Fragment,
   type ReactNode,
   type RefObject,
   use,
@@ -600,6 +599,7 @@ function PoolSection({
   readonly animate: boolean;
 }) {
   const {
+    active,
     attributes,
     listeners,
     setNodeRef,
@@ -621,7 +621,7 @@ function PoolSection({
       )}
     >
       <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
-        <Tooltip>
+        <Tooltip disabled={active !== null}>
           <TooltipTrigger
             render={
               <button
@@ -695,11 +695,6 @@ export function UsageLimitsPooled({
   );
   const notices = collectLimitNotices(presentations);
   const externalLinks = collectExternalUsageLinks(presentations);
-  const cursorPromptAt =
-    Math.max(
-      pools.findIndex((pool) => pool.driver === "codex"),
-      pools.findIndex((pool) => pool.driver === "claudeAgent"),
-    ) + 1;
   return (
     <div className="flex flex-col gap-8">
       {pools.length === 0 && notices.length === 0 && !cursorPrompt && externalLinks.length === 0 ? (
@@ -731,11 +726,13 @@ export function UsageLimitsPooled({
             items={pools.map((pool) => pool.driver)}
             strategy={verticalListSortingStrategy}
           >
-            {pools.map((pool, index) => (
-              <Fragment key={pool.driver}>
-                {index === cursorPromptAt ? cursorPrompt : null}
-                <PoolSection pool={pool} now={now} animate={!keyboardDrag && !reducedMotion} />
-              </Fragment>
+            {pools.map((pool) => (
+              <PoolSection
+                key={pool.driver}
+                pool={pool}
+                now={now}
+                animate={!keyboardDrag && !reducedMotion}
+              />
             ))}
           </SortableContext>
         </DndContext>
@@ -753,7 +750,7 @@ export function UsageLimitsPooled({
           ) : null
         }
       </Popover>
-      {cursorPromptAt === pools.length ? cursorPrompt : null}
+      {cursorPrompt}
       {externalLinks.map((link) => (
         <section
           key={link.url}
