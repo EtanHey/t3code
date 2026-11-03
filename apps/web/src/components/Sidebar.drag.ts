@@ -34,23 +34,50 @@ export function createSidebarCollisionDetection(
   options: {
     items?: readonly SidebarListItem[];
     activationY?: number | null;
+    pinnedGrid?: SidebarPinnedGrid | undefined;
   } = {},
 ): CollisionDetection {
   const validity = new Map<string, boolean>();
   const sections = new Map<string, SidebarSection | null>();
   let previousPointerY = options.activationY;
   let boundarySection: "pinned" | "active" | undefined;
+  const pins =
+    options.items?.filter(
+      (item): item is ThreadItem => item.kind === "thread" && item.section === "pinned",
+    ) ?? [];
   return (args) => {
     const pointer = args.pointerCoordinates;
+    let droppableRects = args.droppableRects;
+    const grid = options.pinnedGrid;
+    const header = args.droppableRects.get(sidebarMarkerId("pinned-header"));
+    if (grid && header && pins.some((item) => item.key === args.active.id)) {
+      droppableRects = new Map(args.droppableRects);
+      for (const [index, pin] of pins.entries()) {
+        const cell = sidebarPinnedGridCell(grid, index, pins.length);
+        const left = header.left + cell.left;
+        const top = header.top + grid.labelHeight + 1 + grid.leading + cell.top;
+        droppableRects.set(pin.key, {
+          left,
+          top,
+          width: cell.width,
+          height: grid.rowHeight,
+          right: left + cell.width,
+          bottom: top + grid.rowHeight,
+        });
+      }
+    }
     // Rows span the list, so only pinned grid columns feel the pointer's x; cards keep their column.
     let collisions = closestCenter(
       pointer
         ? {
             ...args,
+            droppableRects,
             collisionRect: {
               ...args.collisionRect,
               left: pointer.x - args.collisionRect.width / 2,
               right: pointer.x + args.collisionRect.width / 2,
+              top: pointer.y - args.collisionRect.height / 2,
+              bottom: pointer.y + args.collisionRect.height / 2,
             },
           }
         : args,
@@ -104,6 +131,8 @@ export function createSidebarCollisionDetection(
 
 /** Pinned tile grid geometry in client pixels, measured when a drag starts. */
 export type SidebarPinnedGrid = {
+  readonly width: number;
+  readonly labelHeight: number;
   readonly columns: number;
   readonly rowHeight: number;
   readonly gap: number;
@@ -111,10 +140,22 @@ export type SidebarPinnedGrid = {
   readonly trailing: number;
 };
 
+export function sidebarPinnedGridCell(grid: SidebarPinnedGrid, index: number, count: number) {
+  const row = Math.floor(index / grid.columns);
+  const columns = Math.min(grid.columns, count - row * grid.columns);
+  const width = (grid.width - (columns - 1) * grid.gap) / columns;
+  return {
+    left: (index % grid.columns) * (width + grid.gap),
+    top: row * (grid.rowHeight + grid.gap),
+    width,
+  };
+}
+
 /** Reads the pinned grid's CSS-driven columns and spacing; `scale` maps CSS to client pixels. */
 export function measureSidebarPinnedGrid(
   grid: HTMLElement,
   scale: number,
+  labelHeight = 0,
 ): SidebarPinnedGrid | undefined {
   const style = getComputedStyle(grid);
   const rowHeight = Number.parseFloat(style.gridAutoRows);
@@ -125,6 +166,8 @@ export function measureSidebarPinnedGrid(
     : 1;
   const px = (value: string) => (Number.parseFloat(value) || 0) * scale;
   return {
+    width: grid.getBoundingClientRect().width,
+    labelHeight,
     columns: Number.isFinite(columns) && columns > 0 ? columns : 1,
     rowHeight: rowHeight * scale,
     gap: px(style.rowGap),
@@ -240,6 +283,8 @@ export function createSidebarSortingStrategy(input: {
     section("settled");
     const pinnedGrid = input.pinnedGrid ?? {
       columns: 1,
+      width: rects[0].width,
+      labelHeight: 0,
       rowHeight: pinnedHeight ?? cardHeight,
       gap: 1,
       leading: 0,
@@ -308,6 +353,24 @@ export function createSidebarSortingStrategy(input: {
       if (item.kind === "marker" && item.marker === "pinned-header") {
         const y = firstPin ? top + pinnedGrid.leading - firstPin.top : 0;
         for (const pin of restingPins) result[pin] = { ...stationary, y };
+        if (input.pinnedGrid && active.section === "pinned" && target.section === "pinned") {
+          for (const [position, pin] of groups.pinned.entries()) {
+            const pinIndex = indices.get(pin.key);
+            if (pinIndex === undefined) continue;
+            const from = sidebarPinnedGridCell(
+              input.pinnedGrid,
+              restingPins.indexOf(pinIndex),
+              restingPins.length,
+            );
+            const to = sidebarPinnedGridCell(input.pinnedGrid, position, groups.pinned.length);
+            result[pinIndex] = {
+              ...stationary,
+              x: to.left - from.left,
+              y: y + to.top - from.top,
+              scaleX: to.width / from.width,
+            };
+          }
+        }
         top += pinnedBlock;
       }
     }

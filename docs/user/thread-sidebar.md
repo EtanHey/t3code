@@ -83,8 +83,8 @@ thread into the active list un-settles it. A snoozed thread can be dragged out o
 shelf, which wakes it, but threads cannot be dragged into the shelf because snoozing needs a wake
 time. Dragging a pinned thread out of the pinned section does not ask for unpin confirmation.
 Pinned and active boundary labels appear only while dragging, without moving the rows. List
-rows slide aside to show where the thread will land, while pinned tiles hold still and outline
-the tile whose spot it takes, then shift once you drop. When you cross into another section,
+rows and pinned tiles slide aside to show where the thread will land. A pinned tile takes the
+width of its destination while you drag it. When you cross into another section,
 the dragged thread shows the action the drop performs, with its icon: **Pin**, **Unpin**,
 **Settle**, **Un-settle**, or **Wake**. Its status and hover actions hide during the drag. A pinned
 thread keeps its pin only while it stays in the pinned section; once it leaves, the badge takes

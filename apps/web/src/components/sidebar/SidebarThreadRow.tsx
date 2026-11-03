@@ -432,7 +432,7 @@ function SnoozeMenuButton(props: {
 
 type SortableThreadRowBag = Pick<
   ReturnType<typeof useSortable>,
-  "listeners" | "setNodeRef" | "transform" | "transition" | "isDragging" | "isOver"
+  "listeners" | "setNodeRef" | "transform" | "transition" | "isDragging"
 >;
 
 // A drag and its drop settle hold hover details, so a popup never covers where a row lands.
@@ -466,7 +466,7 @@ export function SortableThreadRow(
     rowProps.thread.environmentId,
     AuthOrchestrationOperateScope,
   );
-  const { listeners, setNodeRef, transform, transition, isDragging, isOver } = useSortable({
+  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: sortableId,
     disabled:
       sortableDisabled || !canOperateThread
@@ -479,10 +479,17 @@ export function SortableThreadRow(
   const bag = {
     listeners,
     setNodeRef,
-    transform: contextDrag ? null : transform,
+    transform: contextDrag
+      ? null
+      : transform && isDragging && rowProps.pinnedDragPreview
+        ? {
+            ...transform,
+            x: transform.x + rowProps.pinnedDragPreview.offsetX,
+            scaleX: rowProps.pinnedDragPreview.widthRatio,
+          }
+        : transform,
     transition: contextDrag && isDragging ? "transform 150ms ease-out" : transition,
     isDragging: isDragging && !contextDrag,
-    isOver: isOver && !isDragging && !contextDrag,
   };
   // The sidebar arranges rows from quiet shells, which hold still while a
   // thread streams; reading the live shell here re-renders only this row.
@@ -555,6 +562,7 @@ type SidebarThreadRowProps = {
   pinningSupported: boolean;
   isPinned: boolean;
   sortable?: SortableThreadRowBag | undefined;
+  pinnedDragPreview?: { readonly widthRatio: number; readonly offsetX: number } | undefined;
   dropVerb: SidebarDropVerb | null;
   dragOverPinned: boolean;
   sweepAction: SidebarSweepAction | null;
@@ -984,6 +992,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         style: {
           transform: CSS.Translate.toString(sortable.transform),
           transition: sortable.transition,
+          width:
+            variant === "tile" &&
+            sortable.transform &&
+            Math.abs(sortable.transform.scaleX - 1) > 0.001
+              ? `${sortable.transform.scaleX * 100}%`
+              : undefined,
           // A zero-height boundary also makes dnd-kit scale the source to
           // zero. Only projected peers use scaleY as a visibility sentinel.
           visibility:
@@ -1225,9 +1239,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 className={cn(
                   rowSurfaceClassName,
                   "flex h-full flex-col justify-center gap-0.5 px-2",
-                  // The dragged tile takes this cell on drop; peers shift only then.
-                  sortable?.isOver &&
-                    "outline-2 -outline-offset-2 outline-dashed outline-sidebar-foreground/35",
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -1245,6 +1256,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {props.projectDisplayName ? (
                 <span className="hidden min-w-0 flex-1 truncate text-secondary-label text-xs @min-[9rem]/sidebar-tile:block">
                   {props.projectDisplayName}
+                </span>
+              ) : null}
+              {pinIndicator ? (
+                <span className="hidden shrink-0 @min-[9rem]/sidebar-tile:inline-flex">
+                  {pinIndicator}
                 </span>
               ) : null}
               {sortable?.isDragging ? (

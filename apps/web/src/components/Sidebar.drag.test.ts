@@ -69,6 +69,59 @@ function preview(
 }
 
 describe("sidebar collision detection", () => {
+  it("keeps the same pinned slot under the pointer when preview widths change", () => {
+    const items = [
+      pinnedHeader,
+      thread("p1", "pinned"),
+      thread("p2", "pinned"),
+      thread("p3", "pinned"),
+      thread("source", "pinned"),
+    ];
+    const rects = [
+      { left: 0, top: 100, width: 260, height: 0, right: 260, bottom: 100 },
+      ...[0, 88, 176].map((left) => ({
+        left,
+        top: 101,
+        width: 84,
+        height: 46,
+        right: left + 84,
+        bottom: 147,
+      })),
+      { left: 0, top: 151, width: 260, height: 46, right: 260, bottom: 197 },
+    ];
+    const droppableRects = new Map(items.map((item, i) => [sidebarListItemId(item), rects[i]!]));
+    const args = {
+      ...collisionArgs(),
+      collisionRect: { left: 0, top: 125, width: 260, height: 46, right: 260, bottom: 171 },
+      droppableRects,
+      droppableContainers: items.map((item, i) => ({
+        id: sidebarListItemId(item),
+        key: sidebarListItemId(item),
+        disabled: false,
+        data: { current: {} },
+        node: { current: null },
+        rect: { current: rects[i]! },
+      })),
+      pointerCoordinates: { x: 42, y: 148 },
+    } satisfies Parameters<CollisionDetection>[0];
+    const detector = createSidebarCollisionDetection(() => true, {
+      items,
+      pinnedGrid: {
+        columns: 3,
+        rowHeight: 46,
+        gap: 4,
+        leading: 0,
+        trailing: 8,
+        width: 260,
+        labelHeight: 24,
+      },
+    });
+    expect(detector(args)[0]?.id).toBe("p1");
+    droppableRects.set("p1", { ...rects[1]!, width: 260, right: 260 });
+    droppableRects.set("source", { ...rects[4]!, width: 84, right: 84 });
+    expect(detector(args)[0]?.id).toBe("p1");
+  });
+
   function collisionArgs(blockedAboveSource = false) {
     const rows = [thread("source", "active"), thread("blocked", "active")];
     const items = [
@@ -715,7 +768,15 @@ describe("sidebar drag projection", () => {
 });
 
 describe("pinned grid projection", () => {
-  const grid = { columns: 3, rowHeight: 46, gap: 4, leading: 0, trailing: 8 };
+  const grid = {
+    columns: 3,
+    rowHeight: 46,
+    gap: 4,
+    leading: 0,
+    trailing: 8,
+    width: 260,
+    labelHeight: 0,
+  };
   const items = [
     pinnedHeader,
     thread("p1", "pinned"),
@@ -788,9 +849,15 @@ describe("pinned grid projection", () => {
     );
   }
 
-  // Peers that slide and resize under the pointer read as a shuffle; the drop reorders them once.
+  it("opens the first cell live for the full-width last pin", () => {
+    const result = gridPreview("p4", "p1");
+    expect(result.get("p1")).toEqual({ ...stationary, x: 88 });
+    expect(result.get("p2")).toEqual({ ...stationary, x: 88 });
+    expect(result.get("p3")).toEqual({ ...stationary, x: -176, y: 50, scaleX: 260 / 84 });
+    expect(result.get("p4")).toEqual(stationary);
+  });
+
   it.each([
-    ["p4", "p1", "a tile crosses rows"],
     ["a1", "p2", "a card comes in"],
     ["p1", "a1", "a pin leaves"],
   ])("holds every pin in its cell while %s hovers %s (%s)", (active, over) => {
@@ -806,7 +873,15 @@ it("opens one grid row for a first pin", () => {
     items,
     settledOrder: [],
     settledExpanded: true,
-    pinnedGrid: { columns: 3, rowHeight: 46, gap: 4, leading: 0, trailing: 8 },
+    pinnedGrid: {
+      columns: 3,
+      rowHeight: 46,
+      gap: 4,
+      leading: 0,
+      trailing: 8,
+      width: 260,
+      labelHeight: 0,
+    },
   });
   const args = layout(items, "a2", sidebarMarkerId("pinned-divider"));
   expect(strategy({ ...args, index: 1 })?.y).toBe(46 + 8 + 1);

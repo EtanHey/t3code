@@ -217,6 +217,7 @@ import {
 import {
   createSidebarCollisionDetection,
   measureSidebarPinnedGrid,
+  sidebarPinnedGridCell,
   type SidebarPinnedGrid,
   createSidebarSortingStrategy,
   restrictBelowSidebarLabel,
@@ -1071,6 +1072,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     readonly targetSection: SidebarSection | null;
     readonly contextDrag: boolean;
     readonly pinnedGrid: SidebarPinnedGrid | undefined;
+    readonly pinnedTargetIndex: number | null;
+    readonly grabOffsetX: number;
   } | null>(null);
   const dragSensorRef = useRef<SidebarPointerSensor | null>(null);
   const contextDragKeyRef = useRef<string | null>(null);
@@ -1922,7 +1925,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       activeSection,
       targetSection: activeSection,
       contextDrag: false,
-      pinnedGrid: grid ? measureSidebarPinnedGrid(grid, scale) : undefined,
+      pinnedGrid: grid
+        ? measureSidebarPinnedGrid(grid, scale, SIDEBAR_DRAG_LABEL_HEIGHT * scale)
+        : undefined,
+      pinnedTargetIndex: activeSection === "pinned" ? pinnedKeys.indexOf(activeKey) : null,
+      grabOffsetX:
+        event.activatorEvent instanceof PointerEvent
+          ? event.activatorEvent.clientX -
+            (event.active.rect.current.initial?.left ?? event.activatorEvent.clientX)
+          : 0,
       occurredAt: new Date().toISOString(),
       activationY:
         event.activatorEvent instanceof PointerEvent ? event.activatorEvent.clientY : null,
@@ -2021,10 +2032,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     const target = event.over
       ? resolveSidebarDropTarget(sidebarListItems, String(event.active.id), String(event.over.id))
       : null;
+    const pinnedTargetIndex =
+      target?.section === "pinned" ? target.pinnedOrder.indexOf(String(event.active.id)) : null;
     setDragState((current) =>
-      current === null || current.activeKey !== String(event.active.id)
+      current === null ||
+      current.activeKey !== String(event.active.id) ||
+      (current.targetSection === (target?.section ?? null) &&
+        current.pinnedTargetIndex === pinnedTargetIndex)
         ? current
-        : { ...current, targetSection: target?.section ?? null },
+        : { ...current, targetSection: target?.section ?? null, pinnedTargetIndex },
     );
   };
   const sortableIds = sidebarListItems.map(sidebarListItemId);
@@ -2054,6 +2070,22 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const draggedThreadKey = dragState?.activeKey;
   const draggedFromSection = dragState?.activeSection;
   const dragActivationY = dragState?.activationY;
+  const pinnedDragPreview = (() => {
+    const grid = dragState?.pinnedGrid;
+    if (
+      !grid ||
+      dragState.activeSection !== "pinned" ||
+      dragState.targetSection !== "pinned" ||
+      dragState.pinnedTargetIndex === null
+    )
+      return undefined;
+    const from = pinnedKeys.indexOf(dragState.activeKey);
+    if (from < 0 || dragState.pinnedTargetIndex < 0) return undefined;
+    const widthRatio =
+      sidebarPinnedGridCell(grid, dragState.pinnedTargetIndex, pinnedKeys.length).width /
+      sidebarPinnedGridCell(grid, from, pinnedKeys.length).width;
+    return { widthRatio, offsetX: dragState.grabOffsetX * (1 - widthRatio) };
+  })();
   const dndCollisionDetection = (() => {
     if (draggedThreadKey === undefined || draggedFromSection === undefined)
       return createSidebarCollisionDetection(() => true);
@@ -2084,6 +2116,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       {
         items: sidebarListItems,
         activationY: dragActivationY ?? null,
+        pinnedGrid: dragState?.pinnedGrid,
       },
     );
   })();
@@ -3336,6 +3369,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             key={threadKey}
                             sortableId={threadKey}
                             contextDrag={isContextDrag}
+                            pinnedDragPreview={
+                              threadKey === draggedThreadKey ? pinnedDragPreview : undefined
+                            }
                             sortableDisabled={
                               projectFolders !== null ||
                               renamingThreadKey === threadKey ||
