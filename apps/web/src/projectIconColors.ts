@@ -123,11 +123,3 @@ const PROJECT_ICON_COLOR_CLASSES = Object.fromEntries(
 export function projectIconColorClassName(color: ProjectIconColor): string {
   return PROJECT_ICON_COLOR_CLASSES[color];
 }
-
-const PROJECT_ICON_SWATCH_CLASSES = Object.fromEntries(
-  PROJECT_ICON_COLORS.map(({ value, swatchClassName }) => [value, swatchClassName]),
-) as Record<ProjectIconColor, string>;
-
-export function projectIconSwatchClassName(color: ProjectIconColor): string {
-  return PROJECT_ICON_SWATCH_CLASSES[color];
-}

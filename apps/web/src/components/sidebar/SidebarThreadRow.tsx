@@ -103,8 +103,6 @@ import {
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
 import { useThreadShell } from "../../state/entities";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
-import { deriveProjectIdentity } from "../../projectIdentity";
-import { projectIconSwatchClassName } from "../../projectIconColors";
 import { ThreadSearchMatchExcerpt } from "../ThreadSearchMatch";
 import { makeWorkspaceFileDropHandlers } from "../chat/workspaceFileDrop";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
@@ -1204,13 +1202,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   ) : null;
 
   if (variant === "tile") {
-    const icon = props.project?.projectIcon;
-    const tint =
-      icon && "color" in icon
-        ? icon.color
-        : props.project
-          ? deriveProjectIdentity(props.project.title).color
-          : null;
     return (
       <li
         data-thread-item={threadKey}
@@ -1233,14 +1224,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(
                   rowSurfaceClassName,
-                  "flex h-full flex-col justify-center gap-0.5 px-2 ring-inset",
-                  props.isActive
-                    ? "ring-2 ring-primary light:ring-2 light:ring-primary"
-                    : isSelected
-                      ? "ring-2 ring-primary/70 light:ring-2 light:ring-primary/70"
-                      : "ring-1 ring-sidebar-foreground/6",
+                  "flex h-full flex-col justify-center gap-0.5 px-2",
                   // The dragged tile takes this cell on drop; peers shift only then.
-                  sortable?.isOver && "outline-2 -outline-offset-2 outline-dashed outline-primary",
+                  sortable?.isOver &&
+                    "outline-2 -outline-offset-2 outline-dashed outline-sidebar-foreground/35",
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -1250,15 +1237,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             }
           >
             {accessibleTitle}
-            {tint && !props.isActive && !isSelected ? (
-              <span
-                aria-hidden
-                className={cn(
-                  "pointer-events-none absolute inset-0 opacity-10 dark:opacity-15",
-                  projectIconSwatchClassName(tint),
-                )}
-              />
-            ) : null}
             <div className="relative flex h-4 min-w-0 items-center gap-1.5">
               {props.project ? (
                 <ProjectFavicon project={props.project} className="size-4 shrink-0" />
