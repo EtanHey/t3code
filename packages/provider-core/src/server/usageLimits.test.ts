@@ -33,6 +33,15 @@ describe("applyUsageLimitsUpdate", () => {
       },
     });
     expect(next).toBe(published);
+    for (const overagesEnabled of [true, false]) {
+      const changed = applyUsageLimitsUpdate({
+        previous: published,
+        checkedAt,
+        update: { windows: [{ ...session, overagesEnabled }] },
+      });
+      expect(changed).not.toBe(published);
+      expect(changed?.windows[0]?.overagesEnabled).toBe(overagesEnabled);
+    }
   });
 
   it("upserts by id and keeps the reset a percent-only update omits", () => {

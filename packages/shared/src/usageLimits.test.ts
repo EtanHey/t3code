@@ -66,6 +66,12 @@ describe("new thread model fallback", () => {
     instanceId: fallback.instanceId,
     driver: ProviderDriverKind.make("claudeAgent"),
   });
+  const overage = provider({
+    usageLimits: {
+      checkedAt: limited.checkedAt,
+      windows: [{ ...window, usedPercent: 100, overagesEnabled: true }],
+    },
+  });
 
   const defaults = {
     defaultSelection: selection,
@@ -79,6 +85,30 @@ describe("new thread model fallback", () => {
     ["missing default", { defaultSelection: null }, null],
     ["no fallback", { fallbackSelection: null }, selection],
     ["expired window", { now: Date.parse("2026-09-04T00:00:00Z") }, selection],
+    ["overages enabled on default", { providers: [overage, available] }, selection],
+    [
+      "overages enabled on fallback",
+      { providers: [limited, { ...overage, instanceId: fallback.instanceId }] },
+      fallback,
+    ],
+    [
+      "another exhausted hard limit",
+      {
+        providers: [
+          provider({
+            usageLimits: {
+              checkedAt: limited.checkedAt,
+              windows: [
+                { ...window, usedPercent: 100, overagesEnabled: true },
+                { ...window, id: "hard_limit", usedPercent: 100 },
+              ],
+            },
+          }),
+          available,
+        ],
+      },
+      fallback,
+    ],
     [
       "environment disabled",
       {

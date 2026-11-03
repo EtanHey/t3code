@@ -22,6 +22,7 @@ import {
   KIRO_SUPPORTED_RUNTIME_MODES,
   makeKiroAcpRuntime,
 } from "./acpSupport.ts";
+import { KIRO_ACCOUNT_USAGE_METHOD, kiroUsageLimits } from "./usageLimits.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
@@ -335,23 +336,48 @@ export function kiroAgentDescriptor(template: unknown): ProviderOptionDescriptor
   };
 }
 
+/** Kiro 2.35.2 answered within 1.5 s, process start included. */
+const KIRO_USAGE_TIMEOUT = "5 seconds";
+
 /**
- * Asks Kiro for its agents with `initialize` and `_kiro/config/template` and
- * nothing more: no `session/new`, so no MCP server starts and no session is
- * stored. The process runs in the server's working directory.
+ * Asks Kiro for its agents and the account's usage with `initialize`,
+ * `_kiro/config/template` and `_kiro/account/getUsage`, and nothing more: no
+ * `session/new`, so no MCP server starts and no session is stored. The process
+ * runs in the server's working directory.
  */
-const probeKiroAgents = Effect.fn("KiroProvider.probeKiroAgents")(function* (
+const probeKiroAcp = Effect.fn("KiroProvider.probeKiroAcp")(function* (
   settings: KiroSettings,
   environment: NodeJS.ProcessEnv,
 ) {
-  const runtime = yield* makeKiroAcpRuntime({
-    settings,
-    environment,
-    cwd: yield* HostProcess.WorkingDirectory,
-    clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
-  });
-  yield* runtime.initialize();
-  return kiroAgentDescriptor(yield* runtime.request("_kiro/config/template", {}));
+  const connected = yield* Effect.gen(function* () {
+    const runtime = yield* makeKiroAcpRuntime({
+      settings,
+      environment,
+      cwd: yield* HostProcess.WorkingDirectory,
+      clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
+    });
+    yield* runtime.initialize();
+    return runtime;
+  }).pipe(Effect.timeoutOption(AUTH_PROBE_TIMEOUT_MS));
+  if (Option.isNone(connected)) return undefined;
+  const runtime = connected.value;
+  return yield* Effect.all(
+    {
+      agents: runtime.request("_kiro/config/template", {}).pipe(
+        Effect.timeoutOption(AUTH_PROBE_TIMEOUT_MS),
+        Effect.map(Option.getOrUndefined),
+        Effect.map(kiroAgentDescriptor),
+        Effect.orElseSucceed(() => undefined),
+      ),
+      // Kiro reads usage from its service, so a slow answer must not cost the agent list.
+      usage: runtime.request(KIRO_ACCOUNT_USAGE_METHOD, {}).pipe(
+        Effect.timeoutOption(KIRO_USAGE_TIMEOUT),
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      ),
+    },
+    { concurrency: "unbounded" },
+  );
 }, Effect.scoped);
 
 export const checkKiroProviderStatus = Effect.fn("checkKiroProviderStatus")(function* (
@@ -419,40 +445,38 @@ export const checkKiroProviderStatus = Effect.fn("checkKiroProviderStatus")(func
       message: "Kiro CLI is installed but not signed in. Run `kiro-cli login`.",
     });
   }
-  // Signed out, `--list-models` starts a browser login instead, and the agent
+  // Signed out, `--list-models` starts a browser login instead, and the ACP
   // probe fails to start, so both run only once `whoami` has confirmed the
   // account. Without an agent list the composer shows no agent picker.
-  const [listed, agents] =
-    auth.status === "authenticated"
-      ? yield* Effect.all(
-          [
-            runKiroCli(settings, ["chat", "--list-models", "--format", "json"], environment).pipe(
-              Effect.timeoutOption(AUTH_PROBE_TIMEOUT_MS),
-              Effect.map((output) => kiroModelsFromList(Option.getOrUndefined(output))),
-              Effect.orElseSucceed(() => undefined),
-            ),
-            probeKiroAgents(settings, environment).pipe(
-              Effect.timeoutOption(AUTH_PROBE_TIMEOUT_MS),
-              Effect.map(Option.getOrUndefined),
-              Effect.orElseSucceed(() => undefined),
-            ),
-          ],
-          { concurrency: "unbounded" },
-        )
-      : [undefined, undefined];
-  return snapshot(
-    settings,
-    checkedAt,
-    {
+  if (auth.status !== "authenticated") {
+    return snapshot(settings, checkedAt, {
       installed: true,
       version,
-      status: auth.status === "authenticated" ? "ready" : "warning",
+      status: "warning",
       auth,
-      ...(auth.status === "authenticated"
-        ? {}
-        : { message: "Could not confirm the Kiro sign-in. Run `kiro-cli whoami` to check." }),
-    },
-    listed,
-    agents,
+      message: "Could not confirm the Kiro sign-in. Run `kiro-cli whoami` to check.",
+    });
+  }
+  const [listed, acp] = yield* Effect.all(
+    [
+      runKiroCli(settings, ["chat", "--list-models", "--format", "json"], environment).pipe(
+        Effect.timeoutOption(AUTH_PROBE_TIMEOUT_MS),
+        Effect.map((output) => kiroModelsFromList(Option.getOrUndefined(output))),
+        Effect.orElseSucceed(() => undefined),
+      ),
+      probeKiroAcp(settings, environment).pipe(Effect.orElseSucceed(() => undefined)),
+    ],
+    { concurrency: "unbounded" },
   );
+  return {
+    ...snapshot(
+      settings,
+      checkedAt,
+      { installed: true, version, status: "ready", auth },
+      listed,
+      acp?.agents,
+    ),
+    // A failed read reports `probeFailed`, which keeps the last bars for the same account.
+    usageLimits: kiroUsageLimits(acp?.usage, checkedAt),
+  };
 });

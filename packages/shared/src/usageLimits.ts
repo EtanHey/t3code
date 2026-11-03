@@ -28,6 +28,7 @@ export function exhaustedUsageWindow(
 ) {
   const exhausted = (provider?.usageLimits?.windows ?? []).filter(
     (window) =>
+      window.overagesEnabled !== true &&
       (window.usedPercent ?? 0) >= 100 &&
       (!window.resetsAt ||
         !Number.isFinite(Date.parse(window.resetsAt)) ||

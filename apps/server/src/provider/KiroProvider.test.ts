@@ -4,12 +4,14 @@ import { assert, describe, it } from "@effect/vitest";
 import { KiroSettings } from "@t3tools/provider-kiro/settings";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import * as TestClock from "effect/testing/TestClock";
 
 import {
   checkKiroProviderStatus,
@@ -49,11 +51,17 @@ const decodeRequest = Schema.decodeUnknownSync(
   ),
 );
 
+type AcpReply =
+  | { readonly result: unknown; readonly resume?: Deferred.Deferred<void> }
+  | { readonly error: { readonly code: number; readonly message: string } }
+  /** Never answered; completes once the request arrives. */
+  | { readonly received: Deferred.Deferred<void> };
+
 /**
- * A `kiro-cli acp` that answers `initialize` and `_kiro/config/template` and
+ * A `kiro-cli acp` that answers `initialize` and the scripted methods and
  * fails anything else, so a probe that opened a session would fail.
  */
-const acpProcess = (template: unknown) =>
+const acpProcess = (replies: Readonly<Record<string, AcpReply>>, requested: Array<string>) =>
   Effect.gen(function* () {
     const output = yield* Queue.unbounded<Uint8Array>();
     const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
@@ -63,16 +71,22 @@ const acpProcess = (template: unknown) =>
     );
     const reply = (line: string) => {
       const request = decodeRequest(line);
+      requested.push(request.method);
       const response =
-        request.method === "initialize"
+        replies[request.method] ??
+        (request.method === "initialize"
           ? { result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } }
-          : request.method === "_kiro/config/template"
-            ? { result: template }
-            : { error: { code: -32601, message: `${request.method} is not scripted` } };
-      return Queue.offer(
+          : { error: { code: -32601, message: `${request.method} is not scripted` } });
+      if ("received" in response) return Deferred.succeed(response.received, undefined);
+      const send = Queue.offer(
         output,
-        encoder.encode(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...response })}\n`),
+        encoder.encode(
+          `${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...("result" in response ? { result: response.result } : response) })}\n`,
+        ),
       );
+      return "resume" in response && response.resume
+        ? Deferred.await(response.resume).pipe(Effect.andThen(send))
+        : send;
     };
     return ChildProcessSpawner.makeHandle({
       pid: ChildProcessSpawner.ProcessId(900_000_003),
@@ -98,28 +112,41 @@ const acpProcess = (template: unknown) =>
   });
 
 /** Answers `kiro-cli` invocations by their arguments and records which ran. */
-function kiroCli(outputs: Record<string, CliOutput>, template?: unknown) {
+function kiroCli(outputs: Record<string, CliOutput>, replies?: Readonly<Record<string, AcpReply>>) {
   const invoked: Array<string> = [];
+  const requested: Array<string> = [];
   const spawner = ChildProcessSpawner.make((command) => {
     const args = ChildProcess.isStandardCommand(command) ? command.args.join(" ") : "";
     invoked.push(args);
-    return args === KIRO_ACP_ARGS && template !== undefined
-      ? acpProcess(template)
+    return args === KIRO_ACP_ARGS && replies !== undefined
+      ? acpProcess(replies, requested)
       : Effect.succeed(processHandle(outputs[args] ?? { stdout: "", code: 127 }));
   });
-  return { invoked, spawner };
+  return { invoked, requested, spawner };
 }
 
 const check = (
   outputs: Record<string, CliOutput>,
-  options: { readonly template?: unknown; readonly settings?: KiroSettings } = {},
+  options: {
+    readonly template?: unknown;
+    readonly usage?: AcpReply;
+    readonly initialize?: AcpReply;
+    readonly settings?: KiroSettings;
+  } = {},
 ) =>
   Effect.gen(function* () {
-    const cli = kiroCli(outputs, options.template);
+    const replies = {
+      ...(options.initialize === undefined ? {} : { initialize: options.initialize }),
+      ...(options.template === undefined
+        ? {}
+        : { "_kiro/config/template": { result: options.template } }),
+      ...(options.usage === undefined ? {} : { "_kiro/account/getUsage": options.usage }),
+    };
+    const cli = kiroCli(outputs, Object.keys(replies).length === 0 ? undefined : replies);
     const snapshot = yield* checkKiroProviderStatus(options.settings ?? settings, {}).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, cli.spawner),
     );
-    return { snapshot, invoked: cli.invoked };
+    return { snapshot, invoked: cli.invoked, requested: cli.requested };
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 describe("KiroProvider", () => {
@@ -443,6 +470,270 @@ describe("KiroProvider", () => {
         snapshot.models.map((model) => model.slug),
         ["default"],
       );
+    }),
+  );
+
+  const SIGNED_IN = {
+    "--version": { stdout: "kiro-cli 2.35.2\n", code: 0 },
+    "whoami --format json": {
+      stdout: '{"accountType":"IdC","email":"dev@example.com"}\n',
+      code: 0,
+    },
+  };
+  // `_kiro/account/getUsage` from Kiro CLI 2.35.2 on a plan past its allowance with overages on.
+  const KIRO_ACCOUNT_USAGE = {
+    success: true,
+    message: "Plan: KIRO POWER | 1 usage breakdowns",
+    data: {
+      planName: "KIRO POWER",
+      billingCycleReset: "2026-11-01",
+      overagesEnabled: true,
+      isEnterprise: true,
+      usageBreakdowns: [
+        {
+          resourceType: "CREDIT",
+          displayName: "Credits",
+          used: 15034.06,
+          limit: 10000,
+          percentage: 150,
+          currentOverages: 5034.06,
+          overageRate: 0.04,
+          overageCharges: 201.362463126896,
+          currency: "USD",
+          hasLimit: true,
+        },
+      ],
+      bonusCredits: [],
+      addOnCredits: [],
+      overageCapable: true,
+    },
+  };
+
+  // Sanitized session-free `_kiro/account/getUsage` response from Kiro CLI 2.37.1.
+  const KIRO_FREE_USAGE = {
+    success: true,
+    data: {
+      planName: "KIRO FREE",
+      billingCycleReset: "2026-12-01",
+      overagesEnabled: false,
+      isEnterprise: false,
+      usageBreakdowns: [
+        {
+          resourceType: "CREDIT",
+          displayName: "Credits",
+          used: 0,
+          limit: 50,
+          percentage: 0,
+          currentOverages: 0,
+          overageRate: 0.04,
+          overageCharges: 0,
+          currency: "USD",
+          hasLimit: true,
+        },
+      ],
+      bonusCredits: [],
+      addOnCredits: [],
+      overageCapable: false,
+    },
+  };
+
+  it.effect("reports paid and FREE plan credits from Kiro's account usage, without a session", () =>
+    Effect.gen(function* () {
+      const freeCredits = KIRO_FREE_USAGE.data.usageBreakdowns[0];
+      const cases = [
+        { usage: KIRO_ACCOUNT_USAGE, usedPercent: 100, label: "Credits · overage" },
+        ...(
+          [
+            [0, 0],
+            [25, 50],
+            [50, 100],
+            [75, 100],
+          ] as const
+        ).map(([used, usedPercent]) => ({
+          usage: {
+            ...KIRO_FREE_USAGE,
+            data: {
+              ...KIRO_FREE_USAGE.data,
+              usageBreakdowns: [{ ...freeCredits, used }],
+            },
+          },
+          usedPercent,
+          label: "Credits",
+        })),
+      ];
+      for (const { usage, usedPercent, label } of cases) {
+        const { snapshot, requested } = yield* check(SIGNED_IN, {
+          usage: { result: usage },
+        });
+        assert.deepEqual(snapshot.usageLimits, {
+          checkedAt: snapshot.checkedAt,
+          windows: [
+            {
+              id: "credit",
+              kind: "monthly",
+              label,
+              usedPercent,
+              ...(usage.data.overagesEnabled ? { overagesEnabled: true } : {}),
+              resetsAt: `${usage.data.billingCycleReset}T00:00:00.000Z`,
+            },
+          ],
+        });
+        assert.sameMembers(requested, [
+          "initialize",
+          "_kiro/config/template",
+          "_kiro/account/getUsage",
+        ]);
+      }
+    }),
+  );
+
+  it.effect("shows each limited allowance and skips unlimited or unreadable ones", () =>
+    Effect.gen(function* () {
+      const credits = KIRO_ACCOUNT_USAGE.data.usageBreakdowns[0];
+      const { snapshot } = yield* check(SIGNED_IN, {
+        usage: {
+          result: {
+            success: true,
+            data: {
+              ...KIRO_ACCOUNT_USAGE.data,
+              billingCycleReset: "Unknown",
+              overagesEnabled: false,
+              usageBreakdowns: [
+                { ...credits, used: 2500, limit: 10000 },
+                // A resource Kiro may add later keeps its own bar under Kiro's name.
+                { resourceType: "AGENT_TASK", displayName: "Agent tasks", used: 3, limit: 4 },
+                {
+                  resourceType: "SPEC",
+                  displayName: "Specs",
+                  used: 1,
+                  limit: 999999,
+                  hasLimit: false,
+                },
+                { resourceType: "BROKEN", used: "many", limit: 10 },
+                { ...credits, used: 9000 },
+              ],
+            },
+          },
+        },
+      });
+      assert.deepEqual(snapshot.usageLimits?.windows, [
+        { id: "agent_task", kind: "monthly", label: "Agent tasks", usedPercent: 75 },
+        { id: "credit", kind: "monthly", label: "Credits", usedPercent: 25 },
+      ]);
+      assert.isUndefined(snapshot.usageLimits?.unavailable);
+    }),
+  );
+
+  it.effect("reports why Kiro's credit usage is missing, and keeps the agent picker", () =>
+    Effect.gen(function* () {
+      const template = {
+        configOptions: [
+          {
+            type: "select",
+            id: "mode",
+            currentValue: "vibe",
+            options: [
+              { value: "vibe", name: "Default" },
+              { value: "reviewer", name: "reviewer" },
+            ],
+          },
+        ],
+      };
+      const cases: ReadonlyArray<readonly [AcpReply, "probeFailed" | "unsupported"]> = [
+        [{ error: { code: -32603, message: "Internal error" } }, "probeFailed"],
+        [
+          { result: { success: false, message: "Failed to retrieve usage information" } },
+          "probeFailed",
+        ],
+        [{ result: "not usage" }, "probeFailed"],
+        [{ result: { success: true, data: { usageBreakdowns: [{ used: 1 }] } } }, "probeFailed"],
+        // Kiro's answer for a plan its organization manages.
+        [{ result: { success: true, message: "Your plan is managed by admin" } }, "unsupported"],
+        [
+          {
+            result: {
+              success: true,
+              data: {
+                usageBreakdowns: [
+                  { resourceType: "CREDIT", used: 5, limit: 999999, hasLimit: false },
+                ],
+              },
+            },
+          },
+          "unsupported",
+        ],
+      ];
+      for (const [usage, reason] of cases) {
+        const { snapshot } = yield* check(SIGNED_IN, { usage, template });
+        assert.deepEqual(snapshot.usageLimits?.windows, []);
+        assert.equal(snapshot.usageLimits?.unavailable?.reason, reason);
+        assert.equal(snapshot.status, "ready");
+        assert.isTrue(
+          snapshot.models.every((model) =>
+            model.capabilities?.optionDescriptors?.some((descriptor) => descriptor.id === "mode"),
+          ),
+        );
+      }
+    }),
+  );
+
+  it.effect("keeps the agent picker when Kiro never answers the usage request", () =>
+    Effect.gen(function* () {
+      for (const initializationSeconds of [0, 6]) {
+        const resume = yield* Deferred.make<void>();
+        const received = yield* Deferred.make<void>();
+        const probe = yield* check(SIGNED_IN, {
+          initialize: {
+            result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] },
+            resume,
+          },
+          usage: { received },
+          template: {
+            configOptions: [
+              {
+                type: "select",
+                id: "mode",
+                currentValue: "vibe",
+                options: [
+                  { value: "vibe", name: "Default" },
+                  { value: "reviewer", name: "reviewer" },
+                ],
+              },
+            ],
+          },
+        }).pipe(Effect.forkChild);
+        yield* TestClock.adjust(`${initializationSeconds} seconds`);
+        yield* Deferred.succeed(resume, undefined);
+        yield* Deferred.await(received);
+        yield* TestClock.adjust("5 seconds");
+        const { snapshot, requested } = yield* Fiber.join(probe);
+        assert.equal(snapshot.usageLimits?.unavailable?.reason, "probeFailed");
+        assert.isTrue(
+          snapshot.models.every((model) =>
+            model.capabilities?.optionDescriptors?.some((descriptor) => descriptor.id === "mode"),
+          ),
+        );
+        assert.sameMembers(requested, [
+          "initialize",
+          "_kiro/config/template",
+          "_kiro/account/getUsage",
+        ]);
+      }
+    }),
+  );
+
+  it.effect("never asks for account usage while signed out", () =>
+    Effect.gen(function* () {
+      const { snapshot, invoked, requested } = yield* check(
+        {
+          "--version": { stdout: "kiro-cli 2.35.2\n", code: 0 },
+          "whoami --format json": { stdout: '{"account":null}\n', code: 1 },
+        },
+        { usage: { result: KIRO_ACCOUNT_USAGE } },
+      );
+      assert.notInclude(invoked, KIRO_ACP_ARGS);
+      assert.deepEqual(requested, []);
+      assert.isUndefined(snapshot.usageLimits);
     }),
   );
 });
