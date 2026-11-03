@@ -481,11 +481,11 @@ export function SortableThreadRow(
     setNodeRef,
     transform: contextDrag
       ? null
-      : transform && isDragging && rowProps.pinnedDragPreview
+      : transform && isDragging
         ? {
             ...transform,
-            x: transform.x + rowProps.pinnedDragPreview.offsetX,
-            scaleX: rowProps.pinnedDragPreview.widthRatio,
+            x: transform.x + (rowProps.pinnedDragPreview?.offsetX ?? 0),
+            scaleX: rowProps.pinnedDragPreview?.widthRatio ?? 1,
           }
         : transform,
     transition: contextDrag && isDragging ? "transform 150ms ease-out" : transition,
