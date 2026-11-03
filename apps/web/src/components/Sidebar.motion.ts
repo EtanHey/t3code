@@ -232,7 +232,11 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
           )
             continue;
           movedDelta.set(node, previous.top + remainingOffset(node) - position.top);
-          movedDeltaX.set(node, previous.left + remainingOffsetX(node) - position.left);
+          movedDeltaX.set(
+            node,
+            Math.max(0, Math.min(previous.left + remainingOffsetX(node), width - position.width)) -
+              position.left,
+          );
         }
         for (const [node, position] of positions!) {
           if (next.has(node)) continue;
