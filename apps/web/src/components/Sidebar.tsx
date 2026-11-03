@@ -1738,11 +1738,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const isContextDrag = dragState?.contextDrag === true || dragState?.activeSection === "working";
   const dragTargetSection = isContextDrag ? null : (dragState?.targetSection ?? null);
   const finishThreadDrag = (started: boolean) => {
+    const activeKey = contextDragKeyRef.current ?? undefined;
     dragSensorRef.current = null;
     contextDragKeyRef.current = null;
     endThreadContextDrag();
     if (started) {
-      listMotionRef.current?.release(dragState?.activeKey);
+      listMotionRef.current?.release(activeKey);
       setDragState(null);
     }
   };
