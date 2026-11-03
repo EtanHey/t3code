@@ -1103,6 +1103,11 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     background-color: var(--sidebar);
     opacity: 1;
   }
+  .sidebar-pinned-grid:has(> [data-sidebar-drag-source])
+    > :not([data-sidebar-drag-source])
+    [data-sidebar-row] {
+    background-color: var(--sidebar);
+  }
   .sidebar-pinned-grid > * {
     --sidebar-pinned-columns: 1;
     grid-column: span 6;
