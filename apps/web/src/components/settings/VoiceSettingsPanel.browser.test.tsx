@@ -1,4 +1,8 @@
-import { PrimaryConnectionTarget } from "@t3tools/client-runtime/connection";
+import {
+  RelayConnectionTarget,
+  PrimaryConnectionTarget,
+  type PreparedConnection,
+} from "@t3tools/client-runtime/connection";
 import {
   EnvironmentId,
   type EnvironmentSpeechModel,
@@ -316,4 +320,43 @@ it("keeps punctuation in a saved dictionary term and its alias", async () => {
   expect(getClientSettings().speechCustomWords).toEqual([
     { term: "O'Reilly", aliases: ['"Oh Really"'] },
   ]);
+});
+
+it("uses the connection authorizer when loading models from a relay destination", async () => {
+  const target = new RelayConnectionTarget({
+    environmentId: EnvironmentId.make("voice-settings-relay"),
+    label: "Relay speech host",
+  });
+  const prepared: PreparedConnection = {
+    target,
+    environmentId: target.environmentId,
+    label: target.label,
+    httpBaseUrl: "https://speech.example.test",
+    socketUrl: "wss://speech.example.test/ws",
+    httpAuthorization: { _tag: "Dpop", accessToken: "expired", expiresAtEpochMs: 0 },
+  };
+  using notify = vi.spyOn(toastManager, "add");
+  await vi.mocked(useVoiceTranscriptionDestination).withImplementation(
+    () => ({
+      environmentId: target.environmentId,
+      label: target.label,
+      grantId: "relay-test",
+      prepared,
+    }),
+    async () => {
+      await using _screen = await render(
+        <SettingsScopeProvider search={{}} onChange={() => {}}>
+          <VoiceSettingsPanel />
+        </SettingsScopeProvider>,
+      );
+      await vi.waitFor(() =>
+        expect(notify).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: "Could not load transcription models",
+            description: "Could not authorize the environment request.",
+          }),
+        ),
+      );
+    },
+  );
 });
