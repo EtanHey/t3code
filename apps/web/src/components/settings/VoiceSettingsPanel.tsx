@@ -44,7 +44,7 @@ import {
   useCleanupGrant,
 } from "../../speech/voiceConsent";
 import { updateClientSettings, useClientSettings } from "../../hooks/useSettings";
-import { runtime } from "../../lib/runtime";
+import { speechRuntime as runtime } from "../../speech/runtime";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
