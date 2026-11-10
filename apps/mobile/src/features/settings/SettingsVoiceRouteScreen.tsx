@@ -19,6 +19,7 @@ import {
 } from "../../lib/microphonePriority";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
+import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import * as Dialog from "../../components/ui/Dialog";
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
@@ -307,6 +308,17 @@ export function SettingsVoiceRouteScreen() {
               selected
               disabled
               onPress={() => {}}
+            />
+          ) : null}
+          {grant && AsyncResult.isSuccess(preferencesResult) ? (
+            <SettingsSwitchRow
+              label="Remove filler words"
+              subtitle="Remove filler words like “um” and “uh” from transcripts."
+              disabled={!ready}
+              value={preferencesResult.value.speechRemoveFillerWords ?? true}
+              onValueChange={(speechRemoveFillerWords) =>
+                savePreferences({ speechRemoveFillerWords })
+              }
             />
           ) : null}
         </SettingsSection>
