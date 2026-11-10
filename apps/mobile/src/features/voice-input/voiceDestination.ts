@@ -25,6 +25,7 @@ import { Atom, AsyncResult, AtomRegistry } from "effect/reactivity";
 import { requireOptionalNativeModule } from "expo";
 import { fetch as expoFetch } from "expo/fetch";
 
+import { mobilePreferencesAtom } from "../../state/preferences";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentPresentations } from "../../state/presentation";
 import { environmentSession, sessionHasScope } from "../../state/session";
@@ -176,28 +177,28 @@ function environmentTranscriber(
         });
       return native.decodeRecording(uri);
     },
-    upload: async (pcm, signal) =>
-      (
+    upload: async (pcm, signal) => {
+      const preferences = await Effect.runPromise(
+        AtomRegistry.getResult(appAtomRegistry, mobilePreferencesAtom),
+        { signal },
+      ).catch((error) => {
+        if (signal.aborted) throw error;
+        return { speechRemoveFillerWords: true };
+      });
+      const options = {
+        ...DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS,
+        speechRemoveFillerWords: preferences.speechRemoveFillerWords ?? true,
+      };
+      return (
         await runSpeech(
           provider
-            ? transcribeCloudPcm(
-                prepared,
-                provider,
-                pcm,
-                DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS,
-                canSend,
-                model,
-              )
-            : transcribeEnvironmentPcm(
-                prepared,
-                pcm,
-                DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS,
-                canSend,
-              ),
+            ? transcribeCloudPcm(prepared, provider, pcm, options, canSend, model)
+            : transcribeEnvironmentPcm(prepared, pcm, options, canSend),
           signal,
           canSend,
         )
-      ).text,
+      ).text;
+    },
   });
 }
 
